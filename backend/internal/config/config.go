@@ -339,7 +339,7 @@ func Default() Config {
 		},
 		ProviderHealth: ProviderHealthConfig{
 			Enabled:              true,
-			ProbeInterval:        60 * time.Second,
+			ProbeInterval:        5 * time.Minute,
 			ProbeTimeout:         15 * time.Second,
 			FailureThreshold:     3,
 			QueueSize:            5000,
