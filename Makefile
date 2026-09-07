@@ -91,8 +91,12 @@ bootstrap:
 	cd $(BACKEND_DIR) && go run ./cmd/keirouter -bootstrap
 
 ## docker: build the production image.
+##         Usage: make docker [PLATFORM=linux/amd64]
+##         Defaults to this machine's native platform. On Apple Silicon, set
+##         PLATFORM=linux/amd64 when the image will run on x86-64 servers.
+PLATFORM ?= linux/$(shell uname -m | sed -e s/aarch64/arm64/ -e s/x86_64/amd64/)
 docker:
-	docker build -f deploy/Dockerfile -t keirouter:latest .
+	docker buildx build --platform $(PLATFORM) -f deploy/Dockerfile -t keirouter:latest --load .
 
 ## clean: remove build artifacts.
 clean:

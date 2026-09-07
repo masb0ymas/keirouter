@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- frontend build stage ----
-FROM node:20-alpine AS frontend
+# --platform=$BUILDPLATFORM keeps npm running natively on the build host
+# (the dist output is platform-independent JS), avoiding slow QEMU emulation
+# when targeting a different architecture.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
@@ -9,7 +12,12 @@ COPY frontend/ .
 RUN npm run build
 
 # ---- backend build stage ----
-FROM golang:1.26-alpine AS backend
+# --platform=$BUILDPLATFORM runs the Go toolchain natively on the build host;
+# TARGETOS/TARGETARCH cross-compile the binary for the image's target platform
+# (e.g. build on Apple Silicon, run on amd64 servers).
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src/backend
 # VERSION is injected into the binary via -ldflags so the dashboard reports a
 # real version instead of the "dev" default. The .git dir is excluded from the
@@ -30,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       if [ -n "${SOURCE_COMMIT}" ]; then VER="${SOURCE_COMMIT}"; else VER="dev"; fi; \
     fi; \
     echo "Building keirouter version: ${VER}"; \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.Version=${VER}" \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.Version=${VER}" \
     -o /out/keirouter ./cmd/keirouter
 RUN mkdir -p /out/data
 
