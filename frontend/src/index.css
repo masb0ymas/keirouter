@@ -536,10 +536,14 @@ select:disabled,
   Scroll containers own their absolutely positioned descendants (sr-only
   captions, overlays). Without this they resolve against <main>, escape the
   horizontal scroller and make the whole page scroll sideways on phones.
-  :where() keeps specificity at zero so explicit position utilities win.
+  It must live in a layer below utilities: unlayered CSS beats every
+  Tailwind utility regardless of specificity, which turned `fixed
+  overflow-y-auto` modal overlays into in-flow blocks.
 */
-:where(.overflow-auto, .overflow-x-auto, .overflow-x-scroll, .overflow-y-auto) {
-  position: relative;
+@layer base {
+  :where(.overflow-auto, .overflow-x-auto, .overflow-x-scroll, .overflow-y-auto) {
+    position: relative;
+  }
 }
 
 /*

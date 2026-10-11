@@ -53,12 +53,6 @@ func guardrailTemplates() []guardrailTemplate {
 		SeverityThreshold: guardrails.SeverityLow,
 		Action:            guardrails.ActionLogOnly,
 	}
-	topicsProgrammingAllow := &guardrails.TopicsConfig{
-		Enabled: true,
-		Mode:    "allow",
-		Topics:  []string{"programming", "software", "devops", "general help"},
-		Action:  guardrails.ActionBlock,
-	}
 	injectionIndirect := &guardrails.InjectionConfig{
 		Enabled:           true,
 		SeverityThreshold: guardrails.SeverityHigh,
@@ -85,12 +79,14 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "strict-safety",
 			Name:        "Strict safety",
-			Description: "Block on any PII match, block prompt injection at medium severity with a system-prompt leak canary, and allow only programming/general-help topics.",
+			Description: "Block on any PII match, block prompt injection at medium severity with a system-prompt leak canary, and block toxic prompts.",
 			Config: guardrails.Policy{
 				Enabled:   &enabled,
 				PII:       piiBlock,
 				Injection: injectionBlock,
-				Topics:    topicsProgrammingAllow,
+				Toxicity: &guardrails.ToxicityConfig{
+					Enabled: true, Threshold: 60, Action: guardrails.ActionBlock,
+				},
 			},
 		},
 		{
@@ -112,12 +108,11 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "public-chatbot",
 			Name:        "Public chatbot",
-			Description: "Redact PII in both directions and refuse leaked API or private keys, block prompt injection and toxic prompts, keep topics to programming and general help.",
+			Description: "Redact PII in both directions and refuse leaked API or private keys, block prompt injection and toxic prompts.",
 			Config: guardrails.Policy{
 				Enabled:   &enabled,
 				PII:       piiRedact,
 				Injection: injectionBlock,
-				Topics:    topicsProgrammingAllow,
 				Toxicity: &guardrails.ToxicityConfig{
 					Enabled: true, Threshold: 70, Action: guardrails.ActionBlock,
 				},

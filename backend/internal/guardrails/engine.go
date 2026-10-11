@@ -268,8 +268,9 @@ func (e *Engine) recordDecision(name string, action Action) {
 
 // applyTenantOverrides enforces tenant-wide flags before the policy reaches
 // detectors. Currently it implements the GDPR allow_external_engines switch:
-// when off, every engine selector is reset to its native default so no data
-// leaves the KeiRouter process.
+// when off, every engine selector is reset to its native default and the
+// embedding / LLM judge layers are switched off, so no prompt text is sent to
+// another service for classification.
 func (e *Engine) applyTenantOverrides(ctx context.Context, tenantID string, p Policy) Policy {
 	if e == nil || e.tenant == nil {
 		return p
@@ -291,6 +292,13 @@ func (e *Engine) applyTenantOverrides(ctx context.Context, tenantID string, p Po
 		clone := *p.Topics
 		clone.Engine = "keyword"
 		p.Topics = &clone
+	}
+	// Embedding and judge layers send prompt text to another service.
+	if p.Injection != nil && (p.Injection.Semantic || (p.Injection.Judge != "" && p.Injection.Judge != JudgeOff)) {
+		clone := *p.Injection
+		clone.Semantic = false
+		clone.Judge = JudgeOff
+		p.Injection = &clone
 	}
 	return p
 }

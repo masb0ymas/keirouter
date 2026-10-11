@@ -109,9 +109,22 @@ export function QuotaPage() {
     placeholderData: (previous) => previous,
   });
 
-  useEffect(() => connectUsageStream(() => {
-    queryClient.invalidateQueries({ queryKey: ["quota"] });
-  }), [queryClient]);
+  // The usage stream fires once per request; coalesce bursts so a busy
+  // gateway refetches quota at most every few seconds instead of per event.
+  useEffect(() => {
+    let timer: number | undefined;
+    const stop = connectUsageStream(() => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        queryClient.invalidateQueries({ queryKey: ["quota"] });
+      }, 3_000);
+    });
+    return () => {
+      stop();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [queryClient]);
 
   useEffect(() => {
     if (!autoRefresh) return;

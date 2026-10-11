@@ -1,5 +1,4 @@
 import { useRef, useState, useCallback } from "react";
-import { toPng } from "html-to-image";
 import { Download, Check } from "lucide-react";
 import type { UsageInsights } from "../lib/api";
 
@@ -455,6 +454,8 @@ export function SavingsCardShareButton({
     setStatus("Creating savings card…");
 
     try {
+      // html-to-image is only needed when exporting, so keep it out of the page chunk.
+      const { toPng } = await import("html-to-image");
       const dataUrl = await toPng(cardRef.current, {
         width: 1200,
         height: 630,

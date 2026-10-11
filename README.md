@@ -524,7 +524,7 @@ A built-in content-safety layer runs detectors against every request and respons
 |---|---|---|---|
 | **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / KK / NPWP / BPJS / Indonesian passport**, US SSN, API keys, passwords, private keys | Native Go (Presidio-compatible, checksum-validated) | Microsoft Presidio HTTP sidecar |
 | **Prompt Injection** | Instruction overrides, jailbreak personas, smuggled chat-template tokens, prompt leaks, encoded payloads, indirect injection in tool results (id + en) | Signatures + typo-tolerant intent rules | Prompt Guard 2 classifier · embedding match · LLM judge |
-| **Topics** | Allow-list / block-list of topics | Whole-word keyword match with inflections | Embedding similarity |
+| **Topics** | Allow-list / block-list of topics | Whole-word keyword match with inflections | LLM (context-aware, lets small talk through) · Embedding similarity |
 | **Toxicity** | Profanity, hate, harassment, violence, sexual, self-harm (id + en) | Native weighted lexicon | OpenAI Moderation API |
 | **Bias** (outbound, experimental) | Political, gender, ethnic, religious stereotyping in responses | Native bilingual lexicon | — |
 

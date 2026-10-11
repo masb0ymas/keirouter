@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -215,7 +214,7 @@ func New(d Deps) *Server {
 		guardrailLogs:       d.GuardrailLogs,
 		guardrailHub:        d.GuardrailHub,
 		guardrailTenantFlag: d.GuardrailTenantFlags,
-		guardrailTestRL:     newGuardrailTestRateLimiter(10, time.Minute),
+		guardrailTestRL:     newGuardrailTestRateLimiter(guardrailTestBurst, time.Minute),
 		health:              d.Health,
 		healthChecker:       d.HealthChecker,
 		providerHealth:      d.ProviderHealth,
@@ -377,18 +376,7 @@ func (s *Server) routes() chi.Router {
 	// Serve frontend static files. The dashboard is a Vite SPA; unmatched
 	// paths fall through to index.html so client-side routing works.
 	if s.frontendDir != "" {
-		fs := http.FileServer(http.Dir(s.frontendDir))
-		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-			path := r.URL.Path
-			if path == "/" {
-				path = "/index.html"
-			}
-			fullPath := filepath.Join(s.frontendDir, path)
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				r.URL.Path = "/"
-			}
-			fs.ServeHTTP(w, r)
-		})
+		r.Get("/*", newStaticHandler(s.frontendDir).ServeHTTP)
 	}
 
 	return r

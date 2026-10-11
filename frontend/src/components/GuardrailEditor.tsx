@@ -149,7 +149,11 @@ export function GuardrailEditor({ value, onChange, showStubs = true, compact = f
         />
         {showStubs && (
           <>
-            <TopicsSection config={value.topics} onChange={(topics) => patch({ topics })} />
+            <TopicsSection
+              config={value.topics}
+              caps={capabilities.data?.capabilities.topics}
+              onChange={(topics) => patch({ topics })}
+            />
             <ToxicitySection config={value.toxicity} onChange={(toxicity) => patch({ toxicity })} />
             <BiasSection config={value.bias} onChange={(bias) => patch({ bias })} />
           </>
@@ -764,19 +768,29 @@ function InjectionSection({
   );
 }
 
+const TOPIC_ENGINES: { value: "keyword" | "embedding" | "llm"; label: string; cap?: string }[] = [
+  { value: "keyword", label: "Keyword (default)" },
+  { value: "llm", label: "LLM (understands context)", cap: "llm" },
+  { value: "embedding", label: "Embedding (semantic)", cap: "embedding" },
+];
+
 function TopicsSection({
   config,
+  caps,
   onChange,
 }: {
   config?: GuardrailPolicyConfig["topics"];
+  caps?: Record<string, boolean>;
   onChange: (next: GuardrailPolicyConfig["topics"]) => void;
 }) {
   const c = config ?? { enabled: false };
   const topics = c.topics ?? [];
+  const engine = c.engine ?? "keyword";
+  const allowList = (c.mode ?? "block") === "allow";
   const summary = [
-    (c.mode ?? "block") === "allow" ? "Allow list" : "Block list",
+    allowList ? "Allow list" : "Block list",
     plural(topics.length, "topic"),
-    c.engine === "embedding" ? "Embedding" : null,
+    engine === "embedding" ? "Embedding" : engine === "llm" ? "LLM" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -810,16 +824,38 @@ function TopicsSection({
       </Field>
       <Field
         label="Matching engine"
-        info="Keyword matches whole words and their inflections (program ↔ programming), tolerates small typos and obfuscation, and checks user messages only. Embedding also catches paraphrases; it needs an embeddings provider (cache.embedding_provider=api)."
+        info="Keyword matches whole words and their inflections (program ↔ programming); fast and free, but a message must name a topic to count. LLM reads the message in the context of the conversation, understands paraphrases and other languages, and lets greetings and small talk through; each new message costs one call to the chosen model. Embedding compares meaning; it needs an embeddings provider (cache.embedding_provider=api)."
       >
         {(ids) => (
-          <Select {...ids} value={c.engine ?? "keyword"} onChange={(e) => onChange({ ...c, engine: e.target.value as "keyword" | "embedding" })}>
-            <option value="keyword">Keyword (default)</option>
-            <option value="embedding">Embedding (semantic)</option>
+          <Select {...ids} value={engine} onChange={(e) => onChange({ ...c, engine: e.target.value as typeof engine })}>
+            {TOPIC_ENGINES.map((o) => (
+              <option key={o.value} value={o.value} disabled={!!o.cap && caps?.[o.cap] === false && engine !== o.value}>
+                {o.label}
+                {o.cap && caps?.[o.cap] === false ? " · not configured" : ""}
+              </option>
+            ))}
           </Select>
         )}
       </Field>
-      {c.engine === "embedding" && (
+      {engine === "llm" && (
+        <Field label="Model" hint="Any model, alias or chain KeiRouter routes. A small fast model is enough.">
+          {(ids) => (
+            <Input {...ids} value={c.model ?? ""} onChange={(e) => onChange({ ...c, model: e.target.value.trim() })} placeholder="gpt-4o-mini" />
+          )}
+        </Field>
+      )}
+      {allowList && engine === "keyword" && (
+        <p role="note" className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] text-fg md:col-span-2">
+          With keywords, an allow list refuses every message that doesn’t name a listed topic, including greetings, thanks and
+          small talk. Use the LLM engine for allow lists, or a block list instead.
+        </p>
+      )}
+      {allowList && engine === "llm" && !c.model && (
+        <p role="note" className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] text-fg md:col-span-2">
+          Pick a model: without one the allow list is not enforced.
+        </p>
+      )}
+      {engine === "embedding" && (
         <Field label="Similarity threshold (0–1)" info="Higher values require a closer match.">
           {(ids) => (
             <Input

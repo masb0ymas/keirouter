@@ -142,12 +142,16 @@ type TopicsConfig struct {
 	// Layer-2 cosine-similarity matching with SimilarityThreshold.
 	Topics []string `json:"topics,omitempty"`
 	Action Action   `json:"action,omitempty"`
-	// Engine selects the matching strategy: "keyword" (default) or "embedding"
-	// (requires an embedder; falls back to keyword if none is wired).
+	// Engine selects the matching strategy: "keyword" (default), "embedding"
+	// (requires an embedder) or "llm" (an LLM judges the message in context,
+	// lets small talk through on allow lists and understands paraphrases
+	// and other languages; requires Model).
 	Engine string `json:"engine,omitempty"`
 	// SimilarityThreshold is the cosine-similarity cutoff used by the embedding
 	// path (0.0–1.0). Default 0.6.
 	SimilarityThreshold float64 `json:"similarity_threshold,omitempty"`
+	// Model is the model (or alias / chain) the "llm" engine runs on.
+	Model string `json:"model,omitempty"`
 }
 
 // ToxicityConfig parametrizes the toxicity detector.

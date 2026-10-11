@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,14 +300,22 @@ type testGuardrailInput struct {
 	Config *guardrails.Policy `json:"config,omitempty"`
 }
 
+// guardrailTestBurst is how many dry runs a dashboard session may make per
+// minute.
+const guardrailTestBurst = 30
+
 func (s *Server) adminTestGuardrail(w http.ResponseWriter, r *http.Request) {
-	// Rate-limit the test endpoint per-session. Without a cap an attacker
-	// with a stolen dashboard cookie could use this to enumerate regex
-	// behavior or trigger ReDoS via crafted text. 10 requests/minute is
-	// generous for interactive tuning but tight enough to throttle abuse.
+	// Rate-limit the test endpoint per session. A dry run can reach paid
+	// engines (LLM judge, OpenAI Moderation, Presidio), so a stolen dashboard
+	// cookie must not turn it into a free classification API. The bucket
+	// allows a burst of guardrailTestBurst runs and refills one run every
+	// two seconds, which keeps interactive tuning unthrottled.
 	if s.guardrailTestRL != nil {
-		if !s.guardrailTestRL.allow(rateLimitKeyFor(r)) {
-			writeError(w, http.StatusTooManyRequests, "guardrails test rate-limit exceeded; try again in a minute")
+		if ok, wait := s.guardrailTestRL.allow(rateLimitKeyFor(r)); !ok {
+			secs := max(int(math.Ceil(wait.Seconds())), 1)
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+				"test limit reached (%d runs per minute); try again in %ds", guardrailTestBurst, secs))
 			return
 		}
 	}

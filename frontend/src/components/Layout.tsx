@@ -1,4 +1,4 @@
-import { Suspense, useId, useState, useEffect, type ReactNode } from "react";
+import { lazy, Suspense, useId, useState, useEffect, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, useIsFetching } from "@tanstack/react-query";
 import {
@@ -34,9 +34,13 @@ import { cn } from "@/lib/utils";
 import { useBranding } from "../contexts/BrandingContext";
 import { useTheme, type Theme } from "./ThemeProvider";
 import { BrandMark } from "./BrandMark";
-import { CommandPalette } from "./CommandPalette";
 import { UpdateNotification } from "./UpdateNotification";
 import { preloadRoute, type RoutePreloadKey } from "../routePreload";
+
+// The command palette (and cmdk) stays out of the shell bundle: it is fetched
+// on idle or on the first Ctrl/Cmd+K, then mounted for the rest of the session.
+const loadCommandPalette = () => import("./CommandPalette");
+const CommandPalette = lazy(() => loadCommandPalette().then((m) => ({ default: m.CommandPalette })));
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -185,6 +189,10 @@ export function Layout() {
   const { branding } = useBranding();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteMounted, setPaletteMounted] = useState(false);
+  useEffect(() => {
+    if (paletteOpen) setPaletteMounted(true);
+  }, [paletteOpen]);
 
   // Cmd+K / Ctrl+K to open command palette.
   useEffect(() => {
@@ -212,6 +220,7 @@ export function Layout() {
 
   useEffect(() => {
     const warmCommonRoutes = () => {
+      void loadCommandPalette().catch(() => {});
       preloadRoute("/usage");
       preloadRoute("/providers");
       preloadRoute("/keys");
@@ -276,7 +285,11 @@ export function Layout() {
         </main>
       </div>
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      {paletteMounted && (
+        <Suspense fallback={null}>
+          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

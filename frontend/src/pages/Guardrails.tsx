@@ -906,7 +906,7 @@ function TenantFlagsCard() {
           </div>
           <p id={descId} className="mt-0.5 text-[12px] text-fg-muted">
             {allow
-              ? "Presidio, OpenAI Moderation and embeddings may receive prompt text"
+              ? "Presidio, OpenAI Moderation, embeddings and LLM judges may receive prompt text"
               : "Prompt text never leaves KeiRouter; policies use native engines"}
           </p>
         </div>

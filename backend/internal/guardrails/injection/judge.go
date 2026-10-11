@@ -2,21 +2,17 @@ package injection
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"github.com/mydisha/keirouter/backend/internal/guardrails"
 )
 
-// Completer runs a chat completion on behalf of the guardrails, routed
-// through KeiRouter's own providers. The gateway implements it.
-type Completer interface {
-	Complete(ctx context.Context, model string, req *core.ChatRequest) (*core.ChatResponse, error)
-}
+// Completer is the guardrails' route to an LLM.
+type Completer = guardrails.Completer
 
 // judgeVerdict is the LLM judge's answer for one input.
 type judgeVerdict struct {
@@ -55,29 +51,16 @@ Reply with only this JSON and nothing else:
 // next to a random verification code the judge must echo; if the untrusted
 // text hijacks the judge, the code goes missing and that alone flags it.
 func judge(ctx context.Context, c Completer, model string, meta core.RequestMetadata, user, tool string) (judgeVerdict, error) {
-	var code [6]byte
-	_, _ = rand.Read(code[:])
-	verification := hex.EncodeToString(code[:])
+	verification := guardrails.VerificationCode()
 	payload, _ := json.Marshal(map[string]string{
 		"verification_code": verification,
-		"user_message":      clip(user, judgeMaxInput),
-		"tool_output":       clip(tool, judgeMaxInput),
+		"user_message":      guardrails.ClipMiddle(user, judgeMaxInput),
+		"tool_output":       guardrails.ClipMiddle(tool, judgeMaxInput),
 	})
 	temp := 0.0
 	maxTok := 120
-	// Metered against the key whose request triggered the check.
-	judgeMeta := core.RequestMetadata{
-		ClientKind: "guardrails-judge",
-		APIKeyID:   meta.APIKeyID,
-		TenantID:   meta.TenantID,
-		ProjectID:  meta.ProjectID,
-		RequestID:  meta.RequestID,
-	}
-	if judgeMeta.RequestID != "" {
-		judgeMeta.RequestID += "-judge"
-	}
 	req := &core.ChatRequest{
-		Metadata:    judgeMeta,
+		Metadata:    guardrails.JudgeMetadata(meta, "guardrails-judge"),
 		Model:       model,
 		System:      judgeSystemPrompt,
 		Messages:    []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: string(payload)}}}},
@@ -94,8 +77,8 @@ func judge(ctx context.Context, c Completer, model string, meta core.RequestMeta
 }
 
 func parseVerdict(text, verification string) (judgeVerdict, error) {
-	start, end := strings.IndexByte(text, '{'), strings.LastIndexByte(text, '}')
-	if start < 0 || end <= start {
+	obj, ok := guardrails.JSONObject(text)
+	if !ok {
 		// No JSON at all: either the input steered the judge off its format
 		// or the judge model is unsuitable. Suspicious, not conclusive.
 		return judgeVerdict{Injection: true, Confidence: 0.6, Technique: "judge format broken"}, nil
@@ -106,7 +89,7 @@ func parseVerdict(text, verification string) (judgeVerdict, error) {
 		Confidence   float64 `json:"confidence"`
 		Technique    string  `json:"technique"`
 	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil || v.Injection == nil {
+	if err := json.Unmarshal([]byte(obj), &v); err != nil || v.Injection == nil {
 		return judgeVerdict{}, errors.New("injection/judge: unparseable verdict")
 	}
 	if strings.TrimSpace(v.Verification) != verification {
@@ -114,21 +97,3 @@ func parseVerdict(text, verification string) (judgeVerdict, error) {
 	}
 	return judgeVerdict{Injection: *v.Injection, Confidence: v.Confidence, Technique: strings.TrimSpace(v.Technique)}, nil
 }
-
-// clip keeps the head and tail of long text, where instructions usually sit.
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	half := n / 2
-	head, tail := half, len(s)-half
-	for head > 0 && !isRuneStart(s[head]) {
-		head--
-	}
-	for tail < len(s) && !isRuneStart(s[tail]) {
-		tail++
-	}
-	return s[:head] + "\n[…]\n" + s[tail:]
-}
-
-func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }

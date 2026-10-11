@@ -319,6 +319,13 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		injCfg.Embedder = embedder
 	}
 	injectionDetector := injection.NewWithConfig(injCfg)
+	// Topics: the embedding engine only makes sense with a real embeddings
+	// API; the LLM engine is attached with the gateway below.
+	var topicsEmbedder topics.Embedder
+	if cfg.Cache.EmbeddingProvider == "api" && cfg.Cache.EmbeddingAPIKey != "" {
+		topicsEmbedder = embedder
+	}
+	topicsDetector := topics.New(topics.Config{Embedder: topicsEmbedder})
 	// Per-tenant guardrails settings (currently just allow_external_engines).
 	guardrailTenantPolicy := guardrails.NewSettingsTenantPolicy(db.Settings(), 30*time.Second)
 	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
@@ -327,7 +334,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Detectors: []guardrails.Detector{
 			pii.NewWithConfig(piiCfg),
 			injectionDetector,
-			topics.New(topics.Config{Embedder: embedder}),
+			topicsDetector,
 			toxicity.New(toxCfg),
 			bias.New(),
 		},
@@ -477,9 +484,10 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	// The prompt-injection LLM judge routes through the gateway's own
-	// model resolution, so it can only be attached now.
+	// The LLM judges (prompt injection, topics) route through the gateway's
+	// own model resolution, so they can only be attached now.
 	injectionDetector.SetCompleter(gw)
+	topicsDetector.SetCompleter(gw)
 
 	// Auto-seed accounts for free, no-auth providers so they are immediately
 	// usable without a manual "connect" step in the dashboard.

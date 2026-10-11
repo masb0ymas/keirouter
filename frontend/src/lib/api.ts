@@ -1050,8 +1050,10 @@ export interface TopicsConfig {
   mode?: "allow" | "block";
   topics?: string[];
   action?: GuardrailAction;
-  engine?: "keyword" | "embedding";
+  engine?: "keyword" | "embedding" | "llm";
   similarity_threshold?: number;
+  /** Model, alias or chain the "llm" engine runs on. */
+  model?: string;
 }
 
 export interface ToxicityConfig {

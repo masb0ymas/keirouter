@@ -1,10 +1,12 @@
-import { useState, useRef, useEffect, useId } from "react";
+import { lazy, Suspense, useState, useRef, useEffect, useId } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X, ExternalLink, ArrowUpCircle, FileText } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import { ChangelogMarkdown } from "./ChangelogMarkdown";
 import { IconTile } from "./ui";
+
+// Only needed once an update is available and the panel is opened.
+const ChangelogMarkdown = lazy(() => import("./ChangelogMarkdown").then((m) => ({ default: m.ChangelogMarkdown })));
 
 // useUpdateInfo is a shared hook so the TopBar badge and the Settings page
 // read from the same cached query. The check hits GitHub at most every few
@@ -125,7 +127,9 @@ export function UpdateNotification() {
 
           {data.changelog && (
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 [scrollbar-gutter:stable]" tabIndex={0} role="region" aria-label="Changelog">
-              <ChangelogMarkdown changelog={data.changelog} compact />
+              <Suspense fallback={null}>
+                <ChangelogMarkdown changelog={data.changelog} compact />
+              </Suspense>
             </div>
           )}
 
