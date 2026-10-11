@@ -20,6 +20,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/identity"
+	"github.com/mydisha/keirouter/backend/internal/limits"
 	"github.com/mydisha/keirouter/backend/internal/meter"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -35,8 +36,18 @@ type e2eHarness struct {
 	upstream *httptest.Server
 }
 
-func newE2E(t *testing.T, upstreamHandler http.HandlerFunc) *e2eHarness {
+// e2eOptions customizes the harness; the zero value matches production defaults.
+type e2eOptions struct {
+	cfg     config.Config
+	limiter *limits.Memory
+}
+
+func newE2E(t *testing.T, upstreamHandler http.HandlerFunc, opts ...func(*e2eOptions)) *e2eHarness {
 	t.Helper()
+	o := e2eOptions{cfg: config.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ctx := context.Background()
 
 	// Fake upstream provider.
@@ -84,15 +95,20 @@ func newE2E(t *testing.T, upstreamHandler http.HandlerFunc) *e2eHarness {
 	disp := dispatch.New(connRegistry, db.Accounts(), v)
 	mtr := meter.New(db.Usage(), nil, nil)
 	bud := budget.New(db.Budgets(), db.Usage())
-	pipe := pipeline.New(pipeline.Deps{Dispatcher: disp, Meter: mtr, Budget: bud})
-
-	gw := New(Deps{
-		Config:   config.Default(),
+	pipeDeps := pipeline.Deps{Dispatcher: disp, Meter: mtr, Budget: bud}
+	gwDeps := Deps{
+		Config:   o.cfg,
 		Identity: idSvc,
-		Pipeline: pipe,
+		Pipeline: nil,
 		Chains:   db.Chains(),
 		Codecs:   transform.DefaultRegistry(),
-	})
+	}
+	if o.limiter != nil {
+		pipeDeps.Limiter = o.limiter
+		gwDeps.RateLimiter = o.limiter
+	}
+	gwDeps.Pipeline = pipeline.New(pipeDeps)
+	gw := New(gwDeps)
 
 	srv := httptest.NewServer(gw.Handler())
 	t.Cleanup(srv.Close)

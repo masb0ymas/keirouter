@@ -108,7 +108,7 @@ export function KeyPortalPage() {
           <p className="mt-1 text-[13px] text-fg-muted">{msg}</p>
           <p className="mt-1 text-[13px] text-fg-muted">Check the key is still active, or ask for a new link.</p>
         </div>
-        <div className="mt-6 flex gap-2">
+        <div className="mt-6 flex flex-col gap-2 sm:flex-row">
           <Button variant="ghost" className="flex-1" onClick={() => refetch()}>
             Try again
           </Button>
@@ -200,7 +200,7 @@ export function KeyPortalPage() {
 
       {canPlay ? (
         <>
-          <div className="mb-5 flex gap-1 border-b border-line" role="tablist" aria-label="Portal sections" onKeyDown={onTabKeyDown}>
+          <div className="mb-5 flex gap-1 overflow-x-auto border-b border-line [scrollbar-width:none]" role="tablist" aria-label="Portal sections" onKeyDown={onTabKeyDown}>
             {PORTAL_TABS.map(({ value, label }) => {
               const active = tab === value;
               return (
@@ -214,7 +214,7 @@ export function KeyPortalPage() {
                   tabIndex={active ? 0 : -1}
                   onClick={() => setTab(value)}
                   className={cn(
-                    "relative -mb-px inline-flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium transition-colors",
+                    "relative -mb-px inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors",
                     FOCUS_RING,
                     active ? "text-fg" : "text-fg-muted hover:text-fg",
                   )}
@@ -611,8 +611,8 @@ function LimitsCard({ budgets, allowedModels }: { budgets: Budget[]; allowedMode
                 >
                   <div className={cn("h-full rounded-full", tone === "bad" ? "bg-bad" : tone === "warn" ? "bg-warn" : "bg-accent-500")} style={{ width: `${pct}%` }} />
                 </div>
-                <div className="flex justify-between gap-2 text-[12px] tabular-nums text-fg-muted">
-                  <span className="truncate">
+                <div className="flex flex-wrap justify-between gap-x-2 gap-y-0.5 text-[12px] tabular-nums text-fg-muted">
+                  <span className="min-w-0">
                     <span className="text-fg">{r.used}</span> of {r.limit} · {r.left}
                   </span>
                   <span className="shrink-0" title={reset ? reset.toLocaleString() : undefined}>
@@ -633,13 +633,15 @@ function LimitsCard({ budgets, allowedModels }: { budgets: Budget[]; allowedMode
         {allowedModels.length === 0 ? (
           <p className="mt-1 text-[12.5px] text-fg-muted">Every model is allowed.</p>
         ) : (
-          <ul className="mt-2 flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
-            {allowedModels.map((m) => (
-              <li key={m} className="inline-flex h-6 items-center rounded-md border border-line bg-subtle px-2 font-mono text-[12px] text-fg">
-                {m}
-              </li>
-            ))}
-          </ul>
+          <div tabIndex={0} role="region" aria-label="Allowed models" className={cn("mt-2 max-h-40 overflow-y-auto rounded-md", FOCUS_RING)}>
+            <ul className="flex flex-wrap gap-1.5">
+              {allowedModels.map((m) => (
+                <li key={m} className="inline-flex min-h-6 max-w-full items-center break-all rounded-md border border-line bg-subtle px-2 py-0.5 font-mono text-[12px] text-fg">
+                  {m}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     </Panel>
@@ -669,7 +671,43 @@ function ModelsCard({ models }: { models: ModelRow[] }) {
       {sorted.length === 0 ? (
         <PanelEmpty icon={ICONS.model} title="No model usage in this period" />
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        {/* Phones: one card per model, cost on the right. */}
+        <ul className="divide-y divide-line md:hidden" aria-label="Usage by model">
+          {sorted.map((m, i) => {
+            const share = totals.requests ? (m.total_requests / totals.requests) * 100 : 0;
+            const avg = m.total_requests ? Math.round((m.prompt_tokens + m.completion_tokens) / m.total_requests) : 0;
+            return (
+              <li key={i} className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <ModelCell provider={m.provider} model={m.model} />
+                  </div>
+                  <span className={cn("shrink-0 text-[13px] font-medium tabular-nums", m.cost_usd > 0 ? "text-fg" : "text-fg-muted")}>{fmtUSD(m.cost_usd)}</span>
+                </div>
+                <div className="mt-2 flex items-center gap-2.5 text-[12px] tabular-nums">
+                  <span className="shrink-0 text-fg">{fmtInt(m.total_requests)} requests</span>
+                  <div className="h-1.5 min-w-[48px] flex-1 overflow-hidden rounded-full bg-track" aria-hidden="true">
+                    <div className="h-full rounded-full bg-accent-500" style={{ width: `${Math.max(share, 2)}%` }} />
+                  </div>
+                  <span className="w-9 shrink-0 text-right text-fg-muted">{share.toFixed(0)}%</span>
+                </div>
+                <p className="mt-1 text-[12px] tabular-nums text-fg-muted">
+                  {fmtTokens(m.prompt_tokens)} in · {fmtTokens(m.completion_tokens)} out · {fmtTokens(avg)} avg / request
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+        {sorted.length > 1 && (
+          <p className="flex items-baseline justify-between gap-3 border-t border-line bg-subtle px-4 py-2.5 text-[12.5px] tabular-nums md:hidden">
+            <span className="font-medium text-fg">Total</span>
+            <span className="text-fg-muted">
+              {fmtInt(totals.requests)} requests · <span className="font-medium text-fg">{fmtUSD(totals.cost)}</span>
+            </span>
+          </p>
+        )}
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[720px] text-[13px]">
             <thead>
               <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -721,6 +759,7 @@ function ModelsCard({ models }: { models: ModelRow[] }) {
             )}
           </table>
         </div>
+        </>
       )}
     </Panel>
   );
@@ -749,7 +788,39 @@ function RecentRequestsCard({ recent }: { recent: PortalRecentRequest[] }) {
         <PanelEmpty icon={ICONS.console} title="No requests in this period" />
       ) : (
         <>
-          <div className="overflow-x-auto">
+          {/* Phones: one card per request. */}
+          <ul className="divide-y divide-line md:hidden" aria-label="Recent requests">
+            {paged.map((r) => {
+              const opts = r.optimizations ?? [];
+              const rel = relTime(r.created_at);
+              return (
+                <li key={r.id} className="px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <ModelCell provider={r.provider} model={r.model} />
+                    </div>
+                    <span className="shrink-0 text-[13px] tabular-nums text-fg">{fmtUSD(r.cost_usd)}</span>
+                  </div>
+                  <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">
+                    <time dateTime={r.created_at} className="font-mono text-fg">{formatDateTime(r.created_at)}</time>
+                    {rel !== "—" && <> · {rel} ago</>}
+                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] tabular-nums text-fg-muted">
+                    <span>
+                      {fmtTokens(r.prompt_tokens)} → {fmtTokens(r.completion_tokens)} tokens
+                      {r.latency_ms > 0 && <> · {r.latency_ms}ms</>}
+                      {r.latency_ms > 0 && r.ttft_ms ? <> · first token {r.ttft_ms}ms</> : null}
+                    </span>
+                    {r.latency_ms <= 0 && r.cache_hit && <Badge>Cache</Badge>}
+                    {opts.map((opt) => (
+                      <Badge key={opt} title={optDetail(r, opt)}>{opt}</Badge>
+                    ))}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[820px] text-[12.5px]">
               <thead>
                 <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -878,9 +949,9 @@ function PlaygroundSection({
             placeholder="Enter your message…"
           />
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <p id={`${uid}-note`} className="text-[12px] text-fg-muted">Counts toward this key's usage.</p>
-          <Button type="submit" disabled={!selectedModel || !testPrompt.trim() || isTesting}>
+          <Button type="submit" className="w-full sm:w-auto" disabled={!selectedModel || !testPrompt.trim() || isTesting}>
             {isTesting ? <><Loader2 className="animate-spin" aria-hidden="true" /> Sending…</> : <><Send aria-hidden="true" /> Send request</>}
           </Button>
         </div>
@@ -894,10 +965,10 @@ function PlaygroundSection({
               {testResponse.error ? <Badge tone="danger">Error</Badge> : testResponse.model && <span className="font-mono text-[12px] text-fg-muted">{testResponse.model}</span>}
             </div>
             {testResponse.error ? (
-              <p className="text-[13px] text-bad">{testResponse.error}</p>
+              <p className="break-words text-[13px] text-bad">{testResponse.error}</p>
             ) : (
               <>
-                <div className="whitespace-pre-wrap rounded-lg border border-line bg-surface px-3 py-2.5 text-[13px] leading-relaxed text-fg">
+                <div className="whitespace-pre-wrap break-words rounded-lg border border-line bg-surface px-3 py-2.5 text-[13px] leading-relaxed text-fg">
                   {testResponse.choices?.[0]?.message?.content || "No response content"}
                 </div>
                 {testResponse.usage && (

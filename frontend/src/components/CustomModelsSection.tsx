@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Trash2, Check, Search, Copy, X, MoreHorizontal } from "lucide-react";
 
 import { api, type CustomModel, type CustomModelInput, type Provider } from "../lib/api";
-import { Card, Button, Field, IconTile, Input, Select, Modal, SectionTitle, TablePagination } from "./ui";
+import { Card, Button, Field, IconTile, Input, Select, Modal, ModalFooter, SectionTitle, TablePagination } from "./ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "./ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -170,7 +170,21 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
               No custom models match “{searchQuery}”.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            {/* Phones: one stacked card per model; md+: the table. */}
+            <ul className="divide-y divide-line md:hidden" aria-label="Custom models">
+              {paginatedModels.map((m) => (
+                <CustomModelCard
+                  key={m.db_id}
+                  model={m}
+                  provider={provider}
+                  onEdit={() => openEdit(m)}
+                  onDelete={() => removeModel(m)}
+                  deleting={deleteMut.isPending && deleteMut.variables === m.db_id}
+                />
+              ))}
+            </ul>
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[640px] text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -195,6 +209,7 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
                 </tbody>
               </table>
             </div>
+            </>
           )}
           <TablePagination page={page} pages={totalPages} total={filteredModels.length} onPage={setPage} label="Custom models pages" />
         </>
@@ -220,25 +235,20 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
   );
 }
 
-// CustomModelRow renders one custom model as a dense table row.
-function CustomModelRow({
-  model: m,
-  provider,
-  onEdit,
-  onDelete,
-  deleting,
-}: {
+interface CustomModelItemProps {
   model: CustomModel;
   provider: Provider;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
-}) {
+}
+
+// useModelPathCopy copies "<provider alias>/<model id>" with a toast and a
+// short-lived check mark.
+function useModelPathCopy(fullModel: string) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
-  const fullModel = `${provider.alias || provider.id}/${m.id}`;
-
-  const handleCopy = () => {
+  const copy = () => {
     navigator.clipboard
       .writeText(fullModel)
       .then(() => {
@@ -248,8 +258,58 @@ function CustomModelRow({
       })
       .catch(() => toast.error("Couldn't copy", "Your browser blocked clipboard access."));
   };
+  return { copied, copy };
+}
 
-  const hasPrice = m.input_per_m > 0 || m.output_per_m > 0;
+const fullModelPath = (provider: Provider, m: CustomModel) => `${provider.alias || provider.id}/${m.id}`;
+
+// CustomModelActions is the copy button + row menu shared by the table row
+// and the mobile card. Buttons are 32px with a mouse, 36px on touch.
+function CustomModelActions({ model: m, provider, onEdit, onDelete, deleting }: CustomModelItemProps) {
+  const fullModel = fullModelPath(provider, m);
+  const { copied, copy } = useModelPathCopy(fullModel);
+  const iconBtn =
+    "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9";
+  return (
+    <div className="flex items-center justify-end gap-0.5 [@media(pointer:coarse)]:gap-2">
+      <button
+        type="button"
+        onClick={copy}
+        className={`${iconBtn} text-fg-faint`}
+        title="Copy model path"
+        aria-label={`Copy model path ${fullModel}`}
+      >
+        {copied ? <Check className="h-4 w-4 text-ok" strokeWidth={1.75} aria-hidden="true" /> : <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger aria-label={`Actions for ${m.name || m.id}`} className={`${iconBtn} text-fg-muted`}>
+          <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={onEdit}>
+            <Pencil />
+            Edit model
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem tone="danger" onSelect={onDelete} disabled={deleting}>
+            <Trash2 />
+            Remove model
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function priceText(m: CustomModel): string | null {
+  return m.input_per_m > 0 || m.output_per_m > 0 ? `$${m.input_per_m} / $${m.output_per_m}` : null;
+}
+
+// CustomModelRow renders one custom model as a dense table row (md+).
+function CustomModelRow(props: CustomModelItemProps) {
+  const { model: m, provider, deleting } = props;
+  const fullModel = fullModelPath(provider, m);
+  const price = priceText(m);
 
   return (
     <tr className={`transition-colors hover:bg-hover ${deleting ? "opacity-50" : ""}`} aria-busy={deleting || undefined}>
@@ -258,49 +318,60 @@ function CustomModelRow({
         <p className="truncate font-mono text-[12px] text-fg-muted" title={fullModel}>{fullModel}</p>
       </td>
       <td className="px-4 py-2.5">
-        <span className="inline-flex h-5 items-center rounded-md border border-line bg-subtle px-1.5 font-mono text-[11.5px] text-fg-muted">
-          {m.kind || "model"}
-        </span>
+        <KindChip kind={m.kind} />
       </td>
       <td className="px-4 py-2.5 text-right tabular-nums text-fg-muted">
         {m.context_window > 0 ? m.context_window.toLocaleString() : <span className="text-fg-faint">—</span>}
       </td>
       <td className="px-4 py-2.5 text-right tabular-nums text-fg-muted">
-        {hasPrice ? `$${m.input_per_m} / $${m.output_per_m}` : <span className="text-fg-faint">—</span>}
+        {price ?? <span className="text-fg-faint">—</span>}
       </td>
       <td className="px-3 py-2.5">
-        <div className="flex items-center justify-end gap-0.5">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-            title="Copy model path"
-            aria-label={`Copy model path ${fullModel}`}
-          >
-            {copied ? <Check className="h-4 w-4 text-ok" strokeWidth={1.75} aria-hidden="true" /> : <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
-          </button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label={`Actions for ${m.name || m.id}`}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-            >
-              <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={onEdit}>
-                <Pencil />
-                Edit model
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem tone="danger" onSelect={onDelete} disabled={deleting}>
-                <Trash2 />
-                Remove model
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        <CustomModelActions {...props} />
       </td>
     </tr>
+  );
+}
+
+// CustomModelCard is the phone layout of a row: name + actions, the routable
+// path, then kind / context / price as one meta line.
+function CustomModelCard(props: CustomModelItemProps) {
+  const { model: m, provider, deleting } = props;
+  const fullModel = fullModelPath(provider, m);
+  const price = priceText(m);
+  const facts = [
+    m.context_window > 0 ? `${m.context_window.toLocaleString()} context` : null,
+    price ? `${price} per 1M` : null,
+  ].filter(Boolean);
+  return (
+    <li className={`px-4 py-3 ${deleting ? "opacity-50" : ""}`} aria-busy={deleting || undefined}>
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[13px] font-medium text-fg" title={m.name || m.id}>{m.name || m.id}</p>
+          <p className="break-all font-mono text-[12px] text-fg-muted">{fullModel}</p>
+          <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] tabular-nums text-fg-muted">
+            <KindChip kind={m.kind} />
+            {facts.map((f) => (
+              <span key={f}>
+                <span className="text-fg-faint" aria-hidden="true">· </span>
+                {f}
+              </span>
+            ))}
+          </p>
+        </div>
+        <div className="-mr-1.5 shrink-0">
+          <CustomModelActions {...props} />
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function KindChip({ kind }: { kind?: string }) {
+  return (
+    <span className="inline-flex h-5 items-center rounded-md border border-line bg-subtle px-1.5 font-mono text-[11.5px] text-fg-muted">
+      {kind || "model"}
+    </span>
   );
 }
 
@@ -380,7 +451,7 @@ function CustomModelModal({
           <Field label="Display name" optional>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Friendly label" />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Kind">
               <Select value={kind} onChange={(e) => setKind(e.target.value)}>
                 {MODEL_KINDS.map((k) => (
@@ -401,7 +472,7 @@ function CustomModelModal({
               />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Input $ per 1M tokens" optional>
               <Input
                 type="number"
@@ -426,14 +497,14 @@ function CustomModelModal({
             </Field>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
+        <ModalFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button type="submit" disabled={!canSubmit}>
             {editing ? "Save changes" : "Add model"}
           </Button>
-        </div>
+        </ModalFooter>
       </form>
     </Modal>
   );

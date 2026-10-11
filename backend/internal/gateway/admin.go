@@ -105,6 +105,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Delete("/models/disabled", s.adminEnableModels)
 
 	r.Get("/settings/endpoint", s.adminGetEndpointSettings)
+	r.Get("/settings/limits/status", s.adminLimitsStatus)
 	r.Post("/settings/endpoint", s.adminUpdateEndpointSettings)
 	r.Post("/settings/headroom-test", s.adminTestHeadroom)
 	r.Get("/settings/access", s.adminGetAccessSettings)
@@ -149,6 +150,9 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	// Guardrails (content safety policies + audit log).
 	s.mountGuardrails(r)
+
+	// Administrative audit trail.
+	s.mountAudit(r)
 }
 
 const adminTenant = store.DefaultTenantID
@@ -3046,22 +3050,17 @@ func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate proxy URL syntax only — proxy URLs are admin-configured trusted
-	// infrastructure, so SSRF restrictions (which guard outbound target URLs)
-	// do not apply here. Localhost proxies (Clash, V2Ray, etc.) are expected.
-	parsed, err := url.Parse(body.ProxyURL)
-	if err != nil || parsed.Host == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: " + err.Error()})
+	// Apply the same policy as saving the setting, so a proxy that tests OK
+	// can always be saved.
+	if msg := outboundProxyURLError(body.ProxyURL); msg != "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": msg})
 		return
 	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" && scheme != "socks5" {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "unsupported proxy scheme: " + parsed.Scheme})
-		return
-	}
+	parsed, _ := url.Parse(body.ProxyURL)
 
 	start := time.Now()
-	transport := &http.Transport{Proxy: http.ProxyURL(parsed)}
+	transport := &http.Transport{Proxy: http.ProxyURL(parsed), DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://httpbin.org/ip", nil)
 	if err != nil {

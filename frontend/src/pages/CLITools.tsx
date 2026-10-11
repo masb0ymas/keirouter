@@ -1,29 +1,14 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { RefreshCw } from "lucide-react";
 import { api, type CLITool } from "../lib/api";
+import { cliConnection, cliConnectionRank, cliToolMeta, detectedViaLabel } from "../lib/cliTools";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { Badge, ErrorBanner, IconTile, SectionTitle, Skeleton } from "../components/ui";
+import { Badge, Button, ErrorBanner, IconTile, SectionTitle, Skeleton } from "../components/ui";
 import { ICONS } from "../lib/icons";
-
-// Tool metadata — descriptions and logos (bundled /providers/*.png assets).
-const toolMeta: Record<string, { description: string; image: string }> = {
-  claude:       { description: "Anthropic's CLI coding agent", image: "/providers/claude.png" },
-  codex:        { description: "OpenAI Codex CLI", image: "/providers/codex.png" },
-  cline:        { description: "VS Code AI coding assistant", image: "/providers/cline.png" },
-  copilot:      { description: "GitHub Copilot Chat", image: "/providers/copilot.png" },
-  droid:        { description: "Factory Droid CLI", image: "/providers/droid.png" },
-  openclaw:     { description: "OpenClaw agent framework", image: "/providers/openclaw.png" },
-  opencode:     { description: "OpenCode multi-model agent", image: "/providers/opencode.png" },
-  kilo:         { description: "Kilo Code AI assistant", image: "/providers/kilocode.png" },
-  hermes:       { description: "Hermes Agent CLI", image: "/providers/hermes.png" },
-  deepseek:     { description: "DeepSeek TUI", image: "/providers/deepseek-tui.png" },
-  jcode:        { description: "jcode coding agent", image: "/providers/jcode.png" },
-};
-
-// Connected tools first, then installed-but-unconfigured, then the rest.
-const statusRank = (t: CLITool) => (t.configured ? 0 : t.installed ? 1 : 2);
+import { cn } from "@/lib/utils";
 
 export function CLIToolsPage() {
   const tools = useQuery({
@@ -32,21 +17,38 @@ export function CLIToolsPage() {
   });
 
   const list = useMemo(
-    () => [...(tools.data?.tools ?? [])].sort((a, b) => statusRank(a) - statusRank(b)),
+    () =>
+      [...(tools.data?.tools ?? [])].sort(
+        (a, b) => cliConnectionRank[cliConnection(a).kind] - cliConnectionRank[cliConnection(b).kind] || a.name.localeCompare(b.name),
+      ),
     [tools.data],
   );
-  const connected = list.filter((t) => t.configured).length;
+  const counts = useMemo(() => {
+    const c = { connected: 0, attention: 0, ready: 0, missing: 0 };
+    for (const t of list) c[cliConnection(t).kind]++;
+    return c;
+  }, [list]);
+  const rescanning = tools.isFetching && !tools.isLoading;
 
   return (
     <>
-      <PageHeader title="CLI tools" description="Point your coding tools at this gateway." />
+      <PageHeader
+        title="CLI tools"
+        description="Point your coding tools at this gateway."
+        action={
+          <Button variant="secondary" onClick={() => tools.refetch()} disabled={tools.isFetching} aria-label="Scan this machine for CLI tools again">
+            <RefreshCw className={cn(rescanning && "animate-spin")} strokeWidth={1.75} aria-hidden="true" />
+            {rescanning ? "Scanning…" : "Rescan"}
+          </Button>
+        }
+      />
 
       {tools.isLoading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading CLI tools">
           <Skeleton className="h-4 w-56" />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-[68px] rounded-2xl" />
+              <Skeleton key={i} className="h-[84px] rounded-2xl" />
             ))}
           </div>
         </div>
@@ -63,7 +65,7 @@ export function CLIToolsPage() {
           </p>
         </div>
       ) : (
-        <section aria-labelledby="cli-tools-heading">
+        <section aria-labelledby="cli-tools-heading" aria-busy={rescanning}>
           <div className="mb-3">
             <SectionTitle
               id="cli-tools-heading"
@@ -71,7 +73,9 @@ export function CLIToolsPage() {
               title="Tools"
               subtitle={
                 <span className="tabular-nums">
-                  {connected} of {list.length} connected
+                  {counts.connected} of {list.length} connected
+                  {counts.attention > 0 && <span className="text-warn"> · {counts.attention} need attention</span>}
+                  {counts.ready > 0 && <> · {counts.ready} installed, not configured</>}
                 </span>
               }
             />
@@ -90,30 +94,38 @@ export function CLIToolsPage() {
 }
 
 function ToolCard({ tool: t }: { tool: CLITool }) {
+  const conn = cliConnection(t);
+  const meta = cliToolMeta[t.id];
+  const via = detectedViaLabel(t);
+  // Second line: the problem when there is one, else what was detected.
+  const facts = [t.version && `v${t.version}`, via, t.settings?.model].filter(Boolean).join(" · ");
   return (
     <Link
       to={`/cli-tools/${t.id}`}
-      className="group flex h-full items-start gap-3 rounded-2xl border border-line bg-surface px-3.5 py-3 transition-colors hover:border-line-strong hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+      className={cn(
+        "group flex h-full items-start gap-3 rounded-2xl border bg-surface px-3.5 py-3 transition-colors hover:border-line-strong hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+        conn.kind === "attention" ? "border-warn/35" : "border-line",
+      )}
     >
-      <ProviderLogo icon={toolMeta[t.id]?.image} name={t.name} size={28} className="mt-0.5" />
+      <ProviderLogo icon={meta?.image} name={t.name} size={28} className="mt-0.5" />
       <span className="min-w-0 flex-1">
         <span className="flex items-center justify-between gap-2">
           <span className="truncate text-[13px] font-medium text-fg">{t.name}</span>
-          <ToolStatus installed={t.installed} configured={t.configured} />
+          <Badge tone={conn.tone}>{conn.label}</Badge>
         </span>
-        <span className="mt-0.5 block truncate text-[12px] text-fg-muted">
-          {toolMeta[t.id]?.description ?? t.dialect}
-        </span>
+        <span className="mt-0.5 block truncate text-[12px] text-fg-muted">{meta?.description ?? t.dialect}</span>
+        {conn.kind === "attention" ? (
+          <span className="mt-1 block truncate text-[12px] text-warn" title={conn.detail}>
+            {conn.detail}
+          </span>
+        ) : (
+          facts && (
+            <span className="mt-1 block truncate font-mono text-[11.5px] text-fg-faint" title={t.binary_path || t.extension || t.config_path}>
+              {facts}
+            </span>
+          )
+        )}
       </span>
     </Link>
   );
-}
-
-function ToolStatus({ installed, configured }: { installed: boolean; configured: boolean }) {
-  const s = configured
-    ? { tone: "success" as const, label: "Connected" }
-    : installed
-      ? { tone: "warning" as const, label: "Not configured" }
-      : { tone: "neutral" as const, label: "Not installed" };
-  return <Badge tone={s.tone}>{s.label}</Badge>;
 }

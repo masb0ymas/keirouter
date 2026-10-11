@@ -69,7 +69,7 @@ function StrategyRadios({ value, onChange, labelledBy, describedBy }: {
       aria-labelledby={labelledBy}
       aria-describedby={describedBy}
       onKeyDown={onKeyDown}
-      className="inline-flex max-w-full flex-wrap rounded-xl border border-line bg-subtle p-0.5"
+      className="grid grid-cols-2 gap-0.5 rounded-xl border border-line bg-subtle p-0.5 sm:inline-flex sm:max-w-full sm:flex-wrap sm:gap-0"
     >
       {strategyOptions.map((option) => {
         const active = option.value === value;
@@ -83,7 +83,7 @@ function StrategyRadios({ value, onChange, labelledBy, describedBy }: {
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option.value)}
             className={cn(
-              "inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12.5px] font-medium transition-colors",
+              "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-medium transition-colors sm:h-8 sm:justify-start",
               focusRing,
               active ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
             )}
@@ -97,7 +97,7 @@ function StrategyRadios({ value, onChange, labelledBy, describedBy }: {
   );
 }
 
-const iconButton = cn("flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-30", focusRing);
+const iconButton = cn("flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-30 sm:h-8 sm:w-8", focusRing);
 
 function EditorSkeleton() {
   return (
@@ -158,6 +158,21 @@ export function ChainEditorPage() {
     (preferred && !preferred.disabled ? preferred : other)?.focus();
     setPendingFocus(null);
   }, [pendingFocus, steps]);
+
+  // The sticky save bar must never hide the focused field (WCAG 2.4.11) or the
+  // last rows: reserve its height as scroll padding on the page scroller.
+  const saveBarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const bar = saveBarRef.current;
+    const scroller = document.getElementById("main");
+    if (!bar || !scroller) return;
+    const previous = scroller.style.scrollPaddingBottom;
+    const sync = () => { scroller.style.scrollPaddingBottom = `${bar.offsetHeight + 24}px`; };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(bar);
+    return () => { observer.disconnect(); scroller.style.scrollPaddingBottom = previous; };
+  }, [hydrated, chainsQuery.isLoading]);
 
   const completeSteps = steps.filter((step) => step.provider && step.model);
   const incompleteSteps = steps.some((step) => !step.provider || !step.model);
@@ -346,7 +361,7 @@ export function ChainEditorPage() {
                 const position = `step ${index + 1} of ${steps.length}`;
                 const model = step.model ? `, ${step.model}` : "";
                 return (
-                  <li key={step.id} className="flex items-center gap-2.5 px-4 py-2.5" onKeyDown={(event) => onStepKeyDown(event, index)}>
+                  <li key={step.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-2 px-4 py-2.5 sm:flex-nowrap" onKeyDown={(event) => onStepKeyDown(event, index)}>
                     <span aria-hidden="true"><StepNumber n={index + 1} /></span>
                     <div className="min-w-0 flex-1">
                       <ChainModelPicker
@@ -359,7 +374,7 @@ export function ChainEditorPage() {
                         describedBy={stepsError ? "chain-steps-error" : undefined}
                       />
                     </div>
-                    <div className="flex shrink-0 items-center">
+                    <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto sm:gap-0">
                       <button
                         type="button"
                         ref={(element) => { const entry = moveButtons.current.get(step.id) ?? { up: null, down: null }; entry.up = element; moveButtons.current.set(step.id, entry); }}
@@ -452,7 +467,7 @@ export function ChainEditorPage() {
                 type="button"
                 onClick={copyTarget}
                 disabled={!trimmedName}
-                className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40", focusRing)}
+                className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40 sm:h-8 sm:w-8", focusRing)}
                 aria-label={`Copy model target ${target}`}
                 title="Copy model target"
               >
@@ -463,14 +478,14 @@ export function ChainEditorPage() {
         </aside>
       </div>
 
-      <div className="sticky bottom-4 z-20 mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-subtle px-5 py-3 shadow-[var(--shadow-float)]">
-        <span className="mr-auto flex min-w-0 items-center gap-1.5 text-[12.5px]" role="status">
+      <div ref={saveBarRef} className="sticky bottom-4 z-20 mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-subtle px-4 py-3 shadow-[var(--shadow-float)] sm:px-5">
+        <span className="flex w-full min-w-0 items-center gap-1.5 text-[12.5px] sm:mr-auto sm:w-auto sm:flex-1" role="status">
           {saveMutation.isPending ? (
             <span className="text-fg-muted">Saving…</span>
           ) : !valid && dirty ? (
             <>
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" strokeWidth={1.75} aria-hidden="true" />
-              <span className="truncate text-fg-muted">{validationMessage}</span>
+              <span className="text-fg-muted sm:truncate">{validationMessage}</span>
             </>
           ) : dirty ? (
             <span className="text-fg">Unsaved changes</span>
@@ -479,9 +494,9 @@ export function ChainEditorPage() {
           )}
         </span>
         {dirty && !saveMutation.isPending && (
-          <Button variant="ghost" onClick={discard}>Discard</Button>
+          <Button variant="ghost" onClick={discard} className="flex-1 sm:flex-none">Discard</Button>
         )}
-        <Button onClick={() => saveMutation.mutate()} disabled={!valid || saveMutation.isPending} aria-busy={saveMutation.isPending || undefined}>
+        <Button onClick={() => saveMutation.mutate()} disabled={!valid || saveMutation.isPending} aria-busy={saveMutation.isPending || undefined} className="flex-1 sm:flex-none">
           {saveMutation.isPending && <Loader2 className="animate-spin" aria-hidden="true" />}
           {isEdit ? "Save changes" : "Create chain"}
         </Button>

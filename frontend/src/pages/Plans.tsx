@@ -386,12 +386,31 @@ function PanelSkeleton() {
   );
 }
 
-function RowMenu({ label, editLabel, deleteLabel, onEdit, onDelete }: { label: string; editLabel: string; deleteLabel: string; onEdit: () => void; onDelete: () => void }) {
+/** Edit / delete menu shared by the desktop table row and the phone card. */
+function RowMenu({
+  label,
+  editLabel,
+  deleteLabel,
+  onEdit,
+  onDelete,
+  touch = false,
+}: {
+  label: string;
+  editLabel: string;
+  deleteLabel: string;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** 36px target for the phone card layout. */
+  touch?: boolean;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={label}
-        className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+        className={cn(
+          "flex shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+          touch ? "h-9 w-9" : "h-8 w-8",
+        )}
       >
         <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
       </DropdownMenuTrigger>
@@ -411,6 +430,25 @@ function RowMenu({ label, editLabel, deleteLabel, onEdit, onDelete }: { label: s
 }
 
 const thClass = "px-4 py-2 font-medium";
+
+/** Phone card list: one <li> per row, shown below md instead of the table. */
+const cardListClass = "divide-y divide-line md:hidden";
+
+/** Budget, rate and model summaries for a plan, shared by its table row and phone card. */
+function planFacts(p: Plan) {
+  const models = p.allowed_models ?? [];
+  return {
+    models,
+    modelsLabel: models.length > 0 ? `${models.length} model${models.length === 1 ? "" : "s"}` : "All models",
+    period: periodLabels[p.period] ?? p.period,
+    budgetParts: [p.limit_micros > 0 ? microsToUSD(p.limit_micros) : "", p.limit_tokens > 0 ? `${formatTokens(p.limit_tokens)} tokens` : ""].filter(Boolean),
+    rateParts: [
+      p.rpm_limit > 0 ? `${p.rpm_limit.toLocaleString()} rpm` : "",
+      p.tpm_limit > 0 ? `${formatTokens(p.tpm_limit)} tpm` : "",
+      p.concurrency_limit > 0 ? `${p.concurrency_limit.toLocaleString()} concurrent` : "",
+    ].filter(Boolean),
+  };
+}
 
 // ── Plans tab ────────────────────────────────────────────────────────────────
 
@@ -463,7 +501,12 @@ function PlansPanel({
         <div className="border-b border-line px-4 py-3">
           <SectionTitle icon={ICONS.plans} title="Plan templates" />
         </div>
-        <div className="overflow-x-auto">
+        <ul className={cardListClass} aria-label="Plans">
+          {plans.map((p) => (
+            <PlanCard key={p.id} plan={p} onEdit={() => onEdit(p)} onDelete={() => onDelete(p)} />
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[820px] text-[13px]">
             <caption className="sr-only">Plans</caption>
             <thead>
@@ -489,16 +532,52 @@ function PlansPanel({
   );
 }
 
+function PlanCard({ plan: p, onEdit, onDelete }: { plan: Plan; onEdit: () => void; onDelete: () => void }) {
+  const { models, modelsLabel, period, budgetParts, rateParts } = planFacts(p);
+  const meta = [budgetParts.length > 0 ? `${budgetParts.join(" · ")} per ${period}` : "Unlimited budget", ...rateParts, modelsLabel];
+
+  return (
+    <li className="px-4 py-3 text-[13px]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="block max-w-full truncate rounded text-left font-medium text-fg hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            title={p.name}
+            aria-label={`Edit plan ${p.name}`}
+          >
+            {p.name}
+          </button>
+          {p.description && (
+            <span className="block truncate text-[12px] text-fg-faint" title={p.description}>
+              {p.description}
+            </span>
+          )}
+        </div>
+        <span className="shrink-0">
+          <EnforcementBadge hardCutoff={p.hard_cutoff} />
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] tabular-nums text-fg-muted" title={models.length > 0 ? models.join("\n") : undefined}>
+        {meta.join(" · ")}
+      </p>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <span className="text-[12px] tabular-nums text-fg-faint">
+          <span className={p.key_count > 0 ? "text-fg" : undefined}>
+            {p.key_count.toLocaleString()} key{p.key_count === 1 ? "" : "s"}
+          </span>
+          {" · "}Alert at {p.alert_pct}%
+        </span>
+        <RowMenu touch label={`Actions for plan ${p.name}`} editLabel="Edit plan" deleteLabel="Delete plan" onEdit={onEdit} onDelete={onDelete} />
+      </div>
+    </li>
+  );
+}
+
 function PlanRow({ plan: p, onEdit, onDelete }: { plan: Plan; onEdit: () => void; onDelete: () => void }) {
-  const models = p.allowed_models ?? [];
-  const period = periodLabels[p.period] ?? p.period;
+  const { models, modelsLabel, period, budgetParts, rateParts } = planFacts(p);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
-  const budgetParts = [p.limit_micros > 0 ? microsToUSD(p.limit_micros) : "", p.limit_tokens > 0 ? `${formatTokens(p.limit_tokens)} tokens` : ""].filter(Boolean);
-  const rateParts = [
-    p.rpm_limit > 0 ? `${p.rpm_limit.toLocaleString()} rpm` : "",
-    p.tpm_limit > 0 ? `${formatTokens(p.tpm_limit)} tpm` : "",
-    p.concurrency_limit > 0 ? `${p.concurrency_limit.toLocaleString()} concurrent` : "",
-  ].filter(Boolean);
 
   return (
     <tr className="cursor-pointer transition-colors hover:bg-hover" onClick={onEdit}>
@@ -539,10 +618,10 @@ function PlanRow({ plan: p, onEdit, onDelete }: { plan: Plan; onEdit: () => void
       <td className="whitespace-nowrap px-4 py-2.5">
         {models.length > 0 ? (
           <span className="tabular-nums text-fg" title={models.join("\n")}>
-            {models.length} model{models.length === 1 ? "" : "s"}
+            {modelsLabel}
           </span>
         ) : (
-          <span className="text-fg-faint">All models</span>
+          <span className="text-fg-faint">{modelsLabel}</span>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-2.5">
@@ -699,7 +778,12 @@ function BudgetsPanel({
             action={scopeFilter}
           />
         </div>
-        <div className="overflow-x-auto">
+        <ul className={cardListClass} aria-label="Budgets, closest to their limit first">
+          {visible.map((b) => (
+            <BudgetCard key={b.id} budget={b} onEdit={() => onEdit(b)} onDelete={() => deleteBudget(b)} />
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[820px] text-[13px]">
             <caption className="sr-only">Budgets, closest to their limit first</caption>
             <thead>
@@ -724,51 +808,112 @@ function BudgetsPanel({
   );
 }
 
-function BudgetRow({ budget: b, onEdit, onDelete }: { budget: BudgetStatus; onEdit: () => void; onDelete: () => void }) {
+/** Usage numbers for a budget, shared by its table row and phone card. */
+function budgetView(b: BudgetStatus) {
   const pct = usedPct(b);
   const over = pct >= 100;
   const warn = !over && pct >= b.alert_pct;
-  const fill = over ? "bg-bad" : warn ? "bg-warn" : "bg-accent-500";
   const parts: string[] = [];
   if (b.limit_micros > 0) parts.push(`${formatSpendUSD(b.spent_micros / 1e6)} of ${microsToUSD(b.limit_micros)}`);
   if (b.limit_tokens > 0) parts.push(`${formatTokens(b.spent_tokens)} of ${formatTokens(b.limit_tokens)} tokens`);
   const period = periodLabels[b.period] ?? b.period;
-  const name = budgetName(b);
+  return {
+    pct,
+    over,
+    warn,
+    fill: over ? "bg-bad" : warn ? "bg-warn" : "bg-accent-500",
+    pctText: over ? "text-bad" : warn ? "text-warn" : "text-fg",
+    usage: parts.join(" · ") || "No limit",
+    periodLabel: b.period === "total" ? "All time" : `Per ${period}`,
+    resets: b.resets_at ? `Resets ${relativeFuture(b.resets_at)}` : "Never resets",
+    resetsTitle: b.resets_at ? new Date(b.resets_at).toLocaleString() : undefined,
+    name: budgetName(b),
+  };
+}
+
+/** Scope name: keys link to their detail page, projects show their id in mono. */
+function BudgetScopeName({ budget: b, name }: { budget: BudgetStatus; name: string }) {
+  if (b.scope_kind === "api_key" && b.scope_id) {
+    return (
+      <Link to={`/keys/${b.scope_id}`} className="block truncate font-medium text-fg hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500" title={name}>
+        {name}
+      </Link>
+    );
+  }
+  return (
+    <span className={cn("block truncate font-medium text-fg", b.scope_kind === "project" && "font-mono text-[12.5px]")} title={name}>
+      {name}
+    </span>
+  );
+}
+
+function BudgetBar({ pct, fill, name }: { pct: number; fill: string; name: string }) {
+  return (
+    <div
+      className="h-1.5 overflow-hidden rounded-full bg-track"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(Math.min(100, pct))}
+      aria-label={`${name} budget used`}
+    >
+      <div className={cn("h-full rounded-full", fill)} style={{ width: `${Math.min(100, pct)}%` }} />
+    </div>
+  );
+}
+
+function BudgetCard({ budget: b, onEdit, onDelete }: { budget: BudgetStatus; onEdit: () => void; onDelete: () => void }) {
+  const v = budgetView(b);
+
+  return (
+    <li className="px-4 py-3 text-[13px]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <BudgetScopeName budget={b} name={v.name} />
+          <span className="block text-[12px] text-fg-faint">{scopeLabels[b.scope_kind] ?? b.scope_kind}</span>
+        </div>
+        <span className="shrink-0">
+          <EnforcementBadge hardCutoff={b.hard_cutoff} blocking={v.over} />
+        </span>
+      </div>
+      <div className="mt-2.5 flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <BudgetBar pct={v.pct} fill={v.fill} name={v.name} />
+        </div>
+        <span className={cn("w-11 shrink-0 text-right text-[13px] font-medium tabular-nums", v.pctText)}>{Math.round(v.pct)}%</span>
+      </div>
+      <p className="mt-1 text-[12px] tabular-nums text-fg-muted">{v.usage}</p>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <span className="min-w-0 text-[12px] tabular-nums text-fg-faint" title={v.resetsTitle}>
+          {v.periodLabel} · {v.resets} · Alert at {b.alert_pct}%
+        </span>
+        <RowMenu touch label={`Actions for ${v.name} budget`} editLabel="Edit budget" deleteLabel="Delete budget" onEdit={onEdit} onDelete={onDelete} />
+      </div>
+    </li>
+  );
+}
+
+function BudgetRow({ budget: b, onEdit, onDelete }: { budget: BudgetStatus; onEdit: () => void; onDelete: () => void }) {
+  const v = budgetView(b);
+  const { pct, over, name } = v;
 
   return (
     <tr className="transition-colors hover:bg-hover">
       <td className="max-w-[240px] px-4 py-2.5">
-        {b.scope_kind === "api_key" && b.scope_id ? (
-          <Link to={`/keys/${b.scope_id}`} className="block truncate font-medium text-fg hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500" title={name}>
-            {name}
-          </Link>
-        ) : (
-          <span className={cn("block truncate font-medium text-fg", b.scope_kind === "project" && "font-mono text-[12.5px]")} title={name}>
-            {name}
-          </span>
-        )}
+        <BudgetScopeName budget={b} name={name} />
         <span className="block text-[12px] text-fg-faint">{scopeLabels[b.scope_kind] ?? b.scope_kind}</span>
       </td>
       <td className="px-4 py-2.5">
-        <div
-          className="h-1.5 overflow-hidden rounded-full bg-track"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(Math.min(100, pct))}
-          aria-label={`${name} budget used`}
-        >
-          <div className={cn("h-full rounded-full", fill)} style={{ width: `${Math.min(100, pct)}%` }} />
-        </div>
-        <p className="mt-1 truncate text-[12px] tabular-nums text-fg-muted">{parts.join(" · ") || "No limit"}</p>
+        <BudgetBar pct={pct} fill={v.fill} name={name} />
+        <p className="mt-1 truncate text-[12px] tabular-nums text-fg-muted">{v.usage}</p>
       </td>
-      <td className={cn("whitespace-nowrap px-4 py-2.5 text-right font-medium tabular-nums", over ? "text-bad" : warn ? "text-warn" : "text-fg")}>
+      <td className={cn("whitespace-nowrap px-4 py-2.5 text-right font-medium tabular-nums", v.pctText)}>
         {Math.round(pct)}%
         <span className="block text-[12px] font-normal text-fg-faint">Alert at {b.alert_pct}%</span>
       </td>
-      <td className="whitespace-nowrap px-4 py-2.5" title={b.resets_at ? new Date(b.resets_at).toLocaleString() : undefined}>
-        <span className="text-fg-muted">{b.period === "total" ? "All time" : `Per ${period}`}</span>
-        <span className="block text-[12px] tabular-nums text-fg-faint">{b.resets_at ? `Resets ${relativeFuture(b.resets_at)}` : "Never resets"}</span>
+      <td className="whitespace-nowrap px-4 py-2.5" title={v.resetsTitle}>
+        <span className="text-fg-muted">{v.periodLabel}</span>
+        <span className="block text-[12px] tabular-nums text-fg-faint">{v.resets}</span>
       </td>
       <td className="whitespace-nowrap px-4 py-2.5">
         <EnforcementBadge hardCutoff={b.hard_cutoff} blocking={over} />
@@ -926,17 +1071,19 @@ function HardCutoffRow({ checked, onChange, noun }: { checked: boolean; onChange
   );
 }
 
+/** Always visible under the scrolling form body. Phones stack full-width buttons, primary last, matching tab order. */
 function FormFooter({ onClose, pending, submitLabel, status }: { onClose: () => void; pending: boolean; submitLabel: string; status?: ReactNode }) {
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3">
-      <span role="status" className="text-[12px] text-fg-muted">
+    <div className="flex shrink-0 flex-col rounded-b-2xl border-t border-line bg-subtle px-5 py-3 sm:flex-row sm:items-center sm:gap-2">
+      {/* Stays rendered (never display:none) so the live region announces; only takes space when it has text. */}
+      <span role="status" className="text-[12px] text-fg-muted [&:not(:empty)]:mb-2 sm:[&:not(:empty)]:mb-0">
         {status}
       </span>
-      <div className="ml-auto flex items-center gap-2">
-        <Button variant="ghost" type="button" onClick={onClose}>
+      <div className="flex flex-col gap-2 sm:ml-auto sm:flex-row sm:items-center">
+        <Button variant="ghost" type="button" onClick={onClose} className="w-full sm:w-auto">
           Cancel
         </Button>
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" disabled={pending} className="w-full sm:w-auto">
           {pending ? "Saving…" : submitLabel}
         </Button>
       </div>
@@ -1073,7 +1220,7 @@ function PlanForm({ plan, onClose }: { plan?: Plan; onClose: () => void }) {
   const periodNoun = periodLabels[period] ?? period;
 
   return (
-    <form className="flex max-h-[calc(100vh-10rem)] flex-col" onSubmit={handleSubmit} noValidate>
+    <form className="flex max-h-[calc(100dvh-10rem)] flex-col" onSubmit={handleSubmit} noValidate>
       <div className="min-h-0 divide-y divide-line overflow-y-auto">
         <FormSection title="Details" icon={FileText}>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1290,7 +1437,7 @@ function BudgetForm({ budget, existing, onClose }: { budget?: BudgetStatus; exis
   };
 
   return (
-    <form className="flex max-h-[calc(100vh-10rem)] flex-col" onSubmit={handleSubmit} noValidate>
+    <form className="flex max-h-[calc(100dvh-10rem)] flex-col" onSubmit={handleSubmit} noValidate>
       <div className="min-h-0 divide-y divide-line overflow-y-auto">
         <FormSection title="Applies to" icon={Target}>
           {budget ? (

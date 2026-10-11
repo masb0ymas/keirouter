@@ -14,14 +14,17 @@ export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 export function DropdownMenuContent({
   className,
   sideOffset = 6,
+  collisionPadding = 8,
   ...props
 }: ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        // Never wider or taller than the screen: a long menu scrolls.
         className={cn(
-          "z-50 min-w-44 overflow-hidden rounded-2xl border border-line bg-surface p-1 text-[13px] text-fg shadow-[var(--shadow-pop)]",
+          "z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-44 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-2xl border border-line bg-surface p-1 text-[13px] text-fg shadow-[var(--shadow-pop)]",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           className,
@@ -32,6 +35,13 @@ export function DropdownMenuContent({
   );
 }
 
+// Items are 32px with a mouse and 40px on touch screens.
+const menuItem = cn(
+  "flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg px-2 outline-none transition-colors [@media(pointer:coarse)]:h-10",
+  "data-[highlighted]:bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-faint",
+);
+
 export function DropdownMenuItem({
   className,
   tone = "default",
@@ -40,9 +50,7 @@ export function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-        "flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg px-2 outline-none transition-colors",
-        "data-[highlighted]:bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-        "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-faint",
+        menuItem,
         tone === "danger" && "text-bad [&_svg]:text-bad data-[highlighted]:bg-bad/10",
         className,
       )}
@@ -59,11 +67,7 @@ export function DropdownMenuSeparator({ className, ...props }: ComponentProps<ty
   return <DropdownMenuPrimitive.Separator className={cn("-mx-1 my-1 h-px bg-line", className)} {...props} />;
 }
 
-const choiceItem = cn(
-  "flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg px-2 outline-none transition-colors",
-  "data-[highlighted]:bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
-  "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-fg-faint",
-);
+const choiceItem = menuItem;
 
 // DropdownMenuRadioItem is a single choice inside <DropdownMenuRadioGroup>
 // (role="menuitemradio" + aria-checked, check mark shown when selected).

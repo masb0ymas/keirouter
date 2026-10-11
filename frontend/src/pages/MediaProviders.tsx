@@ -129,7 +129,7 @@ export function MediaProvidersPage() {
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center">
         <div
           ref={chipsRef}
-          className="flex flex-wrap gap-1.5"
+          className="-mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
           role="radiogroup"
           aria-label="Capability"
           onKeyDown={onChipKeyDown}
@@ -147,7 +147,7 @@ export function MediaProvidersPage() {
                 title={k.description}
                 onClick={() => setActiveFilter(k.id)}
                 className={cn(
-                  "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[12.5px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                  "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-[12.5px] font-medium transition-colors sm:h-8 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                   active ? "border-accent-500/30 bg-accent-500/10 text-link" : "border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg",
                 )}
               >
@@ -271,7 +271,39 @@ function ConnectedTable({
   const navigate = useNavigate();
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
-      <div className="overflow-x-auto">
+      <ul className="divide-y divide-line md:hidden" aria-label="Connected providers">
+        {providers.map((p) => {
+          const accs = accountsByProvider.get(p.id) ?? [];
+          const paused = accs.filter((a) => a.disabled).length;
+          return (
+            <li key={p.id} className="px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <Link
+                  to={`/media/${kind}/${p.id}`}
+                  className="flex min-w-0 items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                >
+                  <ProviderLogo icon={p.icon} name={p.display_name} size={24} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-fg">{p.display_name}</span>
+                    <span className="block truncate font-mono text-[11.5px] text-fg-muted">{p.id}</span>
+                  </span>
+                </Link>
+                {!p.drivable && (
+                  <span className="shrink-0">
+                    <Badge tone="neutral">Coming soon</Badge>
+                  </span>
+                )}
+              </div>
+              <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">
+                {accs.length} account{accs.length === 1 ? "" : "s"}
+                {paused > 0 && ` · ${paused} paused`}
+                {capabilityList(p) && ` · ${capabilityList(p)}`}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[520px] text-[13px]">
           <caption className="sr-only">Connected providers</caption>
           <thead>
@@ -343,9 +375,12 @@ function CatalogCard({ provider: p, kind }: { provider: Provider; kind: string }
           <Badge tone="neutral">Coming soon</Badge>
         </span>
       ) : (
-        <span className="hidden text-[12px] font-medium text-link group-hover:inline" aria-hidden="true">
-          Connect
-        </span>
+        <>
+          <span className="hidden text-[12px] font-medium text-link [@media(hover:hover)]:group-hover:inline" aria-hidden="true">
+            Connect
+          </span>
+          <ChevronRight className="hidden h-4 w-4 shrink-0 text-fg-faint [@media(hover:none)]:block" aria-hidden="true" />
+        </>
       )}
     </Link>
   );

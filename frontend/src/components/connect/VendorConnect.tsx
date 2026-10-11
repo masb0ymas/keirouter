@@ -3,6 +3,7 @@ import { Building2, ExternalLink, FileJson, FileUp, KeyRound, Shield } from "luc
 import { api } from "../../lib/api";
 import { useToast } from "../Toast";
 import {
+  ActionRow,
   ConnectDialog,
   ConnectError,
   Connected,
@@ -156,11 +157,11 @@ export function KimchiConnect({ logo, onClose }: VendorDialogProps) {
                   className="font-mono text-[12px]"
                   error={manualError || undefined}
                 />
-                <div className="flex justify-end">
+                <ActionRow>
                   <SecondaryAction onClick={checkManual} disabled={!manualUrl.trim()}>
                     Check callback
                   </SecondaryAction>
-                </div>
+                </ActionRow>
               </div>
             )}
           </div>
@@ -243,11 +244,11 @@ export function QoderConnect({ logo, onClose }: VendorDialogProps) {
               error={pat.error || undefined}
             />
             <TextField label="Label" optional value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Qoder" />
-            <div className="flex justify-end">
+            <ActionRow>
               <PrimaryAction type="submit" busy={pat.busy} disabled={!token.trim()}>
                 {pat.busy ? "Validating…" : "Connect Qoder"}
               </PrimaryAction>
-            </div>
+            </ActionRow>
           </form>
         ))}
     </ConnectDialog>
@@ -352,9 +353,9 @@ export function KiroConnect({ logo, onClose }: VendorDialogProps) {
             error={idcError || undefined}
           />
           <TextField label="AWS region" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="us-east-1" className="font-mono" />
-          <div className="flex justify-end">
+          <ActionRow>
             <PrimaryAction type="submit">Continue</PrimaryAction>
-          </div>
+          </ActionRow>
         </form>
       )}
 
@@ -436,11 +437,11 @@ export function KiroConnect({ logo, onClose }: VendorDialogProps) {
                 <TextField label="AWS region" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="us-east-1" className="font-mono" />
               </>
             )}
-            <div className="flex justify-end">
+            <ActionRow>
               <PrimaryAction type="submit" busy={importer.busy} disabled={!value.trim()}>
                 {importer.busy ? "Validating…" : method === "api-key" ? "Connect with API key" : "Import"}
               </PrimaryAction>
-            </div>
+            </ActionRow>
           </form>
         ))}
     </ConnectDialog>
@@ -550,11 +551,11 @@ function TokenDialog({
             autoComplete="off"
             error={importer.error || undefined}
           />
-          <div className="flex justify-end">
+          <ActionRow>
             <PrimaryAction type="submit" busy={importer.busy} disabled={!value.trim()}>
               {importer.busy ? "Importing…" : "Import token"}
             </PrimaryAction>
-          </div>
+          </ActionRow>
         </form>
       )}
     </ConnectDialog>
@@ -588,12 +589,12 @@ function DeviceFlowBody({
     return (
       <div className="space-y-4">
         {idle}
-        <div className="flex justify-end">
+        <ActionRow>
           <PrimaryAction onClick={flow.start}>
             <ExternalLink aria-hidden="true" />
             {startLabel}
           </PrimaryAction>
-        </div>
+        </ActionRow>
       </div>
     );
   }

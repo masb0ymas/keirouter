@@ -29,6 +29,17 @@ function joinIds(...ids: (string | undefined | false | null)[]): string | undefi
   return out || undefined;
 }
 
+// keepInView scrolls a horizontally overflowing strip (tabs, segmented
+// options) so `child` is fully visible, with a little breathing room. Instant,
+// not smooth, so it never fights reduced-motion preferences.
+function keepInView(container: HTMLElement | null, child: Element | null | undefined, pad = 16) {
+  if (!container || !child || container.scrollWidth <= container.clientWidth) return;
+  const box = container.getBoundingClientRect();
+  const r = child.getBoundingClientRect();
+  if (r.left < box.left + pad) container.scrollLeft += r.left - box.left - pad;
+  else if (r.right > box.right - pad) container.scrollLeft += r.right - box.right + pad;
+}
+
 // FieldContext lets <Field hint error> wire its hint / error ids into the
 // Input / Select / Textarea it wraps without the page passing ids around.
 interface FieldControlContext {
@@ -357,10 +368,12 @@ export function Badge({
   children,
   tone = "neutral",
   title,
+  className = "",
 }: {
   children: ReactNode;
   tone?: "neutral" | "accent" | "secondary" | "danger" | "warning" | "success";
   title?: string;
+  className?: string;
 }) {
   const tones = {
     neutral: "border-line bg-subtle text-fg-muted",
@@ -372,7 +385,7 @@ export function Badge({
   };
   return (
     <span
-      className={`inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-[11.5px] font-medium ${tones[tone]}`}
+      className={`inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-[11.5px] font-medium ${tones[tone]} ${className}`}
       title={title}
     >
       {children}
@@ -562,9 +575,17 @@ export function SegmentedControl<T extends string>({
     event.currentTarget.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(target.value)}"]`)?.focus();
   };
 
+  // Too wide for a phone? The group scrolls sideways (scrollbar hidden) and
+  // keeps the checked option in view.
+  const groupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    keepInView(groupRef.current, groupRef.current?.querySelector('[aria-checked="true"]'), 8);
+  }, [value]);
+
   return (
     <div
-      className={`inline-flex rounded-xl border border-line bg-subtle p-0.5 ${className}`}
+      ref={groupRef}
+      className={`inline-flex max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-line bg-subtle p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${className}`}
       role="radiogroup"
       aria-label={label}
       aria-labelledby={labelledBy}
@@ -582,7 +603,7 @@ export function SegmentedControl<T extends string>({
             disabled={opt.disabled}
             tabIndex={opt.value === focusValue ? 0 : -1}
             onClick={() => onChange(opt.value)}
-            className={`h-7 rounded-lg px-2.5 text-[12px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`h-7 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-colors [@media(pointer:coarse)]:h-8 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50 ${
               checked
                 ? "bg-surface text-fg ring-1 ring-line-strong"
                 : "text-fg-muted hover:text-fg"
@@ -613,16 +634,47 @@ function inFloatingLayer(dialog: HTMLElement | null, node: EventTarget | Element
   return !!layer && layer !== dialog && !dialog?.contains(layer);
 }
 
+// Footers rendered inside a Modal's children (`border-t … bg-subtle` as the
+// last child of the body or of a form directly inside it, or anything marked
+// data-modal-footer) stick to the bottom of the scrolling body, so Save /
+// Cancel stay reachable however long the form is.
+const STICKY_MODAL_FOOTERS = [
+  "[&>.border-t.bg-subtle:last-child]:sticky [&>.border-t.bg-subtle:last-child]:bottom-0 [&>.border-t.bg-subtle:last-child]:z-[2]",
+  "[&>*>.border-t.bg-subtle:last-child]:sticky [&>*>.border-t.bg-subtle:last-child]:bottom-0 [&>*>.border-t.bg-subtle:last-child]:z-[2]",
+].join(" ");
+
+/**
+ * ModalFooter is the standard dialog action row. On phones the buttons stack
+ * full width (primary last, matching tab order); from `sm` they sit in a right-aligned row.
+ * Pass it as Modal's `footer` prop, or render it as the last child of the
+ * dialog body / form, where it sticks to the bottom while the body scrolls.
+ */
+export function ModalFooter({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      data-modal-footer
+      className={`sticky bottom-0 z-[2] flex shrink-0 flex-col gap-2 border-t border-line bg-subtle px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end [&>a]:w-full [&>button]:w-full sm:[&>a]:w-auto sm:[&>button]:w-auto ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 // Modal is a reusable dialog overlay. Escape and backdrop click close it.
 // Focus moves into the dialog on open (an element marked data-modal-autofocus,
 // an already-focused autoFocus field, or the close button), is trapped while
 // open, and returns to the opener on close.
+//
+// Layout: full width minus 16px gutters on phones, never taller than the
+// viewport. The header (and the optional `footer`) stay put while the body
+// scrolls.
 export function Modal({
   open,
   onClose,
   title,
   subtitle,
   children,
+  footer,
   maxWidth = "max-w-lg",
 }: {
   open: boolean;
@@ -630,6 +682,8 @@ export function Modal({
   title: ReactNode;
   subtitle?: string;
   children: ReactNode;
+  /** Action row rendered outside the scrolling body (see ModalFooter). */
+  footer?: ReactNode;
   maxWidth?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -715,11 +769,17 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/45 animate-in fade-in-0 duration-150"
+      className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-black/45 animate-in fade-in-0 duration-150"
       onClick={onClose}
     >
-      {/* The overlay scrolls, so a tall dialog stays reachable at 320px / 200% zoom. */}
-      <div className="flex min-h-full items-center justify-center p-4">
+      {/* The overlay can still scroll as a last resort (e.g. 400% zoom). */}
+      <div
+        className="flex min-h-full items-center justify-center p-4"
+        style={{
+          paddingTop: "max(1rem, env(safe-area-inset-top))",
+          paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
+        }}
+      >
       <div
         ref={dialogRef}
         role="dialog"
@@ -727,10 +787,11 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={subtitle ? subtitleId : undefined}
         tabIndex={-1}
-        className={`w-full ${maxWidth} rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)] animate-in fade-in-0 zoom-in-[0.98] duration-150`}
+        className={`flex max-h-[calc(100dvh-2rem)] w-full ${maxWidth} flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)] animate-in fade-in-0 zoom-in-[0.98] duration-150`}
+        style={{ maxHeight: "calc(100dvh - max(1rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)))" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line py-3.5 pl-5 pr-3 sm:pr-5">
           <div className="min-w-0">
             <h2 id={titleId} className="text-[15px] font-semibold tracking-[-0.01em]">{title}</h2>
             {subtitle && <p id={subtitleId} className="mt-0.5 text-[13px] text-fg-muted">{subtitle}</p>}
@@ -741,12 +802,13 @@ export function Modal({
             aria-label="Close"
             data-modal-autofocus
             data-modal-close
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9"
           >
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
-        {children}
+        <div className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${STICKY_MODAL_FOOTERS}`}>{children}</div>
+        {footer && <ModalFooter>{footer}</ModalFooter>}
       </div>
       </div>
     </div>
@@ -793,9 +855,21 @@ export function TabBar<T extends string>({
     controls[next]?.click();
   };
   const hasActive = tabs.some((t) => t.value === active);
+  // On phones the strip scrolls sideways; keep the active tab fully in view
+  // (on mount too, e.g. when ?tab= deep-links to the last tab).
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    keepInView(listRef.current, listRef.current?.querySelector('[aria-selected="true"]'));
+  }, [active]);
 
   return (
-    <div className="flex gap-1 overflow-x-auto border-b border-line px-1 pb-px" role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+    <div
+      ref={listRef}
+      className="flex gap-1 overflow-x-auto overscroll-x-contain border-b border-line px-1 pb-px [@media(pointer:coarse)]:[scrollbar-width:none] [@media(pointer:coarse)]:[&::-webkit-scrollbar]:hidden"
+      role="tablist"
+      aria-label={label}
+      onKeyDown={onKeyDown}
+    >
       {tabs.map((tab, i) => {
         const isActive = tab.value === active;
         const ids = idPrefix ? tabIds(idPrefix, tab.value) : null;
@@ -809,7 +883,7 @@ export function TabBar<T extends string>({
             aria-selected={isActive}
             tabIndex={isActive || (!hasActive && i === 0) ? 0 : -1}
             onClick={() => onChange(tab.value)}
-            className={`relative flex items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
+            className={`relative flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
               isActive
                 ? "text-fg"
                 : "text-fg-muted hover:text-fg"
@@ -858,9 +932,12 @@ export function Toggle({
   id,
   "aria-labelledby": labelledBy,
   "aria-describedby": describedBy,
+  className = "",
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
+  /** Extra classes for the switch (layout only; visuals are fixed). */
+  className?: string;
   /** Accessible name when no visible <label> points at this switch. */
   label?: string;
   disabled?: boolean;
@@ -879,9 +956,11 @@ export function Toggle({
       aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-50 ${
+      // The visible track is 36×20; an invisible ::before extends the hit
+      // area to 44×32 (44×40 on touch) without changing the visuals.
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors before:absolute before:-inset-x-1 before:-inset-y-1.5 before:content-[''] [@media(pointer:coarse)]:before:-inset-y-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-50 ${
         checked ? "bg-accent-500" : "bg-input"
-      }`}
+      } ${className}`}
     >
       <span
         aria-hidden="true"
@@ -916,7 +995,7 @@ export function TablePagination({
   return (
     <nav aria-label={label} className="flex flex-col gap-2 border-t border-line bg-subtle px-4 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
       <span className="text-fg-muted">{total.toLocaleString()} total</span>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between gap-1 sm:justify-start">
         <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Previous page" className={btn}>
           Previous
         </button>

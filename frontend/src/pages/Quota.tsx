@@ -515,7 +515,7 @@ export function QuotaPage() {
 
             {selected.size > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b border-line bg-subtle px-4 py-2 text-[12.5px]">
-                <span role="status" className="mr-1 font-medium tabular-nums text-fg">{selected.size} selected</span>
+                <span role="status" className="w-full font-medium tabular-nums text-fg sm:mr-1 sm:w-auto">{selected.size} selected</span>
                 {selectedCanEnable.length > 0 && (
                   <Button variant="secondary" className="h-8 min-h-8 text-[12.5px]" onClick={() => applyBulkState(selectedCanEnable, false)}>
                     <Power strokeWidth={1.75} aria-hidden="true" /> Enable
@@ -543,7 +543,16 @@ export function QuotaPage() {
               <EmptyState title="No accounts match these filters" hint="Clear a filter or search for another account." />
             ) : (
               <>
-                <div className="divide-y divide-line md:hidden">
+                {/* Phones have no table header, so select-all lives here. */}
+                <div className="flex items-center border-b border-line px-4 py-1.5 md:hidden">
+                  <label className="inline-flex min-h-9 cursor-pointer items-center gap-2 text-[12.5px] text-fg-muted">
+                    <span className={checkboxTarget}>
+                      <input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} className={checkboxClass} />
+                    </span>
+                    Select all on this page
+                  </label>
+                </div>
+                <ul className="divide-y divide-line md:hidden" aria-label="Provider accounts">
                   {pagination.paged.map((account) => (
                     <QuotaAccountMobile
                       key={account.id}
@@ -556,7 +565,7 @@ export function QuotaPage() {
                       onDelete={() => handleDeleteAccount(account)}
                     />
                   ))}
-                </div>
+                </ul>
                 <div className="hidden overflow-x-auto md:block">
                   <table className="w-full min-w-[900px] text-[13px]">
                     <caption className="sr-only">Provider accounts</caption>
@@ -695,14 +704,14 @@ function CapacityActions({
         </p>
         <p className="text-[12px] text-fg-muted">Paused accounts stay out of routing until enabled.</p>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         {depleted > 0 && (
-          <Button variant="danger" className="h-8 min-h-8 text-[12.5px]" onClick={onPauseDepleted}>
+          <Button variant="danger" className="h-9 min-h-9 w-full text-[12.5px] sm:h-8 sm:min-h-8 sm:w-auto" onClick={onPauseDepleted}>
             <PowerOff strokeWidth={1.75} aria-hidden="true" /> Pause depleted ({depleted})
           </Button>
         )}
         {resumable > 0 && (
-          <Button variant="secondary" className="h-8 min-h-8 text-[12.5px]" onClick={onResumeAvailable}>
+          <Button variant="secondary" className="h-9 min-h-9 w-full text-[12.5px] sm:h-8 sm:min-h-8 sm:w-auto" onClick={onResumeAvailable}>
             <Power strokeWidth={1.75} aria-hidden="true" /> Resume available ({resumable})
           </Button>
         )}
@@ -783,49 +792,68 @@ function AccountIdentity({ account }: { account: QuotaAccount }) {
   );
 }
 
-function RowActions({
-  account,
-  refreshQuota,
-  onToggle,
-  onDelete,
-}: {
+type ActionProps = {
   account: QuotaAccount;
   refreshQuota: ReturnType<typeof useQuotaRefresh>;
   onToggle: () => void;
   onDelete: () => void;
-}) {
-  const name = accountName(account);
+  /** 36px icon buttons and a visible switch caption for the phone card. */
+  touch?: boolean;
+};
+
+function RefreshQuotaButton({ account, refreshQuota, touch }: Pick<ActionProps, "account" | "refreshQuota" | "touch">) {
+  if (!supportsQuota(account)) return null;
   const paused = account.status === "paused";
   return (
+    <button
+      type="button"
+      onClick={() => refreshQuota.mutate()}
+      disabled={refreshQuota.isPending || paused}
+      aria-label={`Refresh quota for ${accountName(account)}`}
+      title={paused ? "Enable the account before refreshing quota" : "Refresh upstream quota"}
+      className={cn(iconButton, touch && "h-9 w-9")}
+    >
+      {refreshQuota.isPending
+        ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} aria-hidden="true" />
+        : <RefreshCw className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
+    </button>
+  );
+}
+
+function RouteToggle({ account, onToggle, touch }: Pick<ActionProps, "account" | "onToggle" | "touch">) {
+  const paused = account.status === "paused";
+  return (
+    <span title={paused ? "Enable account" : "Pause account"} className={cn("inline-flex items-center", touch ? "min-h-9 gap-2" : "px-1")}>
+      <Toggle checked={!paused} onChange={() => onToggle()} label={`Route traffic to ${accountName(account)}`} />
+      {/* The switch's accessible name already starts with this caption. */}
+      {touch && <span aria-hidden="true" className="text-[12px] text-fg-muted">Route traffic</span>}
+    </span>
+  );
+}
+
+function AccountMenu({ account, onDelete, touch }: Pick<ActionProps, "account" | "onDelete" | "touch">) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={`Actions for ${accountName(account)}`} className={cn(iconButton, touch && "h-9 w-9")}>
+        <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem tone="danger" onSelect={onDelete}>
+          <Trash2 aria-hidden="true" />
+          Delete account
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Table row controls: refresh, routing switch, menu. The phone card lays the same parts out on their own line. */
+function RowActions({ account, refreshQuota, onToggle, onDelete }: ActionProps) {
+  return (
     <div className="inline-flex items-center gap-1">
-      {supportsQuota(account) && (
-        <button
-          type="button"
-          onClick={() => refreshQuota.mutate()}
-          disabled={refreshQuota.isPending || paused}
-          aria-label={`Refresh quota for ${name}`}
-          title={paused ? "Enable the account before refreshing quota" : "Refresh upstream quota"}
-          className={iconButton}
-        >
-          {refreshQuota.isPending
-            ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} aria-hidden="true" />
-            : <RefreshCw className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
-        </button>
-      )}
-      <span title={paused ? "Enable account" : "Pause account"} className="inline-flex px-1">
-        <Toggle checked={!paused} onChange={() => onToggle()} label={`Route traffic to ${name}`} />
-      </span>
-      <DropdownMenu>
-        <DropdownMenuTrigger aria-label={`Actions for ${name}`} className={iconButton}>
-          <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem tone="danger" onSelect={onDelete}>
-            <Trash2 aria-hidden="true" />
-            Delete account
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <RefreshQuotaButton account={account} refreshQuota={refreshQuota} />
+      <RouteToggle account={account} onToggle={onToggle} />
+      <AccountMenu account={account} onDelete={onDelete} />
     </div>
   );
 }
@@ -878,27 +906,39 @@ function QuotaAccountMobile({ account, selected, expanded, onSelect, onExpand, o
   const refreshQuota = useQuotaRefresh(account);
 
   return (
-    <article className="px-4 py-3.5 text-[13px]" aria-label={accountName(account)}>
+    <li className="px-4 py-3 text-[13px]">
+      {/* Line 1: select, identity, status. */}
       <div className="flex items-start gap-2">
         <SelectBox checked={selected} onChange={onSelect} label={`Select ${accountName(account)}`} className="shrink-0" />
         <div className="min-w-0 flex-1">
           <AccountIdentity account={account} />
         </div>
-        <Badge tone={status.tone}>{status.label}</Badge>
+        <span className="shrink-0">
+          <Badge tone={status.tone}>{status.label}</Badge>
+        </span>
       </div>
 
-      <div className="mt-3 pl-8">
-        <QuotaWindowsCell account={account} expanded={expanded} onExpand={onExpand} detailsId={`quota-details-m-${account.id}`} />
-      </div>
-
-      <div className="mt-3 flex items-center justify-between gap-3 pl-8">
-        <div className="min-w-0 text-[12px] tabular-nums text-fg-muted">
+      <div className="pl-8">
+        {/* Line 2: period usage. */}
+        <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">
           <span className="text-fg">{fmtInteger(account.total_requests)} req</span>
           {" · "}{fmtCompact(account.prompt_tokens + account.completion_tokens)} tokens
           {" · "}{fmtUSD(account.cost_usd)}
           <span className="text-fg-faint"> · Priority {account.priority}</span>
+        </p>
+
+        <div className="mt-2.5">
+          <QuotaWindowsCell account={account} expanded={expanded} onExpand={onExpand} detailsId={`quota-details-m-${account.id}`} />
         </div>
-        <RowActions account={account} refreshQuota={refreshQuota} onToggle={onToggle} onDelete={onDelete} />
+
+        {/* Controls: routing switch left, refresh + menu right. */}
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <RouteToggle touch account={account} onToggle={onToggle} />
+          <div className="flex items-center gap-2">
+            <RefreshQuotaButton touch account={account} refreshQuota={refreshQuota} />
+            <AccountMenu touch account={account} onDelete={onDelete} />
+          </div>
+        </div>
       </div>
 
       {expanded && hasReportedQuota(account) && (
@@ -906,7 +946,7 @@ function QuotaAccountMobile({ account, selected, expanded, onSelect, onExpand, o
           <QuotaDetails account={account} />
         </div>
       )}
-    </article>
+    </li>
   );
 }
 
@@ -1014,10 +1054,11 @@ function QuotaDetails({ account }: { account: QuotaAccount }) {
         </div>
         <span className="shrink-0 text-[12px] text-fg-faint">Updated {relativeTime(account.updated_at)}</span>
       </div>
-      <div className="divide-y divide-line sm:hidden">
+      {/* Cards below md (the phone list); the table only renders inside the md+ table row, which is wide enough. */}
+      <ul className="divide-y divide-line md:hidden" aria-label={`Upstream limits for ${accountName(account)}`}>
         {paged.map((quota, index) => <QuotaDetailMobile key={`${quota.resource_type}-${index}`} quota={quota} />)}
-      </div>
-      <div className="hidden overflow-x-auto sm:block">
+      </ul>
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[640px] text-[13px]">
           <caption className="sr-only">Upstream limits for {accountName(account)}</caption>
           <thead>
@@ -1043,9 +1084,9 @@ function QuotaDetailMobile({ quota }: { quota: UpstreamQuota }) {
   const remaining = windowRemainingPercent(quota);
   const tone = windowTone(quota);
   return (
-    <div className="px-4 py-2.5">
+    <li className="px-4 py-2.5">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="truncate text-[13px] text-fg">{humanize(quota.resource_type)}</span>
+        <span className="truncate text-[13px] text-fg" title={humanize(quota.resource_type)}>{humanize(quota.resource_type)}</span>
         <span className={cn("shrink-0 text-[12px] tabular-nums", tone.text)}>
           {quota.limit > 0 ? `${remaining}% left` : "Unlimited"}
         </span>
@@ -1056,7 +1097,7 @@ function QuotaDetailMobile({ quota }: { quota: UpstreamQuota }) {
         {" · "}
         {quota.reset_at ? `resets ${formatCountdown(quota.reset_at)}` : "no reset reported"}
       </div>
-    </div>
+    </li>
   );
 }
 

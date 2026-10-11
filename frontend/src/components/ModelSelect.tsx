@@ -95,6 +95,14 @@ export function useModelCatalog() {
   };
 }
 
+function readViewport() {
+  if (typeof window === "undefined") return { width: 1024, height: 768, top: 0, left: 0 };
+  const vv = window.visualViewport;
+  return vv
+    ? { width: vv.width, height: vv.height, top: vv.offsetTop, left: vv.offsetLeft }
+    : { width: window.innerWidth, height: window.innerHeight, top: 0, left: 0 };
+}
+
 function ProviderIcon({ option, size = 20 }: { option?: ModelCatalogOption; size?: number }) {
   return <ProviderLogo icon={option?.icon} name={option?.providerName || "Custom"} size={size} />;
 }
@@ -191,6 +199,9 @@ export function ModelMultiSelect({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  // The visual viewport shrinks when a phone's on-screen keyboard opens; the
+  // compact (phone) popup sizes itself to it.
+  const [viewport, setViewport] = useState(() => readViewport());
   const uid = useId();
   const listboxId = `${uid}-listbox`;
   const optionId = (index: number) => `${uid}-opt-${index}`;
@@ -251,6 +262,7 @@ export function ModelMultiSelect({
 
   const updateRect = useCallback(() => {
     if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
+    setViewport(readViewport());
   }, []);
 
   const close = useCallback((returnFocus: boolean) => {
@@ -265,11 +277,16 @@ export function ModelMultiSelect({
     updateRect();
     const onScroll = () => updateRect();
     const onResize = () => updateRect();
+    const vv = window.visualViewport;
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
+    vv?.addEventListener("resize", onResize);
+    vv?.addEventListener("scroll", onResize);
     return () => {
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+      vv?.removeEventListener("scroll", onResize);
     };
   }, [open, updateRect]);
 
@@ -379,6 +396,9 @@ export function ModelMultiSelect({
   };
 
   const anyLoading = catalog.loading;
+  // Phones: the picker becomes a near full-screen panel inside the visible
+  // viewport (8px gutters), with the list taking the remaining height.
+  const compact = viewport.width < 640;
   const dropdownWidth = rect ? Math.min(Math.max(rect.width, 420), window.innerWidth - 16, 760) : 420;
   const dropdownLeft = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - dropdownWidth - 8)) : 8;
   const spaceBelow = rect ? window.innerHeight - rect.bottom - 8 : 0;
@@ -393,6 +413,9 @@ export function ModelMultiSelect({
     : 8;
   const dropdownChromeHeight = window.innerWidth < 640 ? 178 : 138;
   const listHeight = Math.max(100, dropdownHeight - dropdownChromeHeight);
+  const panelStyle = compact
+    ? { top: viewport.top + 8, left: viewport.left + 8, width: viewport.width - 16, height: Math.max(240, viewport.height - 16) }
+    : { top: dropdownTop, left: dropdownLeft, width: dropdownWidth, maxHeight: dropdownHeight };
   const activeId = activeIndex >= 0 && activeIndex < flat.length ? optionId(activeIndex) : undefined;
 
   let optionCounter = -1;
@@ -404,10 +427,10 @@ export function ModelMultiSelect({
           onMouseDown={(e) => e.stopPropagation()}
           onKeyDown={onDropdownKeyDown}
           className="fixed z-[100] flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-pop)]"
-          style={{ top: dropdownTop, left: dropdownLeft, width: dropdownWidth, maxHeight: dropdownHeight }}
+          style={panelStyle}
         >
           {/* Search */}
-          <div className="space-y-2 border-b border-line p-2">
+          <div className="shrink-0 space-y-2 border-b border-line p-2">
             <div className="flex flex-col gap-2 sm:flex-row">
               <div className="flex h-9 flex-1 items-center gap-2 rounded-lg border border-input bg-surface px-3 transition-colors focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500">
                 <Search className="h-4 w-4 shrink-0 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
@@ -437,9 +460,21 @@ export function ModelMultiSelect({
                 {providerOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
               </select>
             </div>
-            <div className="flex items-center justify-between px-1 text-[12px] text-fg-faint" role="status" aria-live="polite">
-              <span className="tabular-nums">{filtered.length} model{filtered.length === 1 ? "" : "s"}</span>
-              <span className="tabular-nums">{value.length} selected</span>
+            <div className="flex items-center gap-2">
+              <div className="flex flex-1 items-center justify-between px-1 text-[12px] text-fg-faint" role="status" aria-live="polite">
+                <span className="tabular-nums">{filtered.length} model{filtered.length === 1 ? "" : "s"}</span>
+                <span className="tabular-nums">{value.length} selected</span>
+              </div>
+              {compact && (
+                // The panel covers the screen on phones, so it needs a visible way out.
+                <button
+                  type="button"
+                  onClick={() => close(true)}
+                  className="inline-flex h-9 shrink-0 items-center rounded-lg border border-line-strong bg-surface px-3 text-[13px] font-medium text-fg transition-colors hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                >
+                  Done
+                </button>
+              )}
             </div>
           </div>
 
@@ -450,8 +485,8 @@ export function ModelMultiSelect({
             aria-multiselectable="true"
             aria-label="Models"
             aria-busy={anyLoading || undefined}
-            className="overflow-y-auto overscroll-contain p-1"
-            style={{ maxHeight: listHeight }}
+            className={`overflow-y-auto overscroll-contain p-1 ${compact ? "min-h-0 flex-1" : ""}`}
+            style={compact ? undefined : { maxHeight: listHeight }}
           >
             {anyLoading ? (
               <div className="flex items-center justify-center py-6" role="presentation">
@@ -487,7 +522,7 @@ export function ModelMultiSelect({
                           toggle(m.id);
                         }}
                         onMouseMove={() => activeIndex !== index && setActiveIndex(index)}
-                        className={`flex min-h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+                        className={`flex min-h-9 w-full cursor-pointer [@media(pointer:coarse)]:min-h-11 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors ${
                           active ? "bg-hover ring-1 ring-inset ring-accent-500" : selected ? "bg-accent-500/10 hover:bg-accent-500/15" : "hover:bg-hover"
                         }`}
                       >
@@ -518,7 +553,7 @@ export function ModelMultiSelect({
           </div>
 
           {/* Custom pattern input */}
-          <div className="border-t border-line bg-subtle p-2">
+          <div className="shrink-0 border-t border-line bg-subtle p-2">
             <div className="flex items-center gap-2">
               <input
                 value={customText}
@@ -559,10 +594,10 @@ export function ModelMultiSelect({
             return (
               <li
                 key={id}
-                className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-line bg-subtle pl-1.5 text-[12px] text-fg"
+                className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg border border-line bg-subtle pl-1.5 text-[12px] text-fg"
               >
                 <ProviderIcon option={m} size={16} />
-                <span className="max-w-[260px] truncate"><span className="text-fg-muted">{m?.providerName || "Custom"}</span> <span className="text-fg-faint" aria-hidden="true">·</span> <span className="font-mono">{id}</span></span>
+                <span className="min-w-0 max-w-[260px] truncate"><span className="text-fg-muted">{m?.providerName || "Custom"}</span> <span className="text-fg-faint" aria-hidden="true">·</span> <span className="font-mono">{id}</span></span>
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); removeChip(id); }}

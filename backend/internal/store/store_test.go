@@ -296,20 +296,45 @@ func TestAuditRepo_AppendAndList(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	for i := 0; i < 5; i++ {
+	base := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	actions := []string{"keys.create", "keys.delete", "accounts.create", "auth.login", "keys.update"}
+	for i, action := range actions {
 		require.NoError(t, db.Audit().Append(ctx, AuditEntry{
-			ID:        "a" + time.Now().Format("150405.000000000"),
+			ID:        fmt.Sprintf("a%d", i),
 			TenantID:  DefaultTenantID,
-			Actor:     "key1",
-			Action:    "proxy.request",
-			Detail:    "{}",
-			CreatedAt: time.Now(),
+			Actor:     "session:1",
+			Action:    action,
+			Outcome:   "success",
+			HTTPRoute: "/api/keys/{id}",
+			// Sub-second spacing: ordering must hold inside one second.
+			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),
 		}))
-		time.Sleep(time.Millisecond)
 	}
 
-	entries, err := db.Audit().List(ctx, DefaultTenantID, 10)
+	entries, err := db.Audit().List(ctx, DefaultTenantID, AuditFilter{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, entries, 5)
-	require.Equal(t, "proxy.request", entries[0].Action)
+	require.Equal(t, "keys.update", entries[0].Action)
+	require.Equal(t, "{}", entries[0].Detail)
+	require.Equal(t, "INFO", entries[0].Severity)
+
+	keys, err := db.Audit().List(ctx, DefaultTenantID, AuditFilter{Action: "keys.*"})
+	require.NoError(t, err)
+	require.Len(t, keys, 3)
+
+	page1, err := db.Audit().List(ctx, DefaultTenantID, AuditFilter{Limit: 2})
+	require.NoError(t, err)
+	last := page1[len(page1)-1]
+	page2, err := db.Audit().List(ctx, DefaultTenantID, AuditFilter{Limit: 2, BeforeTime: last.CreatedAt, BeforeID: last.ID})
+	require.NoError(t, err)
+	require.Equal(t, []string{"accounts.create", "keys.delete"}, []string{page2[0].Action, page2[1].Action})
+
+	// LIKE wildcards in a search are literal.
+	none, err := db.Audit().List(ctx, DefaultTenantID, AuditFilter{Query: "keys_"})
+	require.NoError(t, err)
+	require.Empty(t, none)
+
+	n, err := db.Audit().DeleteOlderThan(ctx, base.Add(2*time.Millisecond))
+	require.NoError(t, err)
+	require.EqualValues(t, 2, n)
 }

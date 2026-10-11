@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -70,6 +70,23 @@ function useSettingsTab(): [SettingsTab, (t: SettingsTab) => void] {
 }
 
 function SettingsTabs({ active, onChange }: { active: SettingsTab; onChange: (t: SettingsTab) => void }) {
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // On phones the tab row scrolls sideways; keep the active tab in view when
+  // it changes (deep links, arrow keys, taps on a half-hidden tab).
+  useEffect(() => {
+    const list = listRef.current;
+    const tab = list?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!list || !tab || list.scrollWidth <= list.clientWidth) return;
+    // The list is positioned, so offsetLeft is measured from its edge.
+    const start = tab.offsetLeft;
+    const end = start + tab.offsetWidth;
+    const pad = 16;
+    const behavior: ScrollBehavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (start - pad < list.scrollLeft) list.scrollTo({ left: Math.max(0, start - pad), behavior });
+    else if (end + pad > list.scrollLeft + list.clientWidth) list.scrollTo({ left: end + pad - list.clientWidth, behavior });
+  }, [active]);
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
     const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
@@ -88,7 +105,9 @@ function SettingsTabs({ active, onChange }: { active: SettingsTab; onChange: (t:
 
   return (
     <div
-      className="mb-5 flex gap-1 overflow-x-auto border-b border-line"
+      ref={listRef}
+      // Bleeds to the screen edges on phones so the cut-off tab hints that the row scrolls.
+      className="relative -mx-4 mb-5 flex gap-1 overflow-x-auto border-b border-line px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden"
       role="tablist"
       aria-label="Settings sections"
       onKeyDown={onKeyDown}
@@ -157,18 +176,49 @@ export function SettingsPage() {
     if (settings.data) setLocal(settings.data);
   }, [settings.data]);
 
+  // Saves run one at a time. Edits made while a save is in flight are merged
+  // into one queued patch, so responses can never arrive out of order and an
+  // older response never overwrites newer local edits.
+  const inFlight = useRef(false);
+  const queued = useRef<Partial<EndpointSettings> | null>(null);
+
   const save = useMutation({
     mutationFn: (patch: Partial<EndpointSettings>) => api.updateEndpointSettings(patch),
     onSuccess: (data) => {
-      setLocal(data);
       qc.setQueryData(["endpoint-settings"], data);
+      if (!queued.current) setLocal(data);
     },
-    onError: (e) => toast.error("Settings save failed", (e as Error).message),
+    onError: (e) => {
+      toast.error("Settings save failed", (e as Error).message);
+      // Drop the rejected optimistic edit so the page shows what is actually
+      // in effect, unless newer edits are already queued behind it.
+      const saved = qc.getQueryData<EndpointSettings>(["endpoint-settings"]);
+      if (saved && !queued.current) setLocal(saved);
+    },
   });
 
+  const send = (patch: Partial<EndpointSettings>) => {
+    inFlight.current = true;
+    save
+      .mutateAsync(patch)
+      .catch(() => {
+        /* surfaced by onError */
+      })
+      .finally(() => {
+        inFlight.current = false;
+        const next = queued.current;
+        queued.current = null;
+        if (next) send(next);
+      });
+  };
+
   const update = (patch: Partial<EndpointSettings>) => {
-    if (local) setLocal({ ...local, ...patch });
-    save.mutate(patch);
+    setLocal((prev) => (prev ? { ...prev, ...patch } : prev));
+    if (inFlight.current) {
+      queued.current = { ...(queued.current ?? {}), ...patch };
+      return;
+    }
+    send(patch);
   };
 
   const endpointTab = ENDPOINT_TABS.includes(tab);

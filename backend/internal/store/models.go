@@ -227,15 +227,33 @@ type Budget struct {
 	UpdatedAt   time.Time
 }
 
-// AuditEntry is one append-only audit record.
+// AuditEntry is one append-only audit record. Field names follow the
+// audit_log columns; the comments give the OpenTelemetry attribute each one
+// exports as.
 type AuditEntry struct {
-	ID        string
-	TenantID  string
-	Actor     string
-	Action    string
-	Target    string
-	Detail    string
-	CreatedAt time.Time
+	ID           string // log.record.uid
+	TenantID     string
+	Actor        string // user.id: dashboard session, api key id, or "system"
+	ActorType    string // dashboard | api_key | system
+	Action       string // event.name suffix, e.g. keys.create, auth.login
+	Target       string // id of the resource acted on
+	ResourceType string // keys, accounts, chains, ...
+	Outcome      string // success | failure | denied
+	Severity     string // INFO | WARN | ERROR
+	ClientIP     string // client.address
+	UserAgent    string // user_agent.original
+	HTTPMethod   string // http.request.method
+	HTTPRoute    string // http.route
+	StatusCode   int    // http.response.status_code
+	RequestID    string
+	TraceID      string // W3C trace id (hex) from the caller's traceparent
+	SpanID       string
+	Detail       string // JSON object of extra attributes (never secrets)
+	ChainID      string // writer instance whose hash chain holds the row
+	ChainSeq     int64
+	PrevHash     string
+	Hash         string
+	CreatedAt    time.Time
 }
 
 // APIKeyModelAccess is a single allowed-model row for per-key model gating.
@@ -385,31 +403,36 @@ type GuardrailLog struct {
 // Each metric carries an average and a max so spikes survive bucketing.
 // Network bytes are reported as a within-bucket delta (MAX-MIN of cumulative).
 type ResourceBucket struct {
-	Bucket int
+	Bucket int `json:"ts"` // bucket start, epoch seconds
 
-	ProcCPUAvg float64
-	ProcCPUMax float64
-	HostCPUAvg float64
-	HostCPUMax float64
+	// CPU percentages are shares of the whole host (0–100).
+	ProcCPUAvg float64 `json:"proc_cpu_avg"`
+	ProcCPUMax float64 `json:"proc_cpu_max"`
+	HostCPUAvg float64 `json:"host_cpu_avg"`
+	HostCPUMax float64 `json:"host_cpu_max"`
 
-	ProcRSSAvg     float64
-	ProcRSSMax     int64
-	HostMemUsedAvg float64
-	HostMemUsedMax int64
+	ProcRSSAvg     float64 `json:"proc_rss_avg_mb"`
+	ProcRSSMax     int64   `json:"proc_rss_max_bytes"`
+	HostMemUsedAvg float64 `json:"host_mem_used_avg_mb"`
+	HostMemUsedMax int64   `json:"host_mem_used_max_bytes"`
+	HostMemPctAvg  float64 `json:"host_mem_pct_avg"`
+	HostMemPctMax  float64 `json:"host_mem_pct_max"`
 
-	GoroutinesAvg float64
-	GoroutinesMax int64
-	HeapAllocAvg  float64
-	HeapAllocMax  int64
+	GoroutinesAvg float64 `json:"goroutines_avg"`
+	GoroutinesMax int64   `json:"goroutines_max"`
+	HeapAllocAvg  float64 `json:"heap_avg_mb"`
+	HeapAllocMax  int64   `json:"heap_max_bytes"`
 
-	NetSentDelta int64
-	NetRecvDelta int64
+	NetSentDelta int64 `json:"net_sent_delta"`
+	NetRecvDelta int64 `json:"net_recv_delta"`
 
-	GCPauseAvg float64
-	GCPauseMax int64
+	GCPauseAvg float64 `json:"gc_pause_avg_ms"`
+	GCPauseMax int64   `json:"gc_pause_max_ns"`
 
-	InflightAvg float64
-	InflightMax int64
+	InflightAvg float64 `json:"inflight_avg"`
+	InflightMax int64   `json:"inflight_max"`
+
+	Samples int `json:"samples"`
 }
 
 // ProviderHealthCurrent is the rolled-up current health state for one

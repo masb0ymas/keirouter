@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"sort"
 	"sync"
 	"time"
 
@@ -254,6 +253,12 @@ type PlanOptions struct {
 	// StickyLimit is the number of consecutive requests per target before
 	// round-robin advances. Zero defaults to DefaultStickyLimit.
 	StickyLimit int
+	// FixedOrder marks a target order that carries meaning (cheapest-first,
+	// fastest-first), so a global round-robin default must not rotate it.
+	FixedOrder bool
+	// PinnedTail is the number of trailing targets excluded from rotation,
+	// e.g. a chain's explicit last-resort fallback model, which must stay last.
+	PinnedTail int
 	// AccountStrategy controls how accounts inside one provider/model target
 	// are ordered. "fallback" keeps priority order; "round-robin" rotates the
 	// starting account while preserving cooldown/fallback behavior.
@@ -324,8 +329,10 @@ func (d *Dispatcher) Plan(ctx context.Context, tenantID string, targets []Target
 
 // PlanWith is like Plan but accepts strategy options.
 func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Target, required core.CapabilitySet, opts PlanOptions) ([]Attempt, error) {
-	unlock := d.lockSelection(targets)
-	defer unlock()
+	// Rotation and affinity state are serialized inside applyRotation and
+	// applyAccountRouting only. Credential preparation below (OAuth refresh,
+	// vault decryption, proxy-pool lookup) runs unlocked so one slow token
+	// refresh never stalls every other request routed to the same provider.
 
 	// Apply round-robin rotation if requested.
 	ordered := d.applyRotation(ctx, targets, opts)
@@ -483,20 +490,7 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 			isUnhealthy := unhealthySet != nil && unhealthySet[acc.ID]
 			prepared, ok := preparedAccounts[acc.ID]
 			if !ok {
-				prepared.account = acc
-				if d.refresher != nil {
-					prepared.account, prepared.err = d.refresher.EnsureFresh(ctx, prepared.account)
-				}
-				if prepared.err == nil {
-					prepared.creds, prepared.err = d.vault.Open(prepared.account)
-				}
-				if prepared.err == nil && d.pools != nil && prepared.account.ProxyPoolID != "" {
-					prepared.err = proxy.ResolvePool(ctx, d.pools, prepared.account.ProxyPoolID, &prepared.creds)
-				}
-				if prepared.err == nil && prepared.creds.ProxyURL == "" && prepared.creds.RelayURL == "" && globalProxyURL != "" {
-					prepared.creds.ProxyURL = globalProxyURL
-					prepared.creds.NoProxy = globalNoProxy
-				}
+				prepared.account, prepared.creds, prepared.err = d.prepareAccount(ctx, acc, globalProxyURL, globalNoProxy)
 				preparedAccounts[acc.ID] = prepared
 			}
 			if prepared.err != nil {
@@ -565,7 +559,51 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 	return attempts, nil
 }
 
-// NoteFailure applies cooldowns to an account (and optionally a model) based on
+// PrepareCredentials builds the credentials one account would serve traffic
+// with: its proxy pool (or the global proxy), a just-in-time OAuth refresh, and
+// the decrypted secrets. Callers outside the request path (synthetic health
+// probes) use it so they hit the upstream exactly as routed traffic does.
+func (d *Dispatcher) PrepareCredentials(ctx context.Context, acc store.Account) (store.Account, core.Credentials, error) {
+	var globalProxyURL, globalNoProxy string
+	if d.proxyReader != nil {
+		globalProxyURL = d.proxyReader.ProxyURL()
+		globalNoProxy = d.proxyReader.NoProxy()
+	}
+	return d.prepareAccount(ctx, acc, globalProxyURL, globalNoProxy)
+}
+
+func (d *Dispatcher) prepareAccount(ctx context.Context, acc store.Account, globalProxyURL, globalNoProxy string) (store.Account, core.Credentials, error) {
+	// Resolve the egress route first so an OAuth refresh leaves through the
+	// same proxy as the API calls it authorizes.
+	var route core.Credentials
+	if d.pools != nil && acc.ProxyPoolID != "" {
+		if err := proxy.ResolvePool(ctx, d.pools, acc.ProxyPoolID, &route); err != nil {
+			return acc, core.Credentials{}, err
+		}
+	}
+	if route.ProxyURL == "" && route.RelayURL == "" && globalProxyURL != "" {
+		route.ProxyURL = globalProxyURL
+		route.NoProxy = globalNoProxy
+	}
+	if d.refresher != nil {
+		refreshed, err := d.refresher.EnsureFresh(core.WithProxy(ctx, route), acc)
+		if err != nil {
+			return refreshed, core.Credentials{}, err
+		}
+		acc = refreshed
+	}
+	creds, err := d.vault.Open(acc)
+	if err != nil {
+		return acc, core.Credentials{}, err
+	}
+	creds.ProxyURL = route.ProxyURL
+	creds.RelayURL = route.RelayURL
+	creds.NoProxy = route.NoProxy
+	creds.StrictProxy = route.StrictProxy
+	return acc, creds, nil
+}
+
+// NoteFailureapplies cooldowns to an account (and optionally a model) based on
 // a provider error. Exponential backoff increases the cooldown on repeated
 // failures for rate-limit / quota errors. Concurrent failures on the same
 // account within FailureDedupWindow escalate once, and locally computed
@@ -880,7 +918,12 @@ func (d *Dispatcher) exponentialCooldown(ctx context.Context, accountID string) 
 // as-is. For "round-robin", the persisted cursor is advanced and the targets
 // are rotated so the cursor index comes first.
 func (d *Dispatcher) applyRotation(ctx context.Context, targets []Target, opts PlanOptions) []Target {
-	if opts.Strategy != StrategyRoundRobin || len(targets) <= 1 || d.routing == nil || opts.ChainID == "" {
+	tail := opts.PinnedTail
+	if tail < 0 || tail > len(targets) {
+		tail = 0
+	}
+	rotatable := len(targets) - tail
+	if opts.Strategy != StrategyRoundRobin || rotatable <= 1 || d.routing == nil || opts.ChainID == "" {
 		return targets
 	}
 
@@ -888,13 +931,16 @@ func (d *Dispatcher) applyRotation(ctx context.Context, targets []Target, opts P
 	if sticky <= 0 {
 		sticky = DefaultStickyLimit
 	}
+	unlock := d.lockSelection("chain:" + opts.ChainID)
+	defer unlock()
 	state, _ := d.routing.GetChainRotationState(ctx, opts.ChainID)
-	cursor, nextCursor, nextHitCount := advanceRotationState(len(targets), state.LastIndex, state.HitCount, sticky)
+	cursor, nextCursor, nextHitCount := advanceRotationState(rotatable, state.LastIndex, state.HitCount, sticky)
 
 	rotated := make([]Target, len(targets))
-	for i := range targets {
-		rotated[i] = targets[(cursor+i)%len(targets)]
+	for i := 0; i < rotatable; i++ {
+		rotated[i] = targets[(cursor+i)%rotatable]
 	}
+	copy(rotated[rotatable:], targets[rotatable:])
 
 	_ = d.routing.SetChainRotationState(ctx, store.ChainRotation{
 		ChainID:   opts.ChainID,
@@ -920,6 +966,14 @@ func (opts PlanOptions) accountRoutingForTarget(provider string) AccountRoutingO
 }
 
 func (d *Dispatcher) applyAccountRouting(ctx context.Context, tenantID string, target Target, accounts []store.Account, opts AccountRoutingOptions) []store.Account {
+	if len(accounts) <= 1 || d.routing == nil {
+		return accounts
+	}
+	switch opts.Strategy {
+	case StrategyRoundRobin, StrategySmartRoundRobin:
+		unlock := d.lockSelection("provider:" + target.Provider)
+		defer unlock()
+	}
 	switch opts.Strategy {
 	case StrategyRoundRobin:
 		return d.applyAccountRoundRobin(ctx, tenantID, target, accounts, opts)
@@ -1049,32 +1103,14 @@ func (d *Dispatcher) EvictAccountAffinity(ctx context.Context, tenantID string, 
 	})
 }
 
-func (d *Dispatcher) lockSelection(targets []Target) func() {
-	providers := make([]string, 0, len(targets))
-	seen := make(map[string]struct{}, len(targets))
-	for _, target := range targets {
-		if target.Provider == "" {
-			continue
-		}
-		if _, ok := seen[target.Provider]; ok {
-			continue
-		}
-		seen[target.Provider] = struct{}{}
-		providers = append(providers, target.Provider)
-	}
-	sort.Strings(providers)
-	locks := make([]*sync.Mutex, 0, len(providers))
-	for _, provider := range providers {
-		value, _ := d.selectionLocks.LoadOrStore(provider, &sync.Mutex{})
-		lock := value.(*sync.Mutex)
-		lock.Lock()
-		locks = append(locks, lock)
-	}
-	return func() {
-		for i := len(locks) - 1; i >= 0; i-- {
-			locks[i].Unlock()
-		}
-	}
+// lockSelection serializes the read-advance-write of one rotation or affinity
+// state key so concurrent requests do not all observe the same cursor. Hold
+// it only around state access, never around network or crypto work.
+func (d *Dispatcher) lockSelection(key string) func() {
+	value, _ := d.selectionLocks.LoadOrStore(key, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (d *Dispatcher) recordProviderFailure(provider string) {

@@ -4,6 +4,7 @@ import { ExternalLink, Loader2 } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider } from "../../lib/api";
 import { useToast } from "../Toast";
 import {
+  ActionRow,
   ConnectDialog,
   ConnectError,
   Connected,
@@ -194,12 +195,12 @@ function OAuthCodeConnect({ provider, logo, onClose }: { provider: OAuthProvider
         <div className="space-y-4">
           <Steps steps={[`Sign in to ${provider.display_name} in the window that opens`, "Approve access for KeiRouter", "This dialog closes on its own"]} />
           <FormError message={error} />
-          <div className="flex justify-end">
+          <ActionRow>
             <PrimaryAction onClick={start}>
               <ExternalLink aria-hidden="true" />
               Open sign-in
             </PrimaryAction>
-          </div>
+          </ActionRow>
         </div>
       )}
 
@@ -213,10 +214,10 @@ function OAuthCodeConnect({ provider, logo, onClose }: { provider: OAuthProvider
             </div>
           </div>
           <FormError message={error} />
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <ActionRow between>
             <TextButton onClick={() => setPhase("manual")}>Page didn't load? Paste its URL</TextButton>
             <SecondaryAction onClick={start}>Reopen sign-in</SecondaryAction>
-          </div>
+          </ActionRow>
         </div>
       )}
 
@@ -250,11 +251,11 @@ function OAuthCodeConnect({ provider, logo, onClose }: { provider: OAuthProvider
             className="font-mono text-[12px]"
             error={error || undefined}
           />
-          <div className="flex justify-end">
+          <ActionRow>
             <PrimaryAction type="submit" busy={exchanging}>
               {exchanging ? "Connecting…" : "Complete connection"}
             </PrimaryAction>
-          </div>
+          </ActionRow>
         </form>
       )}
     </ConnectDialog>
@@ -275,9 +276,9 @@ function OAuthDeviceConnect({ provider, logo, onClose }: { provider: OAuthProvid
       {flow.status === "idle" && (
         <div className="space-y-4">
           <Steps steps={["Get a one-time code", `Enter it on ${provider.display_name}'s verification page`, "Approve access — this dialog finishes on its own"]} />
-          <div className="flex justify-end">
+          <ActionRow>
             <PrimaryAction onClick={flow.start}>Get a device code</PrimaryAction>
-          </div>
+          </ActionRow>
         </div>
       )}
       {(flow.status === "starting" || (flow.status === "waiting" && !flow.code)) && <Starting text="Requesting a device code…" />}

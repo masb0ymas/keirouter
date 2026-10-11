@@ -28,6 +28,11 @@ export function ImportExportTab() {
 }
 
 // ── Small pieces ────────────────────────────────────────────────────
+// Dialog footer: full-width stacked buttons on phones (primary last, matching tab order),
+// right-aligned row from sm up.
+const dialogFooter =
+  "flex flex-col gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-end sm:px-5";
+
 function PassphraseInput({
   id,
   value,
@@ -410,7 +415,7 @@ function ForeignImportSettings() {
         description={
           analyze ? (
             <>
-              Analyzed <span className="font-mono text-fg">{pendingSqliteFile?.name}</span>. Choose what to import below.
+              Analyzed <span className="break-all font-mono text-fg">{pendingSqliteFile?.name}</span>. Choose what to import below.
             </>
           ) : (
             <>
@@ -495,7 +500,7 @@ function ForeignImportSettings() {
             )}
           </fieldset>
 
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
             <Button
               variant="ghost"
               onClick={() => {
@@ -503,6 +508,7 @@ function ForeignImportSettings() {
                 setPendingSqliteFile(null);
               }}
               disabled={loading}
+              className="w-full sm:w-auto"
             >
               Cancel
             </Button>
@@ -510,6 +516,7 @@ function ForeignImportSettings() {
               variant={sqliteOptions.mode === "wipe" ? "danger" : "primary"}
               onClick={runSqliteImport}
               disabled={loading || !Object.values(sqliteOptions).some((v) => typeof v === "boolean" && v)}
+              className="w-full sm:w-auto"
             >
               {loading ? "Importing…" : "Run import"}
             </Button>
@@ -678,7 +685,7 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
         title: "Restore this backup?",
         description: (
           <>
-            Records in <span className="font-mono text-fg">{file.name}</span> are merged into this install. Matching
+            Records in <span className="break-all font-mono text-fg">{file.name}</span> are merged into this install. Matching
             records are overwritten with the backup&apos;s values; records that aren&apos;t in the backup are kept.
           </>
         ),
@@ -764,9 +771,7 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
           }
           description={
             sqlite.data?.path ? (
-              <span className="block truncate font-mono" title={sqlite.data.path}>
-                {sqlite.data.path}
-              </span>
+              <span className="block break-all font-mono">{sqlite.data.path}</span>
             ) : !sqlite.isLoading && !sqliteAvailable ? (
               "Only available with SQLite storage."
             ) : undefined
@@ -794,7 +799,7 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
         subtitle="Choose how credentials are encrypted."
         maxWidth="max-w-md"
       >
-        <div className="max-h-[55vh] space-y-4 overflow-y-auto px-5 py-4">
+        <div className="max-h-[55vh] space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
           <fieldset className="space-y-2">
             <legend className="sr-only">Backup type</legend>
             <RadioCard
@@ -881,11 +886,11 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
-          <Button variant="ghost" onClick={resetExport} disabled={loading}>
+        <div className={dialogFooter}>
+          <Button variant="ghost" onClick={resetExport} disabled={loading} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button variant="primary" onClick={handleExportSubmit} disabled={exportDisabled}>
+          <Button variant="primary" onClick={handleExportSubmit} disabled={exportDisabled} className="w-full sm:w-auto">
             <Download aria-hidden="true" />
             {loading ? "Preparing…" : "Download"}
           </Button>
@@ -898,7 +903,7 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
         title="Portable backup detected"
         subtitle="Enter the passphrase used to export it."
       >
-        <div className="space-y-4 px-5 py-4">
+        <div className="max-h-[55vh] space-y-4 overflow-y-auto px-4 py-4 sm:px-5">
           <div className="space-y-1.5">
             <label htmlFor="import-pass" className="flex items-baseline justify-between text-[12.5px] font-medium text-fg">
               Passphrase
@@ -930,11 +935,16 @@ function DatabaseSettings({ loading, setLoading }: DbBusy) {
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
-          <Button variant="ghost" onClick={resetImport} disabled={loading}>
+        <div className={dialogFooter}>
+          <Button variant="ghost" onClick={resetImport} disabled={loading} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button variant="primary" onClick={submitImportWithPass} disabled={loading || !importPass.trim()}>
+          <Button
+            variant="primary"
+            onClick={submitImportWithPass}
+            disabled={loading || !importPass.trim()}
+            className="w-full sm:w-auto"
+          >
             <Upload aria-hidden="true" />
             {loading ? "Restoring…" : "Restore"}
           </Button>
@@ -986,7 +996,7 @@ function DangerZone({ loading, setLoading }: DbBusy) {
       title: "Replace the active database?",
       description: (
         <>
-          <span className="font-mono text-fg">{file.name}</span> replaces the active SQLite database after an integrity
+          <span className="break-all font-mono text-fg">{file.name}</span> replaces the active SQLite database after an integrity
           check. Providers, keys, usage records and settings switch to the backup&apos;s contents. KeiRouter saves a safety
           copy first, and you must restart it to load the restored file. Only use trusted KeiRouter SQLite backups.
         </>

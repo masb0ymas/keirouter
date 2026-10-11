@@ -152,15 +152,17 @@ export function OverviewPage() {
           <>
             <BaseUrlChip />
             {!firstRun && (
-              <>
+              // On phones this is one full-width row (live, range, refresh, then
+              // the primary action pushed right); it falls back to wrapping at 320px.
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                 {live && (
                   <span
                     role="status"
                     title="Updates as traffic arrives"
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-[12px] font-medium text-fg-muted"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-2.5 text-[12px] font-medium text-fg-muted sm:h-8"
                   >
                     <span className="live-dot h-1.5 w-1.5 rounded-full bg-ok" aria-hidden="true" />
-                    Live
+                    <span className="sr-only sm:not-sr-only">Live</span>
                   </span>
                 )}
                 <PeriodSelect value={period} onChange={setPeriod} />
@@ -170,7 +172,7 @@ export function OverviewPage() {
                   aria-label="Refresh overview"
                   aria-busy={refreshing}
                   className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg",
+                    "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-8 sm:w-8",
                     FOCUS_RING,
                   )}
                 >
@@ -179,14 +181,16 @@ export function OverviewPage() {
                 <Link
                   to="/providers"
                   className={cn(
-                    "inline-flex h-8 items-center gap-1.5 rounded-lg bg-action px-3 text-[13px] font-medium text-action-fg transition-colors hover:bg-action-hover focus-visible:ring-offset-2",
+                    "ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-action px-3 text-[13px] font-medium text-action-fg transition-colors hover:bg-action-hover focus-visible:ring-offset-2 sm:ml-0 sm:h-8",
                     FOCUS_RING,
                   )}
                 >
                   <Plus className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-                  Connect provider
+                  <span>
+                    Connect<span className="sr-only sm:not-sr-only"> provider</span>
+                  </span>
                 </Link>
-              </>
+              </div>
             )}
           </>
         }
@@ -229,7 +233,7 @@ export function OverviewPage() {
 function PeriodSelect({ value, onChange }: { value: PeriodKey; onChange: (p: PeriodKey) => void }) {
   return (
     <div
-      className="inline-flex h-8 items-center rounded-xl border border-line bg-subtle p-0.5"
+      className="inline-flex h-9 shrink-0 items-center rounded-xl border border-line bg-subtle p-0.5 sm:h-8"
       role="radiogroup"
       aria-label="Time range"
       onKeyDown={(e) => onGroupArrowKeys(e, "radio")}
@@ -245,7 +249,7 @@ function PeriodSelect({ value, onChange }: { value: PeriodKey; onChange: (p: Per
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(key)}
             className={cn(
-              "h-full min-w-8 rounded-lg px-2.5 font-mono text-[12px] font-medium transition-colors",
+              "h-full min-w-8 rounded-lg px-2 font-mono text-[12px] font-medium transition-colors sm:px-2.5",
               FOCUS_RING,
               active ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
             )}
@@ -273,14 +277,16 @@ function BaseUrlChip() {
     }
   };
   return (
-    <div className="hidden h-8 items-center overflow-hidden rounded-lg border border-line bg-surface md:inline-flex">
-      <span className="flex h-full items-center border-r border-line px-2.5 text-[12px] text-fg-muted">Base URL</span>
-      <span className="px-2.5 font-mono text-[12px] text-fg">{url}</span>
+    // Hidden on phones: copying an endpoint is a desktop job, and the header
+    // row there is reserved for range, refresh and the primary action.
+    <div className="hidden h-8 max-w-full items-center overflow-hidden rounded-lg border border-line bg-surface md:inline-flex">
+      <span className="flex h-full shrink-0 items-center border-r border-line px-2.5 text-[12px] text-fg-muted">Base URL</span>
+      <span className="min-w-0 truncate px-2.5 font-mono text-[12px] text-fg" title={url}>{url}</span>
       <button
         type="button"
         onClick={copy}
         aria-label="Copy base URL"
-        className="flex h-full w-8 items-center justify-center border-l border-line bg-subtle text-fg-muted transition-colors hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+        className="flex h-full w-8 shrink-0 items-center justify-center border-l border-line bg-subtle text-fg-muted transition-colors hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
       >
         <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
       </button>
@@ -585,51 +591,98 @@ function TopModelsCard({ models, loading, className }: { models?: ModelUsage[]; 
       ) : rows.length === 0 ? (
         <PanelEmpty icon={ICONS.model} title="No model traffic in this period" />
       ) : (
-        <div className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500" tabIndex={0} role="region" aria-label="Top models table">
-          <table className="w-full min-w-[560px] text-[12.5px]">
-            <thead>
-              <tr className={THEAD}>
-                <th scope="col" className={TH}>Model</th>
-                <th scope="col" className={cn(TH, "text-right")}>Requests</th>
-                <th scope="col" className={cn(TH, "text-right")}>Tokens</th>
-                <th scope="col" className={cn(TH, "text-right")}>Cost</th>
-                <th scope="col" className={cn(TH, "w-40")}>Share</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {rows.map((m) => {
-                const share = total ? (m.total_requests / total) * 100 : 0;
-                return (
-                  <tr key={`${m.provider}/${m.model}`} className="transition-colors hover:bg-hover">
-                    <td className="max-w-[280px] px-4 py-2">
-                      <span className="flex min-w-0 items-center gap-2.5">
-                        <ProviderLogo icon={m.provider_icon} name={m.provider_name || m.provider} size={18} />
-                        <span className="min-w-0">
-                          <span className="block truncate font-mono text-fg" title={m.model}>{m.model || "unknown"}</span>
-                          <span className="block truncate font-mono text-[11.5px] text-fg-muted">{m.provider}</span>
+        <>
+          {/* Phones: one stacked card per model instead of a sideways-scrolling table. */}
+          <ul className="divide-y divide-line md:hidden" aria-label="Top models">
+            {rows.map((m) => {
+              const share = modelShare(m, total);
+              return (
+                <li key={`${m.provider}/${m.model}`} className="px-4 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <ProviderLogo icon={m.provider_icon} name={m.provider_name || m.provider} size={18} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-[12.5px] text-fg" title={m.model}>{m.model || "unknown"}</p>
+                      <p className="truncate font-mono text-[11.5px] text-fg-muted">{m.provider}</p>
+                    </div>
+                    <span className="shrink-0 text-[12.5px] font-medium tabular-nums text-fg">
+                      {fmtShare(share)}
+                      <span className="sr-only"> of requests</span>
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">
+                    {fmtInt(m.total_requests)} requests · {fmtCompact(m.total_tokens)} tokens
+                    {modelCost(m) !== "—" && <> · {modelCost(m)}</>}
+                  </p>
+                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-track" aria-hidden="true">
+                    <div className="h-full rounded-full bg-accent-500" style={{ width: `${share}%` }} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <div
+            className="hidden overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 md:block"
+            tabIndex={0}
+            role="region"
+            aria-label="Top models table"
+          >
+            <table className="w-full min-w-[560px] text-[12.5px]">
+              <thead>
+                <tr className={THEAD}>
+                  <th scope="col" className={TH}>Model</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Requests</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Tokens</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Cost</th>
+                  <th scope="col" className={cn(TH, "w-40")}>Share</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {rows.map((m) => {
+                  const share = modelShare(m, total);
+                  return (
+                    <tr key={`${m.provider}/${m.model}`} className="transition-colors hover:bg-hover">
+                      <td className="max-w-[280px] px-4 py-2">
+                        <span className="flex min-w-0 items-center gap-2.5">
+                          <ProviderLogo icon={m.provider_icon} name={m.provider_name || m.provider} size={18} />
+                          <span className="min-w-0">
+                            <span className="block truncate font-mono text-fg" title={m.model}>{m.model || "unknown"}</span>
+                            <span className="block truncate font-mono text-[11.5px] text-fg-muted">{m.provider}</span>
+                          </span>
                         </span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-right text-fg">{fmtInt(m.total_requests)}</td>
-                    <td className="px-4 py-2 text-right text-fg-muted">{fmtCompact(m.total_tokens)}</td>
-                    <td className="px-4 py-2 text-right text-fg">{m.cost_usd > 0 ? fmtUSD(m.cost_usd) : m.pricing_status === "free" ? "Free" : "—"}</td>
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-track" aria-hidden="true">
-                          <div className="h-full rounded-full bg-accent-500" style={{ width: `${share}%` }} />
+                      </td>
+                      <td className="px-4 py-2 text-right text-fg">{fmtInt(m.total_requests)}</td>
+                      <td className="px-4 py-2 text-right text-fg-muted">{fmtCompact(m.total_tokens)}</td>
+                      <td className="px-4 py-2 text-right text-fg">{modelCost(m)}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-track" aria-hidden="true">
+                            <div className="h-full rounded-full bg-accent-500" style={{ width: `${share}%` }} />
+                          </div>
+                          <span className="w-10 text-right text-[11.5px] tabular-nums text-fg-muted">{fmtShare(share)}</span>
                         </div>
-                        <span className="w-10 text-right text-[11.5px] tabular-nums text-fg-muted">{share.toFixed(share < 10 ? 1 : 0)}%</span>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </Panel>
   );
+}
+
+function modelShare(m: ModelUsage, total: number): number {
+  return total ? (m.total_requests / total) * 100 : 0;
+}
+
+function fmtShare(share: number): string {
+  return `${share.toFixed(share < 10 ? 1 : 0)}%`;
+}
+
+function modelCost(m: ModelUsage): string {
+  return m.cost_usd > 0 ? fmtUSD(m.cost_usd) : m.pricing_status === "free" ? "Free" : "—";
 }
 
 // ── Savings and budgets ──────────────────────────────────────────────────────
@@ -857,55 +910,117 @@ function RecentRequestsCard({ recent, className }: { recent: RecentActivity[]; c
       {recent.length === 0 ? (
         <PanelEmpty icon={ICONS.requests} title="No requests in this period" />
       ) : (
-        <div className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500" tabIndex={0} role="region" aria-label="Recent requests table">
-          <table className="w-full min-w-[600px] text-[12.5px]">
-            <thead>
-              <tr className={THEAD}>
-                <th scope="col" className={TH}>Time</th>
-                <th scope="col" className={TH}>Status</th>
-                <th scope="col" className={TH}>Model</th>
-                <th scope="col" className={cn(TH, "text-right")}>Latency</th>
-                <th scope="col" className={cn(TH, "text-right")}>Tokens in → out</th>
-                <th scope="col" className={cn(TH, "text-right")}>Cost</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {recent.map((r) => {
-                const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.cancelled;
-                const caller = [r.api_key_name, r.client].filter(Boolean).join(" · ");
-                return (
-                  <tr key={r.id} className="transition-colors hover:bg-hover">
-                    <td className="whitespace-nowrap px-4 py-2 font-mono text-[12px] text-fg-muted" title={new Date(r.created_at).toLocaleString()}>
-                      {formatClock(r.created_at)}
-                    </td>
-                    <td className="px-4 py-2">
+        <>
+          {/* Phones: stacked cards — model and status first, then the numbers. */}
+          <ul className="divide-y divide-line md:hidden" aria-label="Recent requests">
+            {recent.map((r) => {
+              const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.cancelled;
+              const caller = [r.api_key_name, r.client].filter(Boolean).join(" · ");
+              return (
+                <li key={r.id} className="px-4 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={18} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-[12.5px] text-fg" title={`${r.provider}/${r.model}`}>{r.model || "unknown"}</p>
+                      {caller && <p className="truncate font-mono text-[11.5px] text-fg-muted">{caller}</p>}
+                    </div>
+                    <span className="shrink-0">
                       <Badge tone={st.tone} title={r.error_kind || undefined}>
-                        {r.status === "failed" && r.error_kind ? humanError(r.error_kind) : st.label}
+                        {requestStatusLabel(r, st.label)}
                       </Badge>
-                    </td>
-                    <td className="max-w-[300px] px-4 py-2">
-                      <span className="flex min-w-0 items-center gap-2.5">
-                        <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={18} />
-                        <span className="min-w-0">
-                          <span className="block truncate font-mono text-fg" title={`${r.provider}/${r.model}`}>{r.model || "unknown"}</span>
-                          {caller && <span className="block truncate font-mono text-[11.5px] text-fg-muted">{caller}</span>}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 flex flex-wrap gap-x-1.5 text-[12px] tabular-nums text-fg-muted">
+                    <time dateTime={r.created_at} title={new Date(r.created_at).toLocaleString()} className="font-mono">
+                      {formatClock(r.created_at)}
+                    </time>
+                    <span aria-hidden="true">·</span>
+                    <span>{fmtMs(r.latency_ms)}</span>
+                    {(r.prompt_tokens > 0 || r.completion_tokens > 0) && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {requestTokens(r)}
+                          <span className="sr-only"> tokens in and out</span>
                         </span>
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-right text-fg">{fmtMs(r.latency_ms)}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-right text-fg-muted">
-                      {r.prompt_tokens || r.completion_tokens ? `${fmtCompact(r.prompt_tokens)} → ${fmtCompact(r.completion_tokens)}` : "—"}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-right text-fg">{r.cache_hit ? "$0" : r.cost_usd > 0 ? fmtUSD(r.cost_usd) : "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </>
+                    )}
+                    {requestCost(r) !== "—" && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-fg">{requestCost(r)}</span>
+                      </>
+                    )}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+          <div
+            className="hidden overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 md:block"
+            tabIndex={0}
+            role="region"
+            aria-label="Recent requests table"
+          >
+            <table className="w-full min-w-[600px] text-[12.5px]">
+              <thead>
+                <tr className={THEAD}>
+                  <th scope="col" className={TH}>Time</th>
+                  <th scope="col" className={TH}>Status</th>
+                  <th scope="col" className={TH}>Model</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Latency</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Tokens in → out</th>
+                  <th scope="col" className={cn(TH, "text-right")}>Cost</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {recent.map((r) => {
+                  const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.cancelled;
+                  const caller = [r.api_key_name, r.client].filter(Boolean).join(" · ");
+                  return (
+                    <tr key={r.id} className="transition-colors hover:bg-hover">
+                      <td className="whitespace-nowrap px-4 py-2 font-mono text-[12px] text-fg-muted" title={new Date(r.created_at).toLocaleString()}>
+                        {formatClock(r.created_at)}
+                      </td>
+                      <td className="px-4 py-2">
+                        <Badge tone={st.tone} title={r.error_kind || undefined}>
+                          {requestStatusLabel(r, st.label)}
+                        </Badge>
+                      </td>
+                      <td className="max-w-[300px] px-4 py-2">
+                        <span className="flex min-w-0 items-center gap-2.5">
+                          <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={18} />
+                          <span className="min-w-0">
+                            <span className="block truncate font-mono text-fg" title={`${r.provider}/${r.model}`}>{r.model || "unknown"}</span>
+                            {caller && <span className="block truncate font-mono text-[11.5px] text-fg-muted">{caller}</span>}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right text-fg">{fmtMs(r.latency_ms)}</td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right text-fg-muted">{requestTokens(r)}</td>
+                      <td className="whitespace-nowrap px-4 py-2 text-right text-fg">{requestCost(r)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </Panel>
   );
+}
+
+function requestStatusLabel(r: RecentActivity, fallback: string): string {
+  return r.status === "failed" && r.error_kind ? humanError(r.error_kind) : fallback;
+}
+
+function requestTokens(r: RecentActivity): string {
+  return r.prompt_tokens || r.completion_tokens ? `${fmtCompact(r.prompt_tokens)} → ${fmtCompact(r.completion_tokens)}` : "—";
+}
+
+function requestCost(r: RecentActivity): string {
+  return r.cache_hit ? "$0" : r.cost_usd > 0 ? fmtUSD(r.cost_usd) : "—";
 }
 
 function humanError(kind: string): string {
@@ -984,7 +1099,7 @@ function FirstRun() {
             }
             action={
               <div
-                className="h-1.5 w-40 overflow-hidden rounded-full bg-track"
+                className="h-1.5 w-20 overflow-hidden rounded-full bg-track sm:w-40"
                 role="progressbar"
                 aria-valuenow={done * 25}
                 aria-valuemin={0}
@@ -1027,7 +1142,12 @@ function FirstRun() {
           >
             <div className="mt-3 overflow-hidden rounded-xl border border-line">
               <div className="flex items-center gap-1 border-b border-line bg-subtle p-1.5">
-                <div className="flex items-center gap-1" role="tablist" aria-label="Snippet" onKeyDown={(e) => onGroupArrowKeys(e, "tab")}>
+                <div
+                  className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+                  role="tablist"
+                  aria-label="Snippet"
+                  onKeyDown={(e) => onGroupArrowKeys(e, "tab")}
+                >
                   {snippetKeys.map((k) => (
                     <button
                       key={k}
@@ -1039,7 +1159,7 @@ function FirstRun() {
                       tabIndex={snippet === k ? 0 : -1}
                       onClick={() => setSnippet(k)}
                       className={cn(
-                        "h-7 rounded-lg px-2.5 text-[12px] font-medium transition-colors",
+                        "h-9 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-colors sm:h-7",
                         FOCUS_RING,
                         snippet === k ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
                       )}
@@ -1052,7 +1172,7 @@ function FirstRun() {
                   type="button"
                   onClick={copySnippet}
                   aria-label={`Copy ${snippets[snippet].label} snippet`}
-                  className={cn("ml-auto flex h-7 w-7 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
+                  className={cn("ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-7 sm:w-7", FOCUS_RING)}
                 >
                   <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
                 </button>
@@ -1107,9 +1227,9 @@ function FirstRun() {
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2.5 px-4 py-3.5 text-[12.5px]">
           <dt className="text-fg-muted">Endpoint</dt>
-          <dd className="truncate text-right font-mono text-fg">{origin}/v1</dd>
+          <dd className="min-w-0 break-all text-right font-mono text-fg">{origin}/v1</dd>
           <dt className="text-fg-muted">Listening on</dt>
-          <dd className="text-right font-mono text-fg">{info.data?.listen_addr ?? "—"}</dd>
+          <dd className="min-w-0 break-all text-right font-mono text-fg">{info.data?.listen_addr ?? "—"}</dd>
           <dt className="text-fg-muted">Storage</dt>
           <dd className="text-right text-fg">{info.data ? (info.data.dialect === "postgres" ? "Postgres" : "SQLite") : "—"}</dd>
           <dt className="text-fg-muted">Version</dt>
@@ -1147,7 +1267,7 @@ function SetupStep({
 }) {
   const isCurrent = index === current;
   return (
-    <li className={cn("flex gap-3.5 px-4 py-4", isCurrent && "bg-subtle")} aria-current={isCurrent ? "step" : undefined}>
+    <li className={cn("flex gap-3 px-4 py-4 sm:gap-3.5", isCurrent && "bg-subtle")} aria-current={isCurrent ? "step" : undefined}>
       {/* Done steps turn into a green check; the current step carries the page
           tone; later steps stay neutral. The sr-only text in the heading says which. */}
       <IconTile icon={done ? Check : icon} size="md" tone={done ? "ok" : isCurrent ? "section" : "slate"} />
@@ -1174,7 +1294,8 @@ function SetupAction({ to, primary, children }: { to: string; primary?: boolean;
     <Link
       to={to}
       className={cn(
-        "inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-[13px] font-medium transition-colors focus-visible:ring-offset-2",
+        // Full-width on phones so the step's action is an easy, obvious tap target.
+        "inline-flex h-9 w-full shrink-0 items-center justify-center rounded-lg px-3 text-[13px] font-medium transition-colors focus-visible:ring-offset-2 sm:h-8 sm:w-auto",
         FOCUS_RING,
         primary ? "bg-action text-action-fg hover:bg-action-hover" : "border border-line-strong bg-surface text-fg hover:bg-hover",
       )}

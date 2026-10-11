@@ -1,4 +1,4 @@
-import { useId, useState, type ComponentProps, type ReactNode } from "react";
+import { useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Info } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,14 +20,16 @@ export function Tooltip({ delayDuration = 200, ...props }: ComponentProps<typeof
 export function TooltipContent({
   className,
   sideOffset = 6,
+  collisionPadding = 8,
   ...props
 }: ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          "z-[110] max-w-xs rounded-lg bg-primary px-2 py-1 text-[12px] leading-snug text-primary-fg shadow-[var(--shadow-pop)]",
+          "z-[110] max-w-[min(20rem,calc(100vw-1rem))] rounded-lg bg-primary px-2 py-1 text-[12px] leading-snug text-primary-fg shadow-[var(--shadow-pop)]",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
           className,
         )}
@@ -58,6 +60,9 @@ export function InfoTip({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // Radix closes an open tooltip on pointerdown, before our click toggles it,
+  // so a second tap would re-open it. Remember the state the tap started from.
+  const openAtPointerDown = useRef<boolean | null>(null);
   const descId = useId();
   return (
     <>
@@ -71,10 +76,16 @@ export function InfoTip({
               "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
               className,
             )}
-            // Touch has no hover: a tap toggles the tooltip.
+            // Touch has no hover: a tap toggles the tooltip (tap outside or
+            // Escape also closes it). Enter / Space toggle it from the keyboard.
+            onPointerDown={() => {
+              openAtPointerDown.current = open;
+            }}
             onClick={(e) => {
               e.preventDefault();
-              setOpen((v) => !v);
+              const wasOpen = openAtPointerDown.current ?? open;
+              openAtPointerDown.current = null;
+              setOpen(!wasOpen);
             }}
           >
             <Info className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />

@@ -1,4 +1,14 @@
-import { useId, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -6,6 +16,10 @@ import { cn } from "@/lib/utils";
 // the key portal. Plain HTML bars / SVG lines in the dashboard's visual
 // language: dashed gridlines, nice-rounded y ticks, ~6 x labels, a hover
 // crosshair with a tooltip, and colour only from the series definitions.
+//
+// Touch: tapping or dragging horizontally across the plot moves the crosshair
+// (vertical swipes still scroll the page); the tooltip stays up after the
+// finger lifts and closes when focus leaves the chart.
 //
 // Accessibility: the plot is focusable; ← → / Home / End move the crosshair
 // (the tooltip text is announced through a live region), and a visually
@@ -78,6 +92,97 @@ export function useChartKeys(length: number, hover: number | null, setHover: (i:
   };
 }
 
+// useElementWidth tracks an element's content width (ResizeObserver).
+export function useElementWidth<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => setWidth(entries[0]?.contentRect.width ?? el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
+/** How many x-axis labels fit: one per ~`spacing` px, between 2 and `max`. */
+export function xLabelCount(width: number, max = 6, spacing = 76): number {
+  if (!width) return max;
+  return Math.max(2, Math.min(max, Math.floor(width / spacing)));
+}
+
+// usePlotPointer maps pointer position to a point index. Mouse: hover moves
+// the crosshair and leaving clears it. Touch / pen: a tap or horizontal drag
+// moves it and the tooltip stays after the finger lifts (blur clears it).
+// Pair with `touch-action: pan-y` on the plot so vertical swipes still scroll.
+export function usePlotPointer(length: number, setHover: (i: number | null) => void, onPointerUse?: () => void) {
+  const indexAt = (event: ReactPointerEvent<HTMLElement>) => {
+    const r = event.currentTarget.getBoundingClientRect();
+    if (!r.width || !length) return null;
+    return Math.max(0, Math.min(length - 1, Math.floor(((event.clientX - r.left) / r.width) * length)));
+  };
+  const update = (event: ReactPointerEvent<HTMLElement>) => {
+    const i = indexAt(event);
+    if (i == null) return;
+    onPointerUse?.();
+    setHover(i);
+  };
+  return {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.pointerType !== "mouse") update(event);
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      // Touch moves only arrive while the finger is down (a horizontal drag).
+      update(event);
+    },
+    onPointerLeave: (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.pointerType === "mouse") setHover(null);
+    },
+  };
+}
+
+/**
+ * PlotTooltip floats next to the crosshair at `leftPct` of its positioned
+ * parent and is clamped so it never leaves the plot: it prefers the right of
+ * the crosshair, flips to the left, and on very narrow plots centres on it.
+ */
+export function PlotTooltip({ leftPct, children }: { leftPct: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const parentWidth = el?.parentElement?.clientWidth ?? 0;
+    if (!el || !parentWidth) return;
+    const tw = el.offsetWidth;
+    const x = (leftPct / 100) * parentWidth;
+    const gap = 8;
+    let left = x + gap;
+    if (left + tw > parentWidth) left = x - gap - tw;
+    if (left < 0) left = Math.max(0, Math.min(parentWidth - tw, x - tw / 2));
+    el.style.left = `${left}px`;
+    el.style.visibility = "visible";
+  });
+  return (
+    <div
+      ref={ref}
+      aria-hidden="true"
+      className="pointer-events-none absolute top-1 z-10 w-max min-w-36 max-w-full rounded-xl border border-line bg-surface px-2.5 py-2 text-[12px] shadow-[var(--shadow-pop)]"
+      style={{ left: 0, visibility: "hidden" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Centre-anchored x label position, pinned inside the axis at both ends. */
+export function xLabelStyle(i: number, length: number): { left: string; transform: string } {
+  const pct = ((i + 0.5) / length) * 100;
+  const shift = pct < 8 ? "0" : pct > 92 ? "-100%" : "-50%";
+  return { left: `${pct}%`, transform: `translateX(${shift})` };
+}
+
 export function niceScale(peak: number, fixedMax?: number): { max: number; ticks: number[] } {
   if (fixedMax && fixedMax > 0) {
     const step = fixedMax / 4;
@@ -132,7 +237,8 @@ function Frame<T>({
   threshold?: { value: number; label: string };
   children: ReactNode;
 }) {
-  const every = Math.max(1, Math.ceil(data.length / 6));
+  const [plotRef, plotWidth] = useElementWidth<HTMLDivElement>();
+  const every = Math.max(1, Math.ceil(data.length / xLabelCount(plotWidth)));
   const hovered = hover != null ? data[hover] : null;
   const left = hover != null ? ((hover + 0.5) / data.length) * 100 : 0;
   const summaryId = useId();
@@ -143,6 +249,7 @@ function Frame<T>({
     setViaKeys(true);
     moveByKey(event);
   };
+  const pointer = usePlotPointer(data.length, setHover, () => viaKeys && setViaKeys(false));
   const announcement = hovered && viaKeys
     ? `${tooltipTime(x(hovered))}: ${series.map((s) => `${s.label} ${format(s.value(hovered))}`).join(", ")}`
     : "";
@@ -157,7 +264,8 @@ function Frame<T>({
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div
-          className="relative rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-4 focus-visible:ring-offset-surface"
+          ref={plotRef}
+          className="relative touch-pan-y select-none rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-4 focus-visible:ring-offset-surface"
           style={{ height }}
           tabIndex={0}
           role="group"
@@ -166,12 +274,7 @@ function Frame<T>({
           aria-describedby={summaryId}
           onKeyDown={onKeyDown}
           onBlur={() => setHover(null)}
-          onMouseLeave={() => setHover(null)}
-          onMouseMove={(e) => {
-            if (viaKeys) setViaKeys(false);
-            const r = e.currentTarget.getBoundingClientRect();
-            setHover(Math.max(0, Math.min(data.length - 1, Math.floor(((e.clientX - r.left) / r.width) * data.length))));
-          }}
+          {...pointer}
         >
           {[0, 25, 50, 75].map((top) => (
             <div key={top} className="absolute inset-x-0 border-t border-dashed border-line" style={{ top: `${top}%` }} aria-hidden="true" />
@@ -188,27 +291,23 @@ function Frame<T>({
           {hovered && (
             <>
               <div className="pointer-events-none absolute inset-y-0 w-px bg-line-strong" style={{ left: `${left}%` }} aria-hidden="true" />
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute top-1 z-10 min-w-36 rounded-xl border border-line bg-surface px-2.5 py-2 text-[12px] shadow-[var(--shadow-pop)]"
-                style={left > 65 ? { right: `${100 - left}%`, marginRight: 8 } : { left: `${left}%`, marginLeft: 8 }}
-              >
+              <PlotTooltip leftPct={left}>
                 <p className="mb-1 font-medium text-fg">{tooltipTime(x(hovered))}</p>
                 {series.map((s) => (
                   <p key={s.key} className="flex items-center gap-2 text-fg-muted">
-                    <span className="h-2 w-2 rounded-[2px]" style={{ background: s.color }} />
+                    <span className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: s.color }} />
                     {s.label}
                     <span className="ml-auto pl-3 font-medium tabular-nums text-fg">{format(s.value(hovered))}</span>
                   </p>
                 ))}
-              </div>
+              </PlotTooltip>
             </>
           )}
         </div>
-        <div className="relative h-4 text-[11px] tabular-nums text-fg-faint" aria-hidden="true">
+        <div className="relative h-4 overflow-hidden text-[11px] tabular-nums text-fg-faint" aria-hidden="true">
           {data.map((d, i) =>
             i % every === 0 ? (
-              <span key={i} className="absolute" style={{ left: `${(i / data.length) * 100}%` }}>
+              <span key={i} className="absolute whitespace-nowrap" style={xLabelStyle(i, data.length)}>
                 {xFormat(x(d))}
               </span>
             ) : null,

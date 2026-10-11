@@ -75,18 +75,18 @@ function UpdatesSettings() {
       ) : !reachable ? (
         <p className="px-4 py-3.5 text-[13px] text-fg-muted">
           Couldn&apos;t reach GitHub. Try again later. Current version:{" "}
-          <span className="font-mono text-fg">{data?.current ?? "dev"}</span>
+          <span className="break-all font-mono text-fg">{data?.current ?? "dev"}</span>
         </p>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-3">
             <div className="bg-surface px-4 py-3">
               <p className="text-[12px] text-fg-muted">Current</p>
-              <p className="mt-1 font-mono text-[15px] font-semibold text-fg">{data.current}</p>
+              <p className="mt-1 break-all font-mono text-[15px] font-semibold text-fg">{data.current}</p>
             </div>
             <div className="bg-surface px-4 py-3">
               <p className="text-[12px] text-fg-muted">Latest</p>
-              <p className="mt-1 font-mono text-[15px] font-semibold text-fg">{data.latest || "—"}</p>
+              <p className="mt-1 break-all font-mono text-[15px] font-semibold text-fg">{data.latest || "—"}</p>
               {publishedLabel && <p className="mt-0.5 text-[12px] text-fg-muted">Released {publishedLabel}</p>}
             </div>
             <div className="col-span-2 bg-surface px-4 py-3 sm:col-span-1">
@@ -122,7 +122,7 @@ function UpdatesSettings() {
                 tabIndex={0}
                 role="region"
                 aria-label={`Changelog for ${data.latest}`}
-                className="max-h-80 overflow-y-auto rounded-lg border border-line bg-subtle p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                className="max-h-80 overflow-y-auto rounded-lg border border-line bg-subtle p-3 [overflow-wrap:anywhere] focus:outline-none sm:p-4 focus-visible:ring-2 focus-visible:ring-accent-500"
               >
                 <ChangelogMarkdown changelog={data.changelog} />
               </div>

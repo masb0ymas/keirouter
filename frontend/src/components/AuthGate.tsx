@@ -52,12 +52,22 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-// AuthShell centres one minimal card on the canvas for the pre-dashboard screens.
+// AuthShell centres one minimal card on the canvas for the pre-dashboard
+// screens. The shell scrolls, so the card stays reachable on a short phone
+// screen with the keyboard open; padding clears notches / the home indicator.
 function AuthShell({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   return (
-    <div className="flex h-full min-h-full items-center justify-center bg-canvas px-4 py-10">
-      <div className={`w-full ${wide ? "max-w-md" : "max-w-sm"} rounded-2xl border border-line bg-surface shadow-[var(--shadow-pop)]`}>
-        {children}
+    <div className="h-full overflow-y-auto overscroll-contain bg-canvas">
+      <div
+        className="flex min-h-full items-center justify-center px-4"
+        style={{
+          paddingTop: "max(1.5rem, env(safe-area-inset-top))",
+          paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))",
+        }}
+      >
+        <div className={`w-full ${wide ? "max-w-md" : "max-w-sm"} rounded-2xl border border-line bg-surface shadow-[var(--shadow-pop)]`}>
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -113,7 +123,7 @@ function LoginScreen() {
 
   return (
     <AuthShell>
-      <div className="px-6 pb-6 pt-7">
+      <div className="px-5 pb-6 pt-7 sm:px-6">
         <div className="flex flex-col items-center text-center">
           <AuthGateLogo className="h-8 object-contain" />
           <h1 className="mt-5 text-[15px] font-semibold tracking-[-0.01em] text-fg">Sign in to your dashboard</h1>
@@ -201,7 +211,7 @@ function OnboardingScreen() {
 
   return (
     <AuthShell wide>
-      <div className="px-6 pb-6 pt-7">
+      <div className="px-5 pb-6 pt-7 sm:px-6">
         <AuthGateLogo className="h-8 object-contain" />
         <h1 className="mt-5 text-[15px] font-semibold tracking-[-0.01em] text-fg">Welcome to <AuthGateName /></h1>
         <p className="mt-1 text-[13px] leading-5 text-fg-muted">
@@ -253,11 +263,12 @@ function OnboardingScreen() {
             )}
           </div>
           {error && <p id={ids.error} role="alert" className="text-[12px] text-bad">{error}</p>}
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <Button variant="ghost" type="button" onClick={() => skip.mutate()} disabled={skip.isPending}>
+          {/* Phones: full-width stacked, primary last, matching tab order. */}
+          <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
+            <Button variant="ghost" type="button" className="w-full sm:w-auto" onClick={() => skip.mutate()} disabled={skip.isPending}>
               Keep default for now
             </Button>
-            <Button type="submit" disabled={save.isPending || !valid}>
+            <Button type="submit" className="w-full sm:w-auto" disabled={save.isPending || !valid}>
               {save.isPending ? "Saving…" : "Set password"}
             </Button>
           </div>

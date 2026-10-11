@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +20,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/mydisha/keirouter/backend/internal/audit"
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/clitools"
@@ -49,6 +52,7 @@ type Server struct {
 	db                  *store.DB
 	identity            *identity.Service
 	auth                *auth.Service
+	audit               *audit.Recorder
 	pipeline            *pipeline.Pipeline
 	conns               *connectors.Registry
 	chains              *store.ChainRepo
@@ -74,7 +78,9 @@ type Server struct {
 	usageHub            *usagehub.Hub
 	timeoutNotifier     *TimeoutNotifier
 	proxyNotifier       *ProxyNotifier
-	rateLimiter         interface{ SetEnabled(bool) }
+	rateLimiter         RateLimitController
+	authFailures        *ipLimiter
+	loginLimiter        *ipLimiter
 	refresher           dispatch.TokenRefresher
 	reloadPricing       func(context.Context) error
 	version             string
@@ -91,6 +97,11 @@ type Server struct {
 	providerHealth      *health.Service
 	probeRunner         *health.ProbeRunner
 	router              chi.Router
+	// skillsMu serializes custom-skill writes (load-modify-save on one
+	// settings key); skillsBlock caches the rendered prompt block injected
+	// into every chat request. Nil means not loaded yet.
+	skillsMu    sync.Mutex
+	skillsBlock atomic.Pointer[cachedSkills]
 }
 
 // Deps bundles the gateway's collaborators.
@@ -102,6 +113,7 @@ type Deps struct {
 	DB                   *store.DB
 	Identity             *identity.Service
 	Auth                 *auth.Service
+	Audit                *audit.Recorder // records admin actions; nil disables auditing
 	Pipeline             *pipeline.Pipeline
 	Conns                *connectors.Registry
 	Chains               *store.ChainRepo
@@ -126,7 +138,7 @@ type Deps struct {
 	UsageHub             *usagehub.Hub
 	TimeoutNotifier      *TimeoutNotifier
 	ProxyNotifier        *ProxyNotifier
-	RateLimiter          interface{ SetEnabled(bool) }
+	RateLimiter          RateLimitController
 	Refresher            dispatch.TokenRefresher
 	ReloadPricing        func(context.Context) error
 	Guardrails           *guardrails.Engine
@@ -164,6 +176,7 @@ func New(d Deps) *Server {
 		db:                  d.DB,
 		identity:            d.Identity,
 		auth:                d.Auth,
+		audit:               d.Audit,
 		pipeline:            d.Pipeline,
 		conns:               d.Conns,
 		chains:              d.Chains,
@@ -190,6 +203,8 @@ func New(d Deps) *Server {
 		timeoutNotifier:     d.TimeoutNotifier,
 		proxyNotifier:       d.ProxyNotifier,
 		rateLimiter:         d.RateLimiter,
+		authFailures:        newIPLimiter(d.Config.Limits.AuthFailuresPerMinute, time.Minute),
+		loginLimiter:        newIPLimiter(d.Config.Limits.LoginAttemptsPerMinute, time.Minute),
 		refresher:           d.Refresher,
 		reloadPricing:       d.ReloadPricing,
 		version:             d.Version,
@@ -206,6 +221,8 @@ func New(d Deps) *Server {
 		providerHealth:      d.ProviderHealth,
 		probeRunner:         d.ProbeRunner,
 	}
+	// Dashboard overrides of the limiter knobs win over config.yaml.
+	s.applyLimitSettings(s.loadEndpointSettings(context.Background()))
 	s.router = s.routes()
 	startSystemCollector(d.Resources)
 	return s
@@ -224,7 +241,7 @@ func (s *Server) routes() chi.Router {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: s.cfg.Server.CORSOrigins,
 		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key", "X-KeiRouter-Affinity", "X-KeiRouter-Account", "X-Conversation-ID", "X-Thread-ID", "X-Session-ID", "OpenAI-Conversation-ID"},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key", "X-KeiRouter-Affinity", "X-KeiRouter-Account", skipSkillsHeader, "X-Conversation-ID", "X-Thread-ID", "X-Session-ID", "OpenAI-Conversation-ID"},
 		ExposedHeaders: []string{"X-KeiRouter-Provider", "X-KeiRouter-Model", "X-KeiRouter-Account"},
 	}))
 
@@ -327,6 +344,7 @@ func (s *Server) routes() chi.Router {
 		r.Get("/status", s.handleAuthStatus)
 		r.Group(func(pr chi.Router) {
 			pr.Use(s.sessionMiddleware)
+			pr.Use(s.auditAdmin)
 			s.mountAuthenticatedAuth(pr)
 		})
 	})
@@ -337,6 +355,7 @@ func (s *Server) routes() chi.Router {
 	r.Route("/api", func(r chi.Router) {
 		r.Use(s.loopbackOnly)
 		r.Use(s.sessionMiddleware)
+		r.Use(s.auditAdmin)
 		s.mountAdmin(r)
 	})
 

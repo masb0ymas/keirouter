@@ -61,14 +61,20 @@ type Meter struct {
 	// modelFingerprints indexes modelPrices keys by model fingerprint.
 	modelFingerprints map[string][]string
 
-	hub   *usagehub.Hub
-	async *AsyncWriter
+	hub      *usagehub.Hub
+	async    *AsyncWriter
+	observer func(store.UsageRecord)
 }
 
 // SetHub installs a usage event hub. When set, the meter publishes an event
 // after every successful Record call. This enables SSE-based near-real-time
 // dashboard updates.
 func (m *Meter) SetHub(h *usagehub.Hub) { m.hub = h }
+
+// SetRecordObserver installs fn to run after every successful Record, with
+// the row that was written. Used to feed shared budget counters. fn must not
+// block.
+func (m *Meter) SetRecordObserver(fn func(store.UsageRecord)) { m.observer = fn }
 
 // New builds a Meter backed by a usage repo and pricing tables.
 func New(usage UsageStore, pricing map[string]Price, modelPrices map[string]Price) *Meter {
@@ -263,6 +269,9 @@ func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
 	}
 	if err := m.recordUsage(ctx, rec); err != nil {
 		return cost.CostMicros, err
+	}
+	if m.observer != nil {
+		m.observer(rec)
 	}
 	if m.hub != nil {
 		m.hub.Publish(usagehub.Event{Provider: ev.Provider, Model: ev.Model, AccountID: ev.AccountID,

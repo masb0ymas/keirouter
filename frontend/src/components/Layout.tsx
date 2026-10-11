@@ -7,6 +7,8 @@ import {
   Boxes,
   Cpu,
   Gauge,
+  GraduationCap,
+  History,
   Image,
   Key,
   LayoutGrid,
@@ -21,10 +23,10 @@ import {
   Search,
   Settings,
   Shield,
-  Sparkles,
   Sun,
   TerminalSquare,
   Waypoints,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -45,7 +47,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { Sheet, SheetContent, SheetTitle } from "./ui/sheet";
+import { Sheet, SheetClose, SheetContent, SheetTitle } from "./ui/sheet";
 
 interface NavItem {
   to: string;
@@ -83,7 +85,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: "/endpoints", label: "Endpoints", icon: Plug, preload: "/endpoints" },
       { to: "/chains", label: "Chains", icon: Layers, preload: "/chains" },
-      { to: "/skills", label: "Skills", icon: Sparkles, preload: "/skills" },
+      { to: "/skills", label: "Skills", icon: GraduationCap, preload: "/skills" },
     ],
   },
   {
@@ -104,6 +106,7 @@ const navGroups: NavGroup[] = [
       { to: "/keys", label: "API keys", icon: Key, preload: "/keys" },
       { to: "/plans", label: "Plans & budgets", icon: ReceiptText, preload: "/plans" },
       { to: "/guardrails", label: "Guardrails", icon: Shield, preload: "/guardrails" },
+      { to: "/audit", label: "Audit log", icon: History, preload: "/audit" },
     ],
   },
   {
@@ -242,6 +245,12 @@ export function Layout() {
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
         <SheetContent id={MOBILE_NAV_ID} side="left" className="w-60 lg:hidden" aria-describedby={undefined}>
           <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetClose
+            className="absolute right-2 top-[calc(env(safe-area-inset-top)+0.625rem)] z-10 flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            aria-label="Close navigation"
+          >
+            <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+          </SheetClose>
           <Sidebar />
         </SheetContent>
       </Sheet>
@@ -250,7 +259,15 @@ export function Layout() {
         <RouteProgress />
         <TopBar menuOpen={sidebarOpen} onMenuToggle={() => setSidebarOpen(true)} onSearchOpen={() => setPaletteOpen(true)} />
         {/* tabIndex -1: the skip link moves focus here; no ring on a landmark. */}
-        <main id="main" tabIndex={-1} data-tone={pageTone} className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain" style={{ outline: "none" }}>
+        {/* Safe-area padding keeps content clear of notches / the home
+            indicator (needs viewport-fit=cover to take effect). */}
+        <main
+          id="main"
+          tabIndex={-1}
+          data-tone={pageTone}
+          className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pl-0"
+          style={{ outline: "none" }}
+        >
           <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
             <Suspense fallback={<PageOutletFallback />}>
               <Outlet />
@@ -349,7 +366,7 @@ function Sidebar() {
                     onTouchStart={() => item.preload && preloadRoute(item.preload)}
                     className={({ isActive }) =>
                       cn(
-                        "group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                        "group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium [@media(pointer:coarse)]:h-10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                         isActive ? "bg-tone-soft text-fg" : "text-fg-muted hover:bg-hover hover:text-fg",
                       )
                     }
@@ -442,8 +459,11 @@ function GatewayStatus() {
 
 function TopBar({ menuOpen, onMenuToggle, onSearchOpen }: { menuOpen: boolean; onMenuToggle: () => void; onSearchOpen: () => void }) {
   const { branding } = useBranding();
+  const name = branding.name || "KeiRouter";
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-4 sm:px-6 lg:px-8">
+    // Phones: menu · brand … search icon · update · account. From sm the
+    // search field is shown in full. Padded for notches / the status bar.
+    <header className="flex h-[calc(3.5rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b border-line bg-surface pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[env(safe-area-inset-top)] sm:gap-3 sm:pl-[max(1.5rem,env(safe-area-inset-left))] sm:pr-[max(1.5rem,env(safe-area-inset-right))] lg:pl-8 lg:pr-[max(2rem,env(safe-area-inset-right))]">
       <button
         type="button"
         onClick={onMenuToggle}
@@ -456,20 +476,37 @@ function TopBar({ menuOpen, onMenuToggle, onSearchOpen }: { menuOpen: boolean; o
         <Menu className="h-[18px] w-[18px]" aria-hidden="true" />
       </button>
 
-      {/* Name = visible text (WCAG 2.5.3); the shortcut is exposed separately. */}
+      {/* Phones only: the product identity, since the sidebar is hidden. */}
+      <Link
+        to="/"
+        className="flex min-w-0 items-center gap-2 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:hidden"
+      >
+        {branding.logo_url ? (
+          <img src={branding.logo_url} alt={name} className="h-6 max-w-[120px] object-contain object-left" />
+        ) : (
+          <>
+            <BrandMark />
+            <span className="truncate text-[14px] font-semibold tracking-[-0.01em] text-fg">{name}</span>
+          </>
+        )}
+      </Link>
+
+      {/* Name contains the visible text (WCAG 2.5.3); below sm it is an icon
+          button named by the same label. The shortcut is exposed separately. */}
       <button
         type="button"
         onClick={onSearchOpen}
+        aria-label={`Search ${name}`}
         aria-haspopup="dialog"
         aria-keyshortcuts="Meta+K Control+K"
-        className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-input bg-subtle px-3 text-left text-[13px] text-fg-faint transition-colors hover:border-fg-faint sm:max-w-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+        className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:ml-0 sm:w-auto sm:min-w-0 sm:max-w-sm sm:flex-1 sm:shrink sm:justify-start sm:gap-2 sm:border sm:border-input sm:bg-subtle sm:px-3 sm:text-left sm:text-[13px] sm:text-fg-faint sm:hover:border-fg-faint sm:hover:bg-subtle sm:hover:text-fg-faint"
       >
         <Search className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-        <span className="truncate">Search {branding.name || "KeiRouter"}…</span>
+        <span className="hidden truncate sm:inline">Search {name}…</span>
         <kbd className="ml-auto hidden rounded border border-line bg-surface px-1.5 font-mono text-[10.5px] text-fg-faint sm:inline" aria-hidden="true">⌘K</kbd>
       </button>
 
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 sm:ml-auto">
         <UpdateNotification />
         <AccountMenu />
       </div>
@@ -494,7 +531,7 @@ function AccountMenu() {
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label="Account and theme"
-        className="flex h-8 w-8 items-center justify-center rounded-full border border-line bg-subtle text-[12px] font-semibold text-fg transition-colors hover:border-line-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+        className="flex h-8 w-8 items-center justify-center rounded-full border border-line bg-subtle text-[12px] font-semibold [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 text-fg transition-colors hover:border-line-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
       >
         <span aria-hidden="true">{initial}</span>
       </DropdownMenuTrigger>
@@ -564,7 +601,7 @@ export function PageHeader(props: {
           {description && <p className="mt-0.5 max-w-3xl text-[13.5px] leading-5 text-fg-muted">{description}</p>}
         </div>
       </div>
-      {action && <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div>}
+      {action && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{action}</div>}
     </div>
   );
 }

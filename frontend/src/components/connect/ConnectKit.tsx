@@ -54,7 +54,7 @@ export function ConnectDialog({
           {...(description ? {} : { "aria-describedby": undefined })}
           data-tone={tone}
           className={cn(
-            "fixed left-1/2 top-1/2 z-50 flex max-h-[min(88vh,760px)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)] focus:outline-none",
+            "fixed left-1/2 top-1/2 z-50 flex max-h-[min(88dvh,760px)] w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)] focus:outline-none",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98]",
             width === "xl" ? "max-w-3xl" : width === "lg" ? "max-w-xl" : "max-w-md",
           )}
@@ -73,7 +73,7 @@ export function ConnectDialog({
                 type="button"
                 onClick={onBack}
                 aria-label="Back"
-                className="-ml-1.5 mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                className="-ml-1.5 flex h-9 w-9 shrink-0 sm:mt-0.5 sm:h-7 sm:w-7 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
               >
                 <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               </button>
@@ -85,14 +85,14 @@ export function ConnectDialog({
             </div>
             <Dialog.Close
               aria-label="Close"
-              className="-mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              className="-mr-1.5 flex h-9 w-9 shrink-0 sm:h-7 sm:w-7 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               <X className="h-4 w-4" aria-hidden="true" />
             </Dialog.Close>
           </div>
           {toolbar && <div className="border-b border-line px-5 py-3">{toolbar}</div>}
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
-          {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">{footer}</div>}
+          {footer && <div className={cn("shrink-0 border-t border-line bg-subtle px-5 py-3", ACTION_ROW)}>{footer}</div>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -100,6 +100,17 @@ export function ConnectDialog({
 }
 
 // ── Buttons used inside dialogs ──────────────────────────────────────────────
+
+// On phones, action rows stack full-width buttons with the primary last, matching tab order
+// (DOM order stays secondary → primary, so tab order matches desktop).
+const ACTION_ROW =
+  "flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end [&>a]:w-full [&>button]:w-full sm:[&>a]:w-auto sm:[&>button]:w-auto";
+
+// ActionRow lays out the buttons that end an inline step (e.g. "Open sign-in").
+// `between` pushes the first child to the left on wider screens.
+export function ActionRow({ children, between }: { children: ReactNode; between?: boolean }) {
+  return <div className={cn(ACTION_ROW, between && "sm:justify-between")}>{children}</div>;
+}
 
 export function PrimaryAction({
   children,
@@ -242,7 +253,7 @@ export function ExternalTextLink({ href, children }: { href: string; children: R
 }
 
 // CopyButton is the small icon button next to a code or identifier. It is
-// 32px square (above the 24px target minimum) and announces the copy.
+// 36px square (a comfortable touch target) and announces the copy.
 export function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -260,7 +271,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
         type="button"
         onClick={copy}
         aria-label={label}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
       >
         {copied ? <Check className="h-4 w-4 text-ok" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}
       </button>
@@ -392,7 +403,7 @@ export function DeviceWaiting({
         <div className="rounded-xl border border-line bg-subtle px-4 py-3.5 text-center">
           <p className="text-[12px] text-fg-muted">Your code</p>
           <div className="mt-1 flex items-center justify-center gap-1.5">
-            <span className="font-mono text-[24px] font-semibold tracking-[0.18em] text-fg">{code.user_code}</span>
+            <span className="min-w-0 break-all font-mono text-[20px] font-semibold tracking-[0.12em] text-fg sm:text-[24px] sm:tracking-[0.18em]">{code.user_code}</span>
             <CopyButton value={code.user_code} label="Copy code" />
           </div>
         </div>
@@ -402,7 +413,7 @@ export function DeviceWaiting({
         target="_blank"
         rel="noopener noreferrer"
         data-autofocus
-        className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-action text-[13px] font-medium text-action-fg shadow-[var(--shadow-card)] transition-colors hover:bg-action-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+        className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-action px-3 py-2 text-center text-[13px] font-medium text-action-fg shadow-[var(--shadow-card)] transition-colors hover:bg-action-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
       >
         <ExternalLink className="h-4 w-4" aria-hidden="true" />
         {openLabel}
@@ -459,7 +470,7 @@ export function ConnectError({ message, onRetry, onClose }: { message: string; o
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-bad" aria-hidden="true" />
         <p className="break-words text-[13px] leading-5 text-bad">{message || "Something went wrong. Try again."}</p>
       </div>
-      <div className="flex justify-end gap-2">
+      <ActionRow>
         <SecondaryAction onClick={onClose}>Close</SecondaryAction>
         {onRetry && (
           <PrimaryAction onClick={onRetry}>
@@ -467,7 +478,7 @@ export function ConnectError({ message, onRetry, onClose }: { message: string; o
             Try again
           </PrimaryAction>
         )}
-      </div>
+      </ActionRow>
     </div>
   );
 }

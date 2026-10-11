@@ -391,7 +391,7 @@ function HeadroomTestConnection({ url, timeoutMs }: { url: string; timeoutMs: nu
                   <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 )}
                 <span className="sr-only">{result.ok ? "Connected:" : "Failed:"}</span>
-                <span className="min-w-0 break-words">{result.message}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">{result.message}</span>
                 {result.latency_ms > 0 && <span className="tabular-nums text-fg-muted">({result.latency_ms} ms)</span>}
               </span>
             )}

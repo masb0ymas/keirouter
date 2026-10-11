@@ -102,7 +102,7 @@ function ScopeField({
   const id = useId();
   const hintId = `${id}-hint`;
   return (
-    <div className="space-y-1.5" aria-busy={loading || undefined}>
+    <div className="min-w-0 space-y-1.5" aria-busy={loading || undefined}>
       <label htmlFor={id} className="block text-[12.5px] font-medium text-fg">
         {label}
       </label>
@@ -120,7 +120,7 @@ function EmptyNotice({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-9 items-center gap-2 rounded-lg border border-dashed border-line-strong bg-subtle px-3 py-2 text-[12.5px] text-fg-muted">
       <Info className="h-4 w-4 shrink-0 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
-      <span>{children}</span>
+      <span className="min-w-0 break-words">{children}</span>
     </div>
   );
 }
@@ -137,7 +137,7 @@ function ProviderSelector({ value, onChange }: { value: string; onChange: (v: st
   return (
     <ScopeField label="Provider" loading={q.isLoading}>
       {(ids) => (
-        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)}>
+        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)} className="min-w-0 truncate">
           <option value="">Select a provider</option>
           {options.map((p) => (
             <option key={p.id} value={p.id}>
@@ -164,7 +164,7 @@ function ChainSelector({ value, onChange }: { value: string; onChange: (v: strin
           No chains yet. <Link to="/chains" className={inlineLink}>Create a chain</Link> first.
         </EmptyNotice>
       ) : (
-        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)}>
+        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)} className="min-w-0 truncate">
           <option value="">Select a chain</option>
           {options.map((c) => (
             <option key={c.id} value={c.id}>
@@ -191,7 +191,7 @@ function APIKeySelector({ value, onChange }: { value: string; onChange: (v: stri
           No API keys yet. <Link to="/keys" className={inlineLink}>Create a key</Link> first.
         </EmptyNotice>
       ) : (
-        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)}>
+        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)} className="min-w-0 truncate">
           <option value="">Select an API key</option>
           {options.map((k) => (
             <option key={k.id} value={k.id}>
@@ -236,7 +236,7 @@ function ModelSelector({ value, onChange }: { value: string; onChange: (v: strin
   return (
     <ScopeField label="Model" hint="Matches this model id on every provider" loading={loading}>
       {(ids) => (
-        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)} className="font-mono">
+        <Select {...ids} required value={value} onChange={(e) => onChange(e.target.value)} className="min-w-0 truncate font-mono">
           <option value="">Select a model</option>
           {grouped.map((g) =>
             g.models.length === 0 ? null : (

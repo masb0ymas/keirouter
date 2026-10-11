@@ -219,7 +219,7 @@ export function ProviderDetailPage() {
                   <Dot />
                   <span>{provider.dialect === "anthropic" ? "Anthropic-compatible" : "OpenAI-compatible"}</span>
                   <Dot />
-                  <span className="max-w-[22rem] truncate font-mono text-[12.5px]" title={provider.base_url}>
+                  <span className="min-w-0 max-w-full truncate font-mono text-[12.5px] sm:max-w-[22rem]" title={provider.base_url}>
                     {provider.base_url}
                   </span>
                 </>
@@ -520,6 +520,34 @@ function AccountsPanel({
   const selectedList = accounts.filter((a) => selected.has(a.id));
   const allOnPage = paged.length > 0 && paged.every((a) => selected.has(a.id));
   const someOnPage = paged.some((a) => selected.has(a.id));
+  const toggleAllOnPage = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allOnPage) paged.forEach((a) => next.delete(a.id));
+      else paged.forEach((a) => next.add(a.id));
+      return next;
+    });
+  // Same handlers for the desktop row and the mobile card.
+  const rowProps = (a: Account, index: number): AccountRowProps => ({
+    account: a,
+    index,
+    total: accounts.length,
+    pools: pools.data?.pools ?? [],
+    selected: selected.has(a.id),
+    test: tests[a.id],
+    batchTesting: testingAll,
+    onToggleSelect: () =>
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(a.id)) next.delete(a.id);
+        else next.add(a.id);
+        return next;
+      }),
+    onMove: (dir) => move(a.id, dir),
+    onPatch: (patch) => update.mutate({ id: a.id, patch }),
+    onTest: () => runTest(a.id),
+    onRemove: () => removeOne(a),
+  });
   const busy = bulkUpdate.isPending || removeMany.isPending;
   const needsReconnect = accounts.filter((a) => a.needs_reconnect).length;
   const tested = Object.values(tests).filter((t) => t.status !== "testing").length;
@@ -612,7 +640,26 @@ function AccountsPanel({
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="flex items-center border-b border-line bg-subtle px-4 py-1 md:hidden">
+          <label className="-ml-2.5 flex min-h-9 cursor-pointer items-center gap-2 pl-2.5 pr-2 text-[12.5px] text-fg-muted">
+            <input
+              type="checkbox"
+              className={checkboxClass}
+              checked={allOnPage}
+              ref={(el) => {
+                if (el) el.indeterminate = someOnPage && !allOnPage;
+              }}
+              onChange={toggleAllOnPage}
+            />
+            Select all on this page
+          </label>
+        </div>
+        <ul className="divide-y divide-line md:hidden" aria-label={`${provider.display_name} accounts`}>
+          {paged.map((a, i) => (
+            <AccountCard key={a.id} {...rowProps(a, pageStart + i)} />
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[640px] text-[13px]">
             <thead>
               <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -625,14 +672,7 @@ function AccountsPanel({
                     ref={(el) => {
                       if (el) el.indeterminate = someOnPage && !allOnPage;
                     }}
-                    onChange={() =>
-                      setSelected((prev) => {
-                        const next = new Set(prev);
-                        if (allOnPage) paged.forEach((a) => next.delete(a.id));
-                        else paged.forEach((a) => next.add(a.id));
-                        return next;
-                      })
-                    }
+                    onChange={toggleAllOnPage}
                   />
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">Account</th>
@@ -650,28 +690,7 @@ function AccountsPanel({
               </tr>
             </thead>
             {paged.map((a, i) => (
-              <AccountRow
-                key={a.id}
-                account={a}
-                index={pageStart + i}
-                total={accounts.length}
-                pools={pools.data?.pools ?? []}
-                selected={selected.has(a.id)}
-                test={tests[a.id]}
-                batchTesting={testingAll}
-                onToggleSelect={() =>
-                  setSelected((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(a.id)) next.delete(a.id);
-                    else next.add(a.id);
-                    return next;
-                  })
-                }
-                onMove={(dir) => move(a.id, dir)}
-                onPatch={(patch) => update.mutate({ id: a.id, patch })}
-                onTest={() => runTest(a.id)}
-                onRemove={() => removeOne(a)}
-              />
+              <AccountRow key={a.id} {...rowProps(a, pageStart + i)} />
             ))}
           </table>
         </div>
@@ -681,20 +700,9 @@ function AccountsPanel({
   );
 }
 
-function AccountRow({
-  account: a,
-  index,
-  total,
-  pools,
-  selected,
-  test,
-  batchTesting,
-  onToggleSelect,
-  onMove,
-  onPatch,
-  onTest,
-  onRemove,
-}: {
+type AccountPatch = { label?: string; priority?: number; proxy_pool_id?: string; disabled?: boolean };
+
+interface AccountRowProps {
   account: Account;
   index: number;
   total: number;
@@ -704,10 +712,14 @@ function AccountRow({
   batchTesting: boolean;
   onToggleSelect: () => void;
   onMove: (dir: -1 | 1) => void;
-  onPatch: (patch: { label?: string; priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
+  onPatch: (patch: AccountPatch) => void;
   onTest: () => void;
   onRemove: () => void;
-}) {
+}
+
+// useAccountRow holds one account's inline-edit state (rename, priority,
+// details) so the desktop table row and the mobile card behave identically.
+function useAccountRow(a: Account, pools: ProxyPool[], test: TestResult | undefined, onPatch: (patch: AccountPatch) => void) {
   const [priority, setPriority] = useState(String(a.priority));
   const [renaming, setRenaming] = useState(false);
   const [label, setLabel] = useState(a.label);
@@ -752,6 +764,241 @@ function AccountRow({
     : a.disabled
       ? { tone: "neutral", text: "Paused" }
       : { tone: "ok", text: "Active" };
+
+  return {
+    priority,
+    setPriority,
+    commitPriority,
+    renaming,
+    setRenaming,
+    label,
+    setLabel,
+    commitLabel,
+    detailsOpen,
+    setDetailsOpen,
+    labelRef,
+    renameRequested,
+    detailsId,
+    egressId,
+    supportsQuota,
+    quota,
+    name,
+    pool,
+    testing,
+    status,
+  };
+}
+type AccountRowState = ReturnType<typeof useAccountRow>;
+
+const iconBtn =
+  "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:opacity-40 md:h-8 md:w-8";
+
+function AccountName({ a, row }: { a: Account; row: AccountRowState }) {
+  return (
+    <>
+      {row.renaming ? (
+        <input
+          ref={row.labelRef}
+          value={row.label}
+          onChange={(e) => row.setLabel(e.target.value)}
+          onBlur={row.commitLabel}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") row.commitLabel();
+            if (e.key === "Escape") {
+              row.setLabel(a.label);
+              row.setRenaming(false);
+            }
+          }}
+          aria-label={`Label for ${row.name}`}
+          className="h-9 w-full rounded-lg border border-accent-500 bg-surface px-2 text-[13px] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 md:h-8 md:max-w-56"
+        />
+      ) : (
+        <span className="block truncate font-medium text-fg" title={row.name}>
+          {row.name}
+        </span>
+      )}
+      <span className="mt-0.5 block truncate text-[12px] text-fg-muted">
+        {a.auth_kind === "oauth" ? "Signed in" : a.auth_kind === "none" ? "No credentials" : "API key"}
+        {row.pool && (
+          <>
+            {" · via "}
+            <span className={row.pool.test_status === "error" ? "text-bad" : undefined}>
+              {row.pool.name}
+              {row.pool.test_status === "error" ? " (failing)" : ""}
+            </span>
+          </>
+        )}
+      </span>
+    </>
+  );
+}
+
+function AccountStatusBadge({ row }: { row: AccountRowState }) {
+  return (
+    <Badge tone={row.status.tone === "warn" ? "warning" : row.status.tone === "neutral" ? "neutral" : "success"}>
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+      {row.status.text}
+    </Badge>
+  );
+}
+
+function AccountTestStatus({ test, testing, className }: { test?: TestResult; testing: boolean; className?: string }) {
+  return (
+    <span className={cn("text-[12px]", className)} role="status" aria-live="polite">
+      {testing && (
+        <span className="inline-flex items-center gap-1 text-fg-muted">
+          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+          Testing…
+        </span>
+      )}
+      {test?.status === "ok" && (
+        <span className="inline-flex items-center gap-1 text-ok">
+          <Check className="h-3 w-3" aria-hidden="true" />
+          Verified
+        </span>
+      )}
+      {test?.status === "error" && <span className="text-bad">Test failed</span>}
+    </span>
+  );
+}
+
+function PriorityStepper({ row, index, total, onMove }: { row: AccountRowState; index: number; total: number; onMove: (dir: -1 | 1) => void }) {
+  const stepBtn =
+    "flex h-full w-9 items-center justify-center text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 disabled:opacity-30 md:w-7";
+  return (
+    <div className="inline-flex h-9 items-center overflow-hidden rounded-lg border border-input bg-surface md:h-8">
+      <button type="button" onClick={() => onMove(-1)} disabled={index === 0} aria-label={`Move ${row.name} up`} className={stepBtn}>
+        <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      <input
+        value={row.priority}
+        inputMode="numeric"
+        onChange={(e) => row.setPriority(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={row.commitPriority}
+        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        aria-label={`Priority for ${row.name}`}
+        className="h-full w-11 border-x border-input bg-transparent text-center font-mono text-[12.5px] text-fg focus:bg-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+      />
+      <button type="button" onClick={() => onMove(1)} disabled={index === total - 1} aria-label={`Move ${row.name} down`} className={stepBtn}>
+        <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function AccountDetailsToggle({ row }: { row: AccountRowState }) {
+  return (
+    <button
+      type="button"
+      onClick={() => row.setDetailsOpen((o) => !o)}
+      aria-expanded={row.detailsOpen}
+      aria-controls={row.detailsId}
+      aria-label={`Details for ${row.name}`}
+      className={iconBtn}
+    >
+      <ChevronDown className={cn("h-4 w-4 transition-transform", row.detailsOpen && "rotate-180")} aria-hidden="true" />
+    </button>
+  );
+}
+
+function AccountMenu({ row, batchTesting, onTest, onRemove }: { row: AccountRowState; batchTesting: boolean; onTest: () => void; onRemove: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={`Actions for ${row.name}`} className={iconBtn}>
+        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(e) => {
+          // Keep focus in the rename field instead of the menu trigger.
+          if (row.renameRequested.current) {
+            e.preventDefault();
+            row.renameRequested.current = false;
+          }
+        }}
+      >
+        <DropdownMenuItem onSelect={onTest} disabled={row.testing || batchTesting}>
+          <RefreshCw />
+          Test connection
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => {
+            row.renameRequested.current = true;
+            row.setRenaming(true);
+          }}
+        >
+          <Pencil />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem tone="danger" onSelect={onRemove}>
+          <Trash2 />
+          Remove account
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function AccountTestError({ test }: { test?: TestResult }) {
+  if (test?.status !== "error" || !test.message) return null;
+  return (
+    <p className="flex items-start gap-1.5 break-words text-[12.5px] leading-5 text-bad">
+      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {test.message}
+    </p>
+  );
+}
+
+function AccountDetails({ a, row, pools, onPatch }: { a: Account; row: AccountRowState; pools: ProxyPool[]; onPatch: (patch: AccountPatch) => void }) {
+  const { pool, quota } = row;
+  return (
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <label htmlFor={row.egressId} className="text-[12.5px] font-medium text-fg">
+          Egress
+        </label>
+        <select
+          id={row.egressId}
+          value={a.proxy_pool_id || ""}
+          onChange={(e) => onPatch({ proxy_pool_id: e.target.value })}
+          className={cn(
+            "h-9 w-full rounded-lg border bg-surface px-2 text-[12.5px] text-fg focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:w-56 md:h-8",
+            pool?.test_status === "error" ? "border-bad" : "border-input",
+          )}
+        >
+          <option value="">Direct connection</option>
+          {pools.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+              {!p.is_active ? " (inactive)" : ""}
+            </option>
+          ))}
+        </select>
+        {pool && (
+          <span className={cn("text-[12px]", pool.test_status === "error" ? "text-bad" : "text-fg-muted")}>
+            {pool.test_status === "active" ? "Proxy healthy" : pool.test_status === "error" ? "Proxy failing" : "Proxy untested"}
+          </span>
+        )}
+      </div>
+      {row.supportsQuota && (
+        <AccountQuotaPanel
+          loading={quota.isFetching}
+          error={quota.error instanceof Error ? quota.error.message : ""}
+          planName={quota.data?.plan_name}
+          message={quota.data?.message}
+          quotas={quota.data?.quotas ?? []}
+          disabled={a.disabled}
+          onRefresh={() => quota.refetch()}
+        />
+      )}
+      {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
+    </div>
+  );
+}
+
+function AccountRow({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, onTest, onRemove }: AccountRowProps) {
+  const row = useAccountRow(a, pools, test, onPatch);
   const rowTone = selected ? "bg-accent-500/5" : a.disabled ? "bg-subtle/60" : "";
   const cell = "px-3 py-2.5 align-middle";
 
@@ -759,147 +1006,25 @@ function AccountRow({
     <tbody className={cn("border-b border-line last:border-b-0", rowTone)}>
       <tr className={cn("transition-colors", !selected && "hover:bg-hover/60")}>
         <td className="py-2.5 pl-4 pr-1 align-middle">
-          <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label={`Select ${name}`} className={checkboxClass} />
+          <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label={`Select ${row.name}`} className={checkboxClass} />
         </td>
         <td className={cn(cell, "max-w-[280px]")}>
-          {renaming ? (
-            <input
-              ref={labelRef}
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              onBlur={commitLabel}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitLabel();
-                if (e.key === "Escape") {
-                  setLabel(a.label);
-                  setRenaming(false);
-                }
-              }}
-              aria-label={`Label for ${name}`}
-              className="h-8 w-full max-w-56 rounded-lg border border-accent-500 bg-surface px-2 text-[13px] text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-            />
-          ) : (
-            <span className="block truncate font-medium text-fg" title={name}>
-              {name}
-            </span>
-          )}
-          <span className="mt-0.5 block truncate text-[12px] text-fg-muted">
-            {a.auth_kind === "oauth" ? "Signed in" : a.auth_kind === "none" ? "No credentials" : "API key"}
-            {pool && (
-              <>
-                {" · via "}
-                <span className={pool.test_status === "error" ? "text-bad" : undefined}>
-                  {pool.name}
-                  {pool.test_status === "error" ? " (failing)" : ""}
-                </span>
-              </>
-            )}
-          </span>
+          <AccountName a={a} row={row} />
         </td>
         <td className={cn(cell, "whitespace-nowrap")}>
-          <Badge tone={status.tone === "warn" ? "warning" : status.tone === "neutral" ? "neutral" : "success"}>
-            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-            {status.text}
-          </Badge>
-          <span className="mt-0.5 block text-[12px]" role="status" aria-live="polite">
-            {testing && (
-              <span className="inline-flex items-center gap-1 text-fg-muted">
-                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                Testing…
-              </span>
-            )}
-            {test?.status === "ok" && (
-              <span className="inline-flex items-center gap-1 text-ok">
-                <Check className="h-3 w-3" aria-hidden="true" />
-                Verified
-              </span>
-            )}
-            {test?.status === "error" && <span className="text-bad">Test failed</span>}
-          </span>
+          <AccountStatusBadge row={row} />
+          <AccountTestStatus test={test} testing={row.testing} className="mt-0.5 block" />
         </td>
         <td className={cell}>
-          <div className="inline-flex h-8 items-center overflow-hidden rounded-lg border border-input bg-surface">
-            <button
-              type="button"
-              onClick={() => onMove(-1)}
-              disabled={index === 0}
-              aria-label={`Move ${name} up`}
-              className="flex h-full w-7 items-center justify-center text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 disabled:opacity-30"
-            >
-              <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-            <input
-              value={priority}
-              inputMode="numeric"
-              onChange={(e) => setPriority(e.target.value.replace(/[^0-9]/g, ""))}
-              onBlur={commitPriority}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-              aria-label={`Priority for ${name}`}
-              className="h-full w-11 border-x border-input bg-transparent text-center font-mono text-[12.5px] text-fg focus:bg-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
-            />
-            <button
-              type="button"
-              onClick={() => onMove(1)}
-              disabled={index === total - 1}
-              aria-label={`Move ${name} down`}
-              className="flex h-full w-7 items-center justify-center text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 disabled:opacity-30"
-            >
-              <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          </div>
+          <PriorityStepper row={row} index={index} total={total} onMove={onMove} />
         </td>
         <td className={cell}>
-          <Toggle checked={!a.disabled} onChange={(on) => onPatch({ disabled: !on })} label={`Enable ${name}`} />
+          <Toggle checked={!a.disabled} onChange={(on) => onPatch({ disabled: !on })} label={`Enable ${row.name}`} />
         </td>
         <td className={cn(cell, "text-right")}>
           <div className="inline-flex items-center gap-0.5">
-            <button
-              type="button"
-              onClick={() => setDetailsOpen((o) => !o)}
-              aria-expanded={detailsOpen}
-              aria-controls={detailsId}
-              aria-label={`Details for ${name}`}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-            >
-              <ChevronDown className={cn("h-4 w-4 transition-transform", detailsOpen && "rotate-180")} aria-hidden="true" />
-            </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                aria-label={`Actions for ${name}`}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-              >
-                <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                onCloseAutoFocus={(e) => {
-                  // Keep focus in the rename field instead of the menu trigger.
-                  if (renameRequested.current) {
-                    e.preventDefault();
-                    renameRequested.current = false;
-                  }
-                }}
-              >
-                <DropdownMenuItem onSelect={onTest} disabled={testing || batchTesting}>
-                  <RefreshCw />
-                  Test connection
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    renameRequested.current = true;
-                    setRenaming(true);
-                  }}
-                >
-                  <Pencil />
-                  Rename
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem tone="danger" onSelect={onRemove}>
-                  <Trash2 />
-                  Remove account
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <AccountDetailsToggle row={row} />
+            <AccountMenu row={row} batchTesting={batchTesting} onTest={onTest} onRemove={onRemove} />
           </div>
         </td>
       </tr>
@@ -908,63 +1033,64 @@ function AccountRow({
         <tr>
           <td />
           <td colSpan={5} className="px-3 pb-2.5 pt-0">
-            <p className="flex items-start gap-1.5 break-words text-[12.5px] leading-5 text-bad">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {test.message}
-            </p>
+            <AccountTestError test={test} />
           </td>
         </tr>
       )}
 
-      <tr id={detailsId} hidden={!detailsOpen}>
+      <tr id={row.detailsId} hidden={!row.detailsOpen}>
         <td />
         <td colSpan={5} className="px-3 pb-3 pt-0">
-          {detailsOpen && (
-            <div className="space-y-2.5">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                <label htmlFor={egressId} className="text-[12.5px] font-medium text-fg">
-                  Egress
-                </label>
-                <select
-                  id={egressId}
-                  value={a.proxy_pool_id || ""}
-                  onChange={(e) => onPatch({ proxy_pool_id: e.target.value })}
-                  className={cn(
-                    "h-8 w-56 rounded-lg border bg-surface px-2 text-[12.5px] text-fg focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
-                    pool?.test_status === "error" ? "border-bad" : "border-input",
-                  )}
-                >
-                  <option value="">Direct connection</option>
-                  {pools.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                      {!p.is_active ? " (inactive)" : ""}
-                    </option>
-                  ))}
-                </select>
-                {pool && (
-                  <span className={cn("text-[12px]", pool.test_status === "error" ? "text-bad" : "text-fg-muted")}>
-                    {pool.test_status === "active" ? "Proxy healthy" : pool.test_status === "error" ? "Proxy failing" : "Proxy untested"}
-                  </span>
-                )}
-              </div>
-              {supportsQuota && (
-                <AccountQuotaPanel
-                  loading={quota.isFetching}
-                  error={quota.error instanceof Error ? quota.error.message : ""}
-                  planName={quota.data?.plan_name}
-                  message={quota.data?.message}
-                  quotas={quota.data?.quotas ?? []}
-                  disabled={a.disabled}
-                  onRefresh={() => quota.refetch()}
-                />
-              )}
-              {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
-            </div>
-          )}
+          {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} />}
         </td>
       </tr>
     </tbody>
+  );
+}
+
+// AccountCard is the phone layout of AccountRow: identity and status first,
+// then priority, then the switch and row actions within thumb reach.
+function AccountCard({ account: a, index, total, pools, selected, test, batchTesting, onToggleSelect, onMove, onPatch, onTest, onRemove }: AccountRowProps) {
+  const row = useAccountRow(a, pools, test, onPatch);
+  return (
+    <li className={cn("px-4 py-3", selected ? "bg-accent-500/5" : a.disabled && "bg-subtle/60")}>
+      <div className="flex items-start gap-1">
+        <label className="-ml-2.5 flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center">
+          <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label={`Select ${row.name}`} className={checkboxClass} />
+        </label>
+        <div className="min-w-0 flex-1 pt-1 text-[13px]">
+          <AccountName a={a} row={row} />
+        </div>
+        <span className="shrink-0 pt-1.5">
+          <AccountStatusBadge row={row} />
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-fg-muted" aria-hidden="true">
+            Priority
+          </span>
+          <PriorityStepper row={row} index={index} total={total} onMove={onMove} />
+        </div>
+        <div className="flex items-center gap-2">
+          <Toggle checked={!a.disabled} onChange={(on) => onPatch({ disabled: !on })} label={`Enable ${row.name}`} />
+          <button type="button" onClick={onTest} disabled={row.testing || batchTesting} aria-label={`Test ${row.name}`} className={iconBtn}>
+            <RefreshCw className={cn("h-4 w-4", row.testing && "animate-spin")} aria-hidden="true" />
+          </button>
+          <AccountDetailsToggle row={row} />
+          <AccountMenu row={row} batchTesting={batchTesting} onTest={onTest} onRemove={onRemove} />
+        </div>
+      </div>
+      <AccountTestStatus test={test} testing={row.testing} className="block [&:not(:empty)]:mt-1.5" />
+      {test?.status === "error" && test.message && (
+        <div className="mt-1.5">
+          <AccountTestError test={test} />
+        </div>
+      )}
+      <div id={row.detailsId} hidden={!row.detailsOpen} className="mt-3">
+        {row.detailsOpen && <AccountDetails a={a} row={row} pools={pools} onPatch={onPatch} />}
+      </div>
+    </li>
   );
 }
 
@@ -1197,6 +1323,28 @@ function ModelsPanel({
 
   const allFiltered = filtered.length > 0 && filtered.every((m) => selected.has(m.id));
   const someFiltered = filtered.some((m) => selected.has(m.id));
+  const toggleAllFiltered = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allFiltered) filtered.forEach((m) => next.delete(m.id));
+      else filtered.forEach((m) => next.add(m.id));
+      return next;
+    });
+  // Same handlers for the desktop row and the mobile card.
+  const modelProps = (m: ProviderModel): ModelRowProps => ({
+    model: m,
+    route: `${routePrefix}/${m.id}`,
+    disabled: disabledIds.has(m.id),
+    selected: selected.has(m.id),
+    onSelect: () =>
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(m.id)) next.delete(m.id);
+        else next.add(m.id);
+        return next;
+      }),
+    onToggle: (enable) => setDisabled.mutate({ ids: [m.id], disable: !enable }),
+  });
 
   return (
     <div className="space-y-3">
@@ -1284,7 +1432,7 @@ function ModelsPanel({
                   <Button variant="ghost" disabled={setDisabled.isPending} onClick={() => setDisabled.mutate({ ids: [...selected], disable: true }, { onSuccess: () => setSelected(new Set()) })}>
                     Disable
                   </Button>
-                  <button type="button" onClick={() => setSelected(new Set())} aria-label="Clear selection" className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+                  <button type="button" onClick={() => setSelected(new Set())} aria-label="Clear selection" className="flex h-9 w-9 items-center md:h-8 md:w-8 justify-center rounded-lg text-fg-muted hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
                     <X className="h-4 w-4" aria-hidden="true" />
                   </button>
                 </>
@@ -1301,57 +1449,56 @@ function ModelsPanel({
               <p className="text-[13px] text-fg-muted">No models match.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] text-[13px]">
-                <thead>
-                  <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-                    <th scope="col" className="w-10 px-4 py-2">
-                      <input
-                        type="checkbox"
-                        aria-label="Select all shown models"
-                        className={checkboxClass}
-                        checked={allFiltered}
-                        ref={(el) => {
-                          if (el) el.indeterminate = someFiltered && !allFiltered;
-                        }}
-                        onChange={() =>
-                          setSelected((prev) => {
-                            const next = new Set(prev);
-                            if (allFiltered) filtered.forEach((m) => next.delete(m.id));
-                            else filtered.forEach((m) => next.add(m.id));
-                            return next;
-                          })
-                        }
-                      />
-                    </th>
-                    <th scope="col" className="px-2 py-2 font-medium">Model</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Kind</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Route as</th>
-                    <th scope="col" className="px-4 py-2 text-right font-medium">Enabled</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-line">
-                  {paged.map((m) => (
-                    <ModelRow
-                      key={m.id}
-                      model={m}
-                      route={`${routePrefix}/${m.id}`}
-                      disabled={disabledIds.has(m.id)}
-                      selected={selected.has(m.id)}
-                      onSelect={() =>
-                        setSelected((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(m.id)) next.delete(m.id);
-                          else next.add(m.id);
-                          return next;
-                        })
-                      }
-                      onToggle={(enable) => setDisabled.mutate({ ids: [m.id], disable: !enable })}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="flex items-center border-b border-line bg-subtle px-4 py-1 md:hidden">
+                <label className="-ml-2.5 flex min-h-9 cursor-pointer items-center gap-2 pl-2.5 pr-2 text-[12.5px] text-fg-muted">
+                  <input
+                    type="checkbox"
+                    className={checkboxClass}
+                    checked={allFiltered}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someFiltered && !allFiltered;
+                    }}
+                    onChange={toggleAllFiltered}
+                  />
+                  Select all shown
+                </label>
+              </div>
+              <ul className="divide-y divide-line md:hidden" aria-label="Models">
+                {paged.map((m) => (
+                  <ModelCard key={`${m.kind}:${m.id}`} {...modelProps(m)} />
+                ))}
+              </ul>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[720px] text-[13px]">
+                  <thead>
+                    <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
+                      <th scope="col" className="w-10 px-4 py-2">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all shown models"
+                          className={checkboxClass}
+                          checked={allFiltered}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someFiltered && !allFiltered;
+                          }}
+                          onChange={toggleAllFiltered}
+                        />
+                      </th>
+                      <th scope="col" className="px-2 py-2 font-medium">Model</th>
+                      <th scope="col" className="px-4 py-2 font-medium">Kind</th>
+                      <th scope="col" className="px-4 py-2 font-medium">Route as</th>
+                      <th scope="col" className="px-4 py-2 text-right font-medium">Enabled</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {paged.map((m) => (
+                      <ModelRow key={`${m.kind}:${m.id}`} {...modelProps(m)} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
           {pages > 1 && <TablePagination page={page} pages={pages} total={total} onPage={setPage} />}
         </div>
@@ -1360,21 +1507,18 @@ function ModelsPanel({
   );
 }
 
-function ModelRow({
-  model: m,
-  route,
-  disabled,
-  selected,
-  onSelect,
-  onToggle,
-}: {
+interface ModelRowProps {
   model: ProviderModel;
   route: string;
   disabled: boolean;
   selected: boolean;
   onSelect: () => void;
   onToggle: (enable: boolean) => void;
-}) {
+}
+
+// RouteCopy shows the routable model id and copies it on click. The copy icon
+// fades in on hover only where hover exists; touch screens always show it.
+function RouteCopy({ route }: { route: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -1386,39 +1530,58 @@ function ModelRow({
     }
   };
   return (
+    <>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={`Copy ${route}`}
+        className="group inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-md font-mono text-[12px] text-fg-muted hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 md:min-h-6"
+      >
+        <span className="truncate">{route}</span>
+        {copied ? (
+          <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden="true" />
+        ) : (
+          <Copy
+            className="h-3.5 w-3.5 shrink-0 transition-opacity group-focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+            aria-hidden="true"
+          />
+        )}
+      </button>
+      <span className="sr-only" role="status">
+        {copied ? "Copied" : ""}
+      </span>
+    </>
+  );
+}
+
+function ModelName({ m, disabled }: { m: ProviderModel; disabled: boolean }) {
+  return (
+    <>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={cn("min-w-0 truncate font-medium", disabled ? "text-fg-muted" : "text-fg")} title={m.name || m.id}>
+          {m.name || m.id}
+        </span>
+        <ModelCapabilityIcons capabilities={m.capabilities} size={13} />
+        {m.custom && <Badge tone="neutral">Custom</Badge>}
+        {m.discovered && <Badge tone="neutral">Synced</Badge>}
+      </div>
+      {m.name && m.name !== m.id && <p className="truncate font-mono text-[11.5px] text-fg-faint">{m.id}</p>}
+    </>
+  );
+}
+
+function ModelRow({ model: m, route, disabled, selected, onSelect, onToggle }: ModelRowProps) {
+  return (
     <tr className={cn("transition-colors", selected ? "bg-accent-500/5" : "hover:bg-hover/60", disabled && "text-fg-muted")}>
       <td className="px-4 py-2">
         <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Select ${m.name || m.id}`} className={checkboxClass} />
       </td>
       <td className="max-w-[340px] px-2 py-2">
-        <div className="flex items-center gap-2">
-          <span className={cn("truncate font-medium", disabled ? "text-fg-muted" : "text-fg")} title={m.name || m.id}>
-            {m.name || m.id}
-          </span>
-          <ModelCapabilityIcons capabilities={m.capabilities} size={13} />
-          {m.custom && <Badge tone="neutral">Custom</Badge>}
-          {m.discovered && <Badge tone="neutral">Synced</Badge>}
-        </div>
-        {m.name && m.name !== m.id && <p className="truncate font-mono text-[11.5px] text-fg-faint">{m.id}</p>}
+        <ModelName m={m} disabled={disabled} />
       </td>
       <td className="px-4 py-2 text-[12.5px] text-fg-muted">{m.kind || "chat"}</td>
       <td className="max-w-[300px] px-4 py-2">
-        <button
-          type="button"
-          onClick={copy}
-          aria-label={`Copy ${route}`}
-          className="group inline-flex min-h-6 max-w-full items-center gap-1.5 rounded-md font-mono text-[12px] text-fg-muted hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-        >
-          <span className="truncate">{route}</span>
-          {copied ? (
-            <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden="true" />
-          ) : (
-            <Copy className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
-          )}
-        </button>
-        <span className="sr-only" role="status">
-          {copied ? "Copied" : ""}
-        </span>
+        <RouteCopy route={route} />
       </td>
       <td className="px-4 py-2 text-right">
         <span className="inline-flex">
@@ -1426,6 +1589,34 @@ function ModelRow({
         </span>
       </td>
     </tr>
+  );
+}
+
+// ModelCard is the phone layout of ModelRow.
+function ModelCard({ model: m, route, disabled, selected, onSelect, onToggle }: ModelRowProps) {
+  return (
+    <li className={cn("px-4 py-2.5 text-[13px]", selected && "bg-accent-500/5")}>
+      <div className="flex items-start gap-1">
+        <label className="-ml-2.5 flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center">
+          <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Select ${m.name || m.id}`} className={checkboxClass} />
+        </label>
+        <div className="min-w-0 flex-1 pt-1.5">
+          <ModelName m={m} disabled={disabled} />
+        </div>
+        <span className="flex h-9 shrink-0 items-center">
+          <Toggle checked={!disabled} onChange={onToggle} label={`Enable ${m.name || m.id}`} />
+        </span>
+      </div>
+      <div className="flex min-w-0 items-center gap-2 pl-[1.875rem] text-[12px] text-fg-muted">
+        <span className="shrink-0">{m.kind || "chat"}</span>
+        <span aria-hidden="true" className="text-fg-faint">
+          ·
+        </span>
+        <span className="min-w-0">
+          <RouteCopy route={route} />
+        </span>
+      </div>
+    </li>
   );
 }
 
@@ -1524,26 +1715,29 @@ function RoutingForm({
           )}
         </div>
       )}
-      <div className="flex items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
-        <span className="mr-auto text-[12.5px] text-fg-muted" role="status" aria-live="polite">
+      <div className="flex flex-col gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:items-center sm:justify-end sm:px-5">
+        <span className="text-[12.5px] text-fg-muted sm:mr-auto" role="status" aria-live="polite">
           {saving ? "Saving…" : dirty ? "Unsaved changes" : "Saved"}
         </span>
-        {dirty && !saving && (
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setMode(saved.mode);
-              setSticky(saved.sticky);
-              setTtl(saved.ttl);
-            }}
-          >
-            Discard
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {dirty && !saving && (
+            <Button
+              variant="ghost"
+              className="w-full sm:w-auto"
+              onClick={() => {
+                setMode(saved.mode);
+                setSticky(saved.sticky);
+                setTtl(saved.ttl);
+              }}
+            >
+              Discard
+            </Button>
+          )}
+          <Button className="w-full sm:w-auto" disabled={!dirty || saving} onClick={() => onSave({ routing_strategy: mode, sticky_limit: sticky, affinity_ttl_minutes: ttl * 60 })}>
+            {saving && <Loader2 className="animate-spin" aria-hidden="true" />}
+            Save changes
           </Button>
-        )}
-        <Button disabled={!dirty || saving} onClick={() => onSave({ routing_strategy: mode, sticky_limit: sticky, affinity_ttl_minutes: ttl * 60 })}>
-          {saving && <Loader2 className="animate-spin" aria-hidden="true" />}
-          Save changes
-        </Button>
+        </div>
       </div>
     </section>
   );

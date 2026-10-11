@@ -5,6 +5,7 @@
 import {
   isValidElement,
   cloneElement,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -94,6 +95,7 @@ export function SettingsCard({
 }
 
 // SettingRow: label + one-line description on the left, control on the right.
+// Below sm the text stacks above the control, which then gets the full width.
 // Pass `controlId` (the id of the control) to wire the label, description and
 // error to it; set `labelable={false}` when the control is not a form element
 // (segmented groups, buttons), then point it at `${controlId}-label` with
@@ -190,7 +192,7 @@ export function ToggleRow({
   const id = useId();
   const ids = rowIds(id);
   return (
-    <div className={cn("flex items-center justify-between gap-6 px-4 py-3.5", nested && "sm:pl-9")}>
+    <div className={cn("flex items-center justify-between gap-4 px-4 py-3.5 sm:gap-6", nested && "sm:pl-9")}>
       <div className="min-w-0 max-w-2xl">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <label htmlFor={id} id={ids.label} className="cursor-pointer text-[13px] font-medium text-fg">
@@ -278,7 +280,8 @@ export function Disclosure({
 }
 
 // Segmented is a radiogroup of small buttons with roving focus: arrow keys
-// move and select, Tab leaves the group.
+// move and select, Tab leaves the group. Below sm it fills the row and wraps
+// (options share each line evenly) instead of overflowing the card.
 export function Segmented<T extends string>({
   value,
   onChange,
@@ -321,7 +324,7 @@ export function Segmented<T extends string>({
       aria-labelledby={labelledBy}
       aria-describedby={describedById}
       onKeyDown={onKeyDown}
-      className="inline-flex rounded-xl border border-line bg-subtle p-0.5"
+      className="flex max-w-full flex-wrap gap-0.5 rounded-xl border border-line bg-subtle p-0.5 sm:inline-flex sm:flex-nowrap sm:gap-0"
     >
       {options.map((opt, i) => {
         const on = i === current;
@@ -334,7 +337,7 @@ export function Segmented<T extends string>({
             tabIndex={on ? 0 : -1}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "h-7 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-colors",
+              "h-9 flex-1 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-colors sm:h-7 sm:flex-none",
               focusRing,
               on ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
             )}
@@ -364,19 +367,25 @@ export function SaveBar({
   saveLabel?: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
-      <span role="status" className={cn("mr-auto min-w-0 text-[12.5px]", error && !saving ? "text-bad" : "text-fg-muted")}>
+    // Phones: status on its own line, then full-width buttons with Save on top.
+    <div className="flex flex-col gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:px-5">
+      <span
+        role="status"
+        className={cn("min-w-0 break-words text-[12.5px] sm:mr-auto", error && !saving ? "text-bad" : "text-fg-muted")}
+      >
         {saving ? "Saving…" : error ? `Couldn't save: ${error}` : dirty ? "Unsaved changes" : "All changes saved"}
       </span>
-      {dirty && !saving && (
-        <Button variant="ghost" onClick={onDiscard}>
-          Discard
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        {dirty && !saving && (
+          <Button variant="ghost" onClick={onDiscard} className="w-full sm:w-auto">
+            Discard
+          </Button>
+        )}
+        <Button disabled={!dirty || saving} onClick={onSave} className="w-full sm:w-auto">
+          {saving && <Loader2 className="animate-spin" aria-hidden="true" />}
+          {saveLabel}
         </Button>
-      )}
-      <Button disabled={!dirty || saving} onClick={onSave}>
-        {saving && <Loader2 className="animate-spin" aria-hidden="true" />}
-        {saveLabel}
-      </Button>
+      </div>
     </div>
   );
 }
@@ -488,6 +497,79 @@ export function UnitInput({
         {unit}
       </span>
     </div>
+  );
+}
+
+// NumberUnitInput edits a whole number as free text and commits a clamped
+// value on blur or Enter (Escape reverts). Intermediate keystrokes — "1" on
+// the way to "120", or an empty field — are never saved, so they can't trip
+// server-side range checks or snap back to a default mid-edit.
+export function NumberUnitInput({
+  value,
+  onCommit,
+  min,
+  max,
+  ...props
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "min" | "max"> & {
+  unit: string;
+  value: number;
+  onCommit: (value: number) => void;
+  min: number;
+  max: number;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const editing = useRef(false);
+  const cancelled = useRef(false);
+
+  // Follow external changes (server response, another tab) while not editing.
+  useEffect(() => {
+    if (!editing.current) setDraft(String(value));
+  }, [value]);
+
+  const parsed = Number.parseInt(draft, 10);
+  const outOfRange = draft.trim() !== "" && (Number.isNaN(parsed) || parsed < min || parsed > max);
+
+  const commit = () => {
+    editing.current = false;
+    if (cancelled.current) {
+      cancelled.current = false;
+      setDraft(String(value));
+      return;
+    }
+    if (Number.isNaN(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = Math.min(max, Math.max(min, parsed));
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+
+  return (
+    <UnitInput
+      {...props}
+      inputMode="numeric"
+      min={min}
+      max={max}
+      value={draft}
+      aria-invalid={outOfRange || props["aria-invalid"] ? true : undefined}
+      onChange={(e) => {
+        editing.current = true;
+        setDraft(e.target.value);
+      }}
+      onBlur={(e) => {
+        commit();
+        props.onBlur?.(e);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelled.current = true;
+          e.currentTarget.blur();
+        }
+        props.onKeyDown?.(e);
+      }}
+    />
   );
 }
 

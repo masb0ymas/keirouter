@@ -174,7 +174,7 @@ function TokenInput({ id, value, onChange, placeholder }: { id: string; value: s
 
 function SettingRow({ id, label, children }: { id: string; label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2.5">
       <span id={id} className="min-w-0 text-[13px] font-medium text-fg">
         {label}
       </span>
@@ -183,9 +183,17 @@ function SettingRow({ id, label, children }: { id: string; label: string; childr
   );
 }
 
+// Phones: buttons stack full width in DOM order (primary last); the body above
+// scrolls so the footer never leaves the screen.
 function DialogFooter({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3">{children}</div>;
+  return (
+    <div className="flex flex-col gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3 sm:flex-row sm:items-center sm:justify-end [&>button]:w-full sm:[&>button]:w-auto">
+      {children}
+    </div>
+  );
 }
+
+const DIALOG_BODY = "max-h-[calc(100dvh-12rem)] overflow-y-auto sm:max-h-[calc(100dvh-10rem)]";
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
@@ -393,6 +401,19 @@ export function KeysPage() {
     remove.mutate(k.id);
   };
 
+  // Same handlers for the desktop row and the phone card.
+  const itemProps = (k: APIKey): KeyItemProps => ({
+    apiKey: k,
+    selected: selectedIds.has(k.id),
+    onSelect: () => toggleSelect(k.id),
+    onOpen: () => navigate(`/keys/${k.id}`),
+    onToggle: () => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled }),
+    togglePending: toggleDisabled.isPending && toggleDisabled.variables?.id === k.id,
+    onCopyKey: () => copy(k.display, "Masked key copied"),
+    onCopyPortal: () => copy(portalUrlFor(k.id), "Portal link copied"),
+    onRevoke: () => revokeOne(k),
+  });
+
   const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((k) => selectedIds.has(k.id));
   const someVisibleSelected = visibleKeys.some((k) => selectedIds.has(k.id));
   const filtering = searchQuery.trim() !== "" || statusFilter !== "all";
@@ -422,7 +443,7 @@ export function KeysPage() {
         if (name.trim() && !create.isPending) create.mutate();
       }}
     >
-      <div className="space-y-4 px-5 py-4">
+      <div className={cn("space-y-4 px-5 py-4", DIALOG_BODY)}>
         <FormField id={ids.name} label="Name" required>
           <Input
             id={ids.name}
@@ -558,7 +579,6 @@ export function KeysPage() {
       </div>
 
       <DialogFooter>
-        <div className="flex-1" />
         <Button type="button" variant="ghost" onClick={closeModal}>Cancel</Button>
         <Button type="submit" disabled={!name.trim() || create.isPending}>
           {create.isPending ? "Creating…" : "Create key"}
@@ -735,7 +755,30 @@ export function KeysPage() {
               </Button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            {/* Phones: one card per key, controls on their own line. */}
+            {visibleKeys.length > 1 && (
+              <div className="border-b border-line bg-subtle px-4 py-1 md:hidden">
+                <label className="inline-flex min-h-9 cursor-pointer items-center gap-2.5 text-[12.5px] text-fg-muted">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    className="h-4 w-4 rounded border-input accent-accent-500"
+                  />
+                  Select all {visibleKeys.length} shown
+                </label>
+              </div>
+            )}
+            <ul className="divide-y divide-line md:hidden" aria-label="API keys">
+              {pagination.paged.map((k) => (
+                <KeyCard key={k.id} {...itemProps(k)} />
+              ))}
+            </ul>
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[760px] text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -761,27 +804,116 @@ export function KeysPage() {
                 </thead>
                 <tbody className="divide-y divide-line">
                   {pagination.paged.map((k) => (
-                    <KeyRow
-                      key={k.id}
-                      apiKey={k}
-                      selected={selectedIds.has(k.id)}
-                      onSelect={() => toggleSelect(k.id)}
-                      onOpen={() => navigate(`/keys/${k.id}`)}
-                      onToggle={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
-                      togglePending={toggleDisabled.isPending && toggleDisabled.variables?.id === k.id}
-                      onCopyKey={() => copy(k.display, "Masked key copied")}
-                      onCopyPortal={() => copy(portalUrlFor(k.id), "Portal link copied")}
-                      onRevoke={() => revokeOne(k)}
-                    />
+                    <KeyRow key={k.id} {...itemProps(k)} />
                   ))}
                 </tbody>
               </table>
             </div>
+            </>
           )}
           <TablePagination page={pagination.page} pages={pagination.pages} total={pagination.total} onPage={pagination.setPage} />
         </section>
       )}
     </>
+  );
+}
+
+type KeyItemProps = {
+  apiKey: APIKey;
+  selected: boolean;
+  onSelect: () => void;
+  onOpen: () => void;
+  onToggle: () => void;
+  togglePending: boolean;
+  onCopyKey: () => void;
+  onCopyPortal: () => void;
+  onRevoke: () => void;
+};
+
+function KeyActionsMenu({ apiKey: k, onOpen, onCopyKey, onCopyPortal, onRevoke }: Pick<KeyItemProps, "apiKey" | "onOpen" | "onCopyKey" | "onCopyPortal" | "onRevoke">) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={`Actions for ${k.name}`}
+        className={cn("flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg md:h-8 md:w-8", FOCUS_RING)}
+      >
+        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onOpen}>
+          <Settings2 aria-hidden="true" />
+          Configure
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCopyKey}>
+          <Copy aria-hidden="true" />
+          Copy masked key
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCopyPortal}>
+          <Link2 aria-hidden="true" />
+          Copy portal link
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem tone="danger" onSelect={onRevoke}>
+          <Trash2 aria-hidden="true" />
+          Revoke key
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function KeyStatusBadge({ disabled }: { disabled: boolean }) {
+  return disabled ? <Badge tone="neutral">Disabled</Badge> : <Badge tone="success">Active</Badge>;
+}
+
+/** Phone layout of a key: identity + status, facts, then the controls. */
+function KeyCard(props: KeyItemProps) {
+  const { apiKey: k, selected, onSelect, onToggle, togglePending } = props;
+  const toggleId = useId();
+  const modelCount = k.allowed_models?.length ?? 0;
+  const lastUsed = usedAt(k.last_used_at);
+  const facts = [
+    k.plan_name || "Custom",
+    modelCount > 0 ? `${modelCount} model${modelCount > 1 ? "s" : ""}` : null,
+    lastUsed ? `Used ${relativeTime(k.last_used_at).toLowerCase()}` : "Never used",
+  ].filter(Boolean);
+
+  return (
+    <li className={cn("px-4 py-3", selected && "bg-accent-500/5")}>
+      <div className="flex items-center gap-2">
+        {/* The label widens the checkbox's tap target to 36px. */}
+        <label className="-my-2 -ml-2.5 flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onSelect}
+            className="h-4 w-4 rounded border-input accent-accent-500"
+            aria-label={`Select ${k.name}`}
+          />
+        </label>
+        <Link
+          to={`/keys/${k.id}`}
+          className={cn("min-w-0 flex-1 truncate rounded-sm text-[13px] font-medium hover:underline", FOCUS_RING, k.disabled ? "text-fg-muted" : "text-fg")}
+          title={k.name}
+        >
+          {k.name}
+        </Link>
+        <span aria-hidden="true" className="shrink-0">
+          <KeyStatusBadge disabled={k.disabled} />
+        </span>
+      </div>
+      <div className="pl-[34px]">
+        <p className="truncate font-mono text-[12px] text-fg-faint">{k.display}</p>
+        <p className="mt-0.5 truncate text-[12px] tabular-nums text-fg-muted">{facts.join(" · ")}</p>
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <span className="flex min-h-9 items-center gap-2.5">
+            <Toggle id={toggleId} checked={!k.disabled} onChange={onToggle} disabled={togglePending} label={`${k.name} active`} />
+            <label htmlFor={toggleId} className="text-[12.5px] text-fg-muted">Accept requests</label>
+          </span>
+          <KeyActionsMenu {...props} />
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -795,17 +927,7 @@ function KeyRow({
   onCopyKey,
   onCopyPortal,
   onRevoke,
-}: {
-  apiKey: APIKey;
-  selected: boolean;
-  onSelect: () => void;
-  onOpen: () => void;
-  onToggle: () => void;
-  togglePending: boolean;
-  onCopyKey: () => void;
-  onCopyPortal: () => void;
-  onRevoke: () => void;
-}) {
+}: KeyItemProps) {
   const modelCount = k.allowed_models?.length ?? 0;
   const lastUsed = usedAt(k.last_used_at);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -844,7 +966,7 @@ function KeyRow({
         <span className="inline-flex items-center gap-2">
           <Toggle checked={!k.disabled} onChange={onToggle} disabled={togglePending} label={`${k.name} active`} />
           <span aria-hidden="true">
-            {k.disabled ? <Badge tone="neutral">Disabled</Badge> : <Badge tone="success">Active</Badge>}
+            <KeyStatusBadge disabled={k.disabled} />
           </span>
         </span>
       </td>
@@ -855,33 +977,7 @@ function KeyRow({
         {new Date(k.created_at).toLocaleDateString()}
       </td>
       <td className="px-2 py-2.5" onClick={stop}>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            aria-label={`Actions for ${k.name}`}
-            className={cn("flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
-          >
-            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onOpen}>
-              <Settings2 aria-hidden="true" />
-              Configure
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onCopyKey}>
-              <Copy aria-hidden="true" />
-              Copy masked key
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onCopyPortal}>
-              <Link2 aria-hidden="true" />
-              Copy portal link
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem tone="danger" onSelect={onRevoke}>
-              <Trash2 aria-hidden="true" />
-              Revoke key
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <KeyActionsMenu apiKey={k} onOpen={onOpen} onCopyKey={onCopyKey} onCopyPortal={onCopyPortal} onRevoke={onRevoke} />
       </td>
     </tr>
   );
@@ -934,7 +1030,7 @@ function StepSuccess({
 
   return (
     <>
-      <div className="space-y-4 px-5 py-4">
+      <div className={cn("space-y-4 px-5 py-4", DIALOG_BODY)}>
         <div className="space-y-3">
           <div className="flex items-center gap-3" id={warnId}>
             <IconTile icon={Check} size="md" tone="ok" />
@@ -989,7 +1085,7 @@ function StepSuccess({
                 onClick={() => copy(portalUrl, "Portal link copied", "Share it with the key owner.").then((ok) => ok && flash(setCopiedUrl, 1500))}
                 aria-label="Copy portal link"
                 title="Copy portal link"
-                className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
+                className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg sm:h-8 sm:w-8", FOCUS_RING)}
               >
                 {copiedUrl ? <Check className="h-4 w-4 text-ok" strokeWidth={1.75} aria-hidden="true" /> : <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
               </button>
@@ -1020,7 +1116,7 @@ function StepSuccess({
         </dl>
 
         <div className="rounded-lg border border-line">
-          <div className="flex items-center justify-between gap-2 px-3 py-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-1.5">
             <button
               type="button"
               onClick={() => setShowSetup((v) => !v)}
@@ -1049,7 +1145,6 @@ function StepSuccess({
       </div>
 
       <DialogFooter>
-        <div className="flex-1" />
         <Button variant="secondary" onClick={onClose}>Done</Button>
       </DialogFooter>
     </>

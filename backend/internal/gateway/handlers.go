@@ -277,6 +277,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		Caveman:  s.cavemanConfig(),
 		Headroom: s.headroomConfig(),
 		Ponytail: s.ponytailConfig(),
+		Skills:   s.skillsConfig(r, key, req.Model, resolved.Targets),
 		Limits:   effectiveLimits,
 	}
 

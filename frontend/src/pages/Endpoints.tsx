@@ -27,7 +27,7 @@ const REACHABLE_MISS_THRESHOLD = 5;
 const LINK_BUTTON =
   "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-medium text-fg transition-colors duration-150 hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [&_svg]:size-4 [&_svg]:shrink-0";
 const ICON_BUTTON =
-  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:h-7 sm:w-7";
 
 // ---------------------------------------------------------------------------
 // Brand SVG logos (monochrome; colour is reserved for meaning)
@@ -182,7 +182,7 @@ function TargetRadios({ value, onChange }: { value: Target; onChange: (next: Tar
             aria-checked={active}
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(option.value)}
-            className={`h-7 rounded-lg px-2.5 text-[12px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
+            className={`h-8 rounded-lg px-3 text-[12px] font-medium sm:h-7 sm:px-2.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
               active ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg"
             }`}
           >
@@ -271,7 +271,7 @@ function EndpointRow({
         {loading && !url ? (
           <Skeleton className="h-4 w-64 max-w-full flex-1" />
         ) : (
-          <span className="min-w-0 flex-1 truncate font-mono text-[14px] text-fg" title={url}>
+          <span className="min-w-0 flex-1 break-all font-mono text-[13px] text-fg sm:truncate sm:text-[14px]" title={url}>
             {url || "Not available"}
           </span>
         )}
@@ -430,7 +430,7 @@ function QuickStartCard({ apiBase, action }: { apiBase: string; action: ReactNod
           <div className="absolute right-1.5 top-1.5">
             <CopyIconButton value={snippet.code} title={`${label} snippet copied`} label={`Copy ${label} snippet`} />
           </div>
-          <pre className="overflow-x-auto px-4 py-3 pr-11 font-mono text-[12.5px] leading-relaxed text-fg" tabIndex={0} aria-label={`${label} snippet`}>
+          <pre className="overflow-x-auto px-4 py-3 pr-12 font-mono text-[12.5px] leading-relaxed text-fg" tabIndex={0} aria-label={`${label} snippet`}>
             <code>{snippet.code}</code>
           </pre>
         </div>
@@ -565,11 +565,14 @@ function CatalogueCard({ apiBase }: { apiBase: string }) {
               {expanded && (
                 <ul id={regionId} className="divide-y divide-line border-t border-line">
                   {g.entries.map((e) => (
-                    <li key={`${e.method} ${e.path}`} className="flex items-center gap-3 px-4 py-2 sm:pl-10">
+                    <li key={`${e.method} ${e.path}`} className="flex items-start gap-3 px-4 py-2 sm:items-center sm:pl-10">
                       <MethodBadge method={e.method} />
                       <span className="min-w-0 flex-1">
                         <span className="block break-all font-mono text-[12.5px] text-fg">{e.path}</span>
-                        <span className="block text-[12px] text-fg-muted">{e.purpose}</span>
+                        <span className="block text-[12px] text-fg-muted">
+                          {e.purpose}
+                          <span className="sm:hidden"> · {e.format}</span>
+                        </span>
                       </span>
                       <span className="hidden sm:inline-flex">
                         <Badge tone="neutral">{e.format}</Badge>
@@ -908,11 +911,11 @@ export function TailscaleTunnel() {
               placeholder="Required for system install"
             />
           </Field>
-          <div className="flex gap-2">
-            <Button onClick={handleInstall} disabled={installing || !sudoPassword.trim()}>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button className="w-full sm:w-auto" onClick={handleInstall} disabled={installing || !sudoPassword.trim()}>
               {installing ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />Installing…</> : "Install"}
             </Button>
-            <Button variant="ghost" onClick={() => setShowInstall(false)}>
+            <Button variant="ghost" className="w-full sm:w-auto" onClick={() => setShowInstall(false)}>
               Cancel
             </Button>
           </div>
@@ -998,7 +1001,7 @@ function TunnelRow({
 }) {
   return (
     <div className="p-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2 sm:flex-nowrap sm:items-center">
         <LogoTile running={isRunning} reachable={reachable}>{logo}</LogoTile>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -1015,8 +1018,9 @@ function TunnelRow({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex min-h-6 min-w-0 items-center gap-1 rounded-md font-mono text-[12px] text-fg-muted transition-colors hover:text-fg hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                title={displayUrl}
               >
-                <span className="truncate">{displayUrl}</span>
+                <span className="min-w-0 break-all sm:truncate">{displayUrl}</span>
                 <ArrowUpRight className="h-3 w-3 shrink-0" strokeWidth={1.75} aria-hidden="true" />
                 <span className="sr-only"> (opens in a new tab)</span>
               </a>
@@ -1024,7 +1028,7 @@ function TunnelRow({
           )}
           {subText && <p className="mt-1 text-[12px] tabular-nums text-fg-muted" role="status">{subText}</p>}
         </div>
-        <div className="flex shrink-0 items-center pl-2">
+        <div className="flex w-full shrink-0 items-center pl-11 sm:w-auto sm:pl-2">
           {isRunning ? (
             <Button
               variant="danger"
@@ -1101,7 +1105,7 @@ function LogoTile({ running, reachable, children }: { running: boolean; reachabl
 function MethodBadge({ method }: { method: string }) {
   const tone = method === "GET" ? "accent" : method === "POST" ? "secondary" : "neutral";
   return (
-    <span className="inline-flex w-12 shrink-0">
+    <span className="mt-0.5 inline-flex w-12 shrink-0 sm:mt-0">
       <Badge tone={tone}>
         <span className="font-mono">{method}</span>
       </Badge>

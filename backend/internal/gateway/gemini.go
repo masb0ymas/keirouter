@@ -90,6 +90,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		Caveman:  s.cavemanConfig(),
 		Headroom: s.headroomConfig(),
 		Ponytail: s.ponytailConfig(),
+		Skills:   s.skillsConfig(r, key, req.Model, resolved.Targets),
 	}
 
 	if req.Stream {

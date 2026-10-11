@@ -90,9 +90,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
+    // Phones: bottom-centre, full width minus the 16px gutters, above the
+    // home indicator. From sm: top-right stack.
     <div
       data-toast-region
-      className="pointer-events-none fixed right-4 top-4 z-60 flex w-[calc(100%-2rem)] max-w-sm flex-col gap-2"
+      className="pointer-events-none fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-60 mx-auto flex max-w-sm flex-col gap-2 sm:inset-x-auto sm:bottom-auto sm:right-4 sm:top-4 sm:mx-0 sm:w-full"
     >
       {toasts.length > 0 && (
         <section aria-label="Notifications">
@@ -170,7 +172,7 @@ function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
         <button
           type="button"
           onClick={onDismiss}
-          className="-my-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+          className="-my-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md [@media(pointer:coarse)]:-my-1.5 [@media(pointer:coarse)]:h-9 [@media(pointer:coarse)]:w-9 text-fg-faint transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           aria-label={`Dismiss notification: ${toast.title}`}
         >
           <X className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />

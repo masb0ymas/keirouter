@@ -26,6 +26,7 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/errclass"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 )
 
 // errNonJSONResponse marks a successful HTTP response whose body was not JSON
@@ -203,8 +204,14 @@ func proxyTransportsFor(creds core.Credentials) transportPair {
 	return proxyTransports.get(key, func() transportPair {
 		var proxy func(*http.Request) (*url.URL, error)
 		if creds.ProxyURL != "" {
-			if u, err := url.Parse(creds.ProxyURL); err == nil {
-				proxy = proxyFunc(u, creds.NoProxy)
+			if u, err := url.Parse(creds.ProxyURL); err == nil && u.Host != "" {
+				proxy = httputil.ProxyFunc(u, creds.NoProxy)
+			} else {
+				// Fail closed: silently going direct would leak the real
+				// egress IP the operator configured the proxy to hide.
+				proxy = func(*http.Request) (*url.URL, error) {
+					return nil, errors.New("invalid proxy URL")
+				}
 			}
 		}
 		return transportPair{pooled: newTransport(proxy), fresh: newFreshConnTransport(proxy)}
@@ -218,28 +225,6 @@ func clientFor(creds core.Credentials) *http.Client {
 		return sharedClient
 	}
 	return &http.Client{Transport: proxyTransportsFor(creds).pooled}
-}
-
-// proxyFunc returns a proxy function that routes requests through proxyURL,
-// skipping hosts that match the comma-separated noProxy bypass list.
-func proxyFunc(proxyURL *url.URL, noProxy string) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		if noProxy != "" {
-			host := req.URL.Hostname()
-			for _, bypass := range strings.Split(noProxy, ",") {
-				bypass = strings.TrimSpace(bypass)
-				if bypass == "" {
-					continue
-				}
-				if bypass == "*" ||
-					strings.EqualFold(host, bypass) ||
-					strings.HasSuffix(host, "."+bypass) {
-					return nil, nil
-				}
-			}
-		}
-		return proxyURL, nil
-	}
 }
 
 // relayRequest rewrites a request to go through a relay proxy. The relay

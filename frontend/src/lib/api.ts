@@ -130,6 +130,13 @@ export interface EndpointSettings {
   outbound_no_proxy: string;
   observability_enabled?: boolean;
   rate_limits_enabled: boolean;
+  // Rate-limit tuning. The server fills unset values from config.yaml.
+  tpm_reconcile_enabled?: boolean;
+  tpm_output_floor?: number;
+  tpm_output_reserve_cap?: number;
+  concurrency_retry_after_ms?: number;
+  auth_failures_per_minute?: number;
+  login_attempts_per_minute?: number;
   stream_stall_timeout_ms: number;
   response_header_timeout_ms: number;
   request_timeout_ms: number;
@@ -765,14 +772,27 @@ export interface ProxyPool {
   last_error?: string;
 }
 
+/** Limits which requests a skill applies to; empty lists mean "any". */
+export interface SkillScope {
+  plans?: string[];
+  keys?: string[];
+  models?: string[];
+}
+
 export interface Skill {
   id: string;
   name: string;
   description: string;
   prompt: string;
   enabled: boolean;
+  /** Clients may drop it with the X-KeiRouter-Skip-Skills header. */
+  optional: boolean;
+  scope?: SkillScope;
   created_at: string;
+  updated_at?: string;
 }
+
+export type SkillInput = { name?: string; description?: string; prompt?: string; enabled?: boolean; optional?: boolean; scope?: SkillScope };
 
 export interface AccessSettings {
   local_enabled: boolean;
@@ -834,6 +854,18 @@ export interface TailscaleEnableResult {
   error?: string;
 }
 
+/** Connection currently stored in a CLI tool's config. The plaintext key never
+ *  leaves the server — only a masked hint and whether it authenticates. */
+export interface CLIToolSettings {
+  base_url: string;
+  model?: string;
+  api_key_hint?: string;
+  key_status: "valid" | "invalid" | "disabled" | "missing";
+  key_name?: string;
+  /** The stored endpoint addresses this gateway. */
+  endpoint_match: boolean;
+}
+
 export interface CLITool {
   id: string;
   name: string;
@@ -841,8 +873,22 @@ export interface CLITool {
   instructions: string;
   snippet: string;
   installed: boolean;
+  /** Install signals that matched, strongest first. */
+  detected_via?: ("binary" | "extension" | "config")[];
+  /** The config points at a gateway (see settings.endpoint_match for which). */
   configured: boolean;
   config_path: string;
+  config_files?: string[];
+  /** Copy of the primary config taken before KeiRouter first edited it. */
+  backup_path?: string;
+  binary_path?: string;
+  /** Installed IDE extension, e.g. "github.copilot-chat@0.31.2 in Cursor". */
+  extension?: string;
+  version?: string;
+  model_required: boolean;
+  settings?: CLIToolSettings;
+  /** Detection problem other than "not installed" (unreadable config, timeout). */
+  error?: string;
 }
 
 export interface CLIToolsResponse {
@@ -858,12 +904,23 @@ export interface AuthStatus {
 }
 
 export interface SystemSnapshot {
+  /** Epoch seconds of the collector tick these numbers come from. */
+  sampled_at: number;
+  /** Seconds the CPU percentages are averaged over. */
+  window_s: number;
   cpu_pct: number;
   cpu_per_core: number[];
+  cpu_count: number;
+  cpu_model?: string;
+  /** 1, 5 and 15 minute load average; absent on Windows. */
+  load_avg?: number[];
   mem_total_mb: number;
   mem_used_mb: number;
   mem_available_mb: number;
   mem_pct: number;
+  swap_total_mb: number;
+  swap_used_mb: number;
+  disk_path: string;
   disk_total_gb: number;
   disk_used_gb: number;
   disk_free_gb: number;
@@ -873,21 +930,28 @@ export interface SystemSnapshot {
   heap_sys_mb: number;
   heap_inuse_mb: number;
   heap_idle_mb: number;
+  next_gc_mb: number;
   gc_pause_total_ms: number;
   gc_pause_last_ms: number;
   gc_cycles: number;
-  open_fds: number;
-  net_conns: number;
   uptime_s: number;
+  host_uptime_s: number;
   pid: number;
   host: string;
   os: string;
   arch: string;
+  go_version: string;
   // Process-level metrics
+  /** Share of the whole machine's CPU capacity, 0–100. */
   proc_cpu_pct: number;
+  /** Cores' worth of CPU in use. */
+  proc_cpu_cores: number;
   proc_rss_mb: number;
   proc_threads: number;
   proc_open_fds: number;
+  proc_fd_limit?: number;
+  proc_conns: number;
+  proc_conns_established: number;
 }
 
 export interface SystemSample {
@@ -899,8 +963,8 @@ export interface SystemSample {
   cpu_spike?: boolean;
   mem_spike?: boolean;
   // Process-level metrics
-  proc_cpu_pct?: number;
-  proc_rss_mb?: number;
+  proc_cpu_pct: number;
+  proc_rss_mb: number;
   proc_threads?: number;
   proc_open_fds?: number;
 }
@@ -908,8 +972,27 @@ export interface SystemSample {
 export interface SystemHistory {
   interval_sec: number;
   max_size: number;
+  thresholds: { cpu_pct: number; mem_pct: number; disk_pct: number };
   spikes: SystemSample[];
   samples: SystemSample[];
+}
+
+/** One aggregated slice of the persisted resource timeline (7-day retention). */
+export interface SystemResourceBucket {
+  ts: number;
+  proc_cpu_avg: number;
+  proc_cpu_max: number;
+  host_cpu_avg: number;
+  host_cpu_max: number;
+  proc_rss_avg_mb: number;
+  proc_rss_max_bytes: number;
+  host_mem_pct_avg: number;
+  host_mem_pct_max: number;
+  goroutines_avg: number;
+  goroutines_max: number;
+  heap_avg_mb: number;
+  heap_max_bytes: number;
+  samples: number;
 }
 
 // ============================================================================
@@ -1046,6 +1129,84 @@ export interface GuardrailLogEntry {
   reason: string;
   findings: GuardrailFinding[] | null;
   created_at: string;
+}
+
+// ── Audit log ───────────────────────────────────────────────────────────────
+
+export type AuditOutcome = "success" | "failure" | "denied";
+
+export interface AuditEntry {
+  id: string;
+  time: string;
+  /** e.g. keys.create, auth.login, settings.endpoint */
+  action: string;
+  outcome: AuditOutcome;
+  severity: "INFO" | "WARN" | "ERROR";
+  actor_type: "dashboard" | "api_key" | "system" | "";
+  actor_id: string;
+  client_ip: string;
+  user_agent: string;
+  method: string;
+  route: string;
+  status_code: number;
+  resource_type: string;
+  resource_id: string;
+  request_id: string;
+  trace_id: string;
+  span_id: string;
+  details: Record<string, string>;
+  chain_id: string;
+  chain_seq: number;
+  hash: string;
+}
+
+export interface AuditFilter {
+  action?: string;
+  outcome?: string;
+  q?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface AuditStatus {
+  stats: {
+    enabled: boolean;
+    chain_id?: string;
+    queued: number;
+    written: number;
+    failed: number;
+    dropped: number;
+    otlp?: {
+      endpoint: string;
+      queued: number;
+      exported: number;
+      failed: number;
+      dropped: number;
+      last_error?: string;
+      last_ok?: string;
+    };
+  };
+  retention_days: number;
+}
+
+export interface AuditVerifyReport {
+  ok: boolean;
+  chains: number;
+  entries: number;
+  breaks: { chain_id: string; seq: number; entry_id: string; reason: string }[];
+  verified_at: string;
+  truncated?: boolean;
+}
+
+function auditQuery(f: AuditFilter = {}): string {
+  const qs = new URLSearchParams();
+  if (f.action) qs.set("action", f.action);
+  if (f.outcome) qs.set("outcome", f.outcome);
+  if (f.q) qs.set("q", f.q);
+  if (f.cursor) qs.set("cursor", f.cursor);
+  if (f.limit) qs.set("limit", String(f.limit));
+  const s = qs.toString();
+  return s ? `?${s}` : "";
 }
 
 export interface EffectiveGuardrail {
@@ -1463,10 +1624,12 @@ export const api = {
 
   cliTools: (model?: string) =>
     request<CLIToolsResponse>("GET", model ? `/cli-tools?model=${encodeURIComponent(model)}` : "/cli-tools"),
-  cliToolConfigure: (toolId: string, body: { base_url: string; api_key: string; models?: string[] }) =>
-    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/configure`, body),
+  cliTool: (toolId: string) => request<CLITool>("GET", `/cli-tools/${encodeURIComponent(toolId)}`),
+  /** Omit api_key to keep the key already stored in the tool's config. */
+  cliToolConfigure: (toolId: string, body: { base_url: string; api_key?: string; model?: string }) =>
+    request<{ ok: boolean; tool: CLITool }>("POST", `/cli-tools/${encodeURIComponent(toolId)}/configure`, body),
   cliToolRemove: (toolId: string) =>
-    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/remove`),
+    request<{ ok: boolean; tool: CLITool }>("POST", `/cli-tools/${encodeURIComponent(toolId)}/remove`),
 
   listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
   createProxyPool: (input: { name: string; type?: string; proxy_url: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
@@ -1478,10 +1641,10 @@ export const api = {
   deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${id}`),
 
   listSkills: () => request<{ skills: Skill[] }>("GET", "/skills"),
-  createSkill: (input: { name: string; description?: string; prompt?: string; enabled?: boolean }) =>
+  createSkill: (input: SkillInput & { name: string }) =>
     request<Skill>("POST", "/skills", input),
-  updateSkill: (id: string, patch: { enabled?: boolean }) =>
-    request<void>("POST", `/skills/${id}`, patch),
+  updateSkill: (id: string, patch: SkillInput) =>
+    request<Skill>("POST", `/skills/${id}`, patch),
   deleteSkill: (id: string) => request<void>("DELETE", `/skills/${id}`),
 
   endpointSettings: () => request<EndpointSettings>("GET", "/settings/endpoint"),
@@ -1658,6 +1821,8 @@ export const api = {
   // System monitoring.
   systemMonitor: () => request<SystemSnapshot>("GET", "/system"),
   systemHistory: () => request<SystemHistory>("GET", "/system/history"),
+  systemResources: (hours: number, interval: string) =>
+    request<SystemResourceBucket[]>("GET", `/system/resources?hours=${hours}&interval=${encodeURIComponent(interval)}`),
 
   // Guardrails (content-safety policies).
   listGuardrails: (scope?: GuardrailScope) =>
@@ -1702,6 +1867,13 @@ export const api = {
   /** Optional engines this server can run, per detector (e.g. injection.classifier). */
   getGuardrailCapabilities: () =>
     request<{ capabilities: Record<string, Record<string, boolean>> }>("GET", "/guardrails/capabilities"),
+  listAudit: (filter?: AuditFilter) =>
+    request<{ entries: AuditEntry[]; next_cursor?: string }>("GET", `/audit${auditQuery(filter)}`),
+  auditStatus: () => request<AuditStatus>("GET", "/audit/status"),
+  verifyAudit: () => request<AuditVerifyReport>("GET", "/audit/verify"),
+  /** JSON Lines of every matching entry (cursor/limit are ignored). */
+  exportAudit: (filter?: AuditFilter) =>
+    requestBlob("GET", `/audit/export${auditQuery({ ...filter, cursor: undefined, limit: undefined })}`),
   listGuardrailLogs: (filter?: {
     api_key_id?: string;
     detector?: string;

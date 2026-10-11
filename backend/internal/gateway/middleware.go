@@ -34,9 +34,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if s.authFailureBlocked(w, r) {
+			return
+		}
 		key, err := s.identity.Authenticate(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, identity.ErrUnauthorized) {
+				s.authFailures.Record(extractIP(r))
 				s.consoleLog.Log("WARN", "Rejected request · invalid API key",
 					fmt.Sprintf("%s %s", r.Method, r.URL.Path))
 				writeError(w, http.StatusUnauthorized, "invalid API key")

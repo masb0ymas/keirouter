@@ -357,77 +357,116 @@ function ConnectedTable({
 }) {
   const navigate = useNavigate();
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-[13px]">
-        <thead>
-          <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-            <th scope="col" className="px-4 py-2 font-medium">Provider</th>
-            <th scope="col" className="px-4 py-2 font-medium">Status</th>
-            <th scope="col" className="px-4 py-2 text-right font-medium">Accounts</th>
-            <th scope="col" className="px-4 py-2 font-medium">Last 24 hours</th>
-            <th scope="col" className="px-4 py-2 text-right font-medium">Requests</th>
-            <th scope="col" className="px-4 py-2 text-right font-medium">Success</th>
-            <th scope="col" className="px-4 py-2 text-right font-medium">Worst p95</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-line">
-          {providers.map((p) => {
-            const accs = accountsByProvider.get(p.id) ?? [];
-            const paused = accs.filter((a) => a.disabled).length;
-            const h = healthByProvider.get(p.id);
-            const status = providerStatus(accs, h);
-            const badHours = h ? h.buckets.filter((b) => b.status === "degraded" || b.status === "down").length : 0;
-            return (
-              <tr key={p.id} className="cursor-pointer transition-colors hover:bg-hover" onClick={() => navigate(`/providers/${p.id}`)}>
-                <td className="px-4 py-2">
-                  <Link
-                    to={`/providers/${p.id}`}
-                    className="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ProviderLogo icon={p.icon} name={p.display_name} size={24} />
-                    <span className="min-w-0">
-                      <span className="block truncate font-medium text-fg">{p.display_name}</span>
-                      <span className="block truncate font-mono text-[11.5px] text-fg-faint">{p.id}</span>
-                    </span>
-                  </Link>
-                </td>
-                <td className="whitespace-nowrap px-4 py-2">
+    <>
+      <ul className="divide-y divide-line md:hidden" aria-label="Connected providers">
+        {providers.map((p) => {
+          const accs = accountsByProvider.get(p.id) ?? [];
+          const paused = accs.filter((a) => a.disabled).length;
+          const h = healthByProvider.get(p.id);
+          const status = providerStatus(accs, h);
+          const facts = [
+            `${accs.length} account${accs.length === 1 ? "" : "s"}${paused > 0 && paused < accs.length ? ` (${paused} paused)` : ""}`,
+            h && h.requests ? `${h.requests.toLocaleString("en-US")} requests` : null,
+            h && h.requests ? `${(h.success_rate * 100).toFixed(1)}% success` : null,
+            h && h.worst_p95_ms ? `p95 ${fmtLatency(h.worst_p95_ms)}` : null,
+          ].filter(Boolean);
+          return (
+            <li key={p.id} className="px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <Link
+                  to={`/providers/${p.id}`}
+                  className="flex min-w-0 items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                >
+                  <ProviderLogo icon={p.icon} name={p.display_name} size={24} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-fg">{p.display_name}</span>
+                    <span className="block truncate font-mono text-[11.5px] text-fg-faint">{p.id}</span>
+                  </span>
+                </Link>
+                <span className="shrink-0">
                   <Badge tone={BADGE_TONE[status.tone]}>
                     <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
                     {status.label}
                   </Badge>
-                </td>
-                <td className="whitespace-nowrap px-4 py-2 text-right">
-                  <span className="tabular-nums text-fg">{accs.length}</span>
-                  {paused > 0 && paused < accs.length && <span className="block text-[11.5px] text-fg-faint">{paused} paused</span>}
-                </td>
-                <td className="px-4 py-2">
-                  {h ? (
-                    <div
-                      className="flex w-40 gap-[2px]"
-                      role="img"
-                      aria-label={badHours ? `${badHours} of ${h.buckets.length} hours had errors` : `No errors in ${h.buckets.length} hours`}
+                </span>
+              </div>
+              <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">{facts.join(" · ")}</p>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[820px] text-[13px]">
+          <thead>
+            <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
+              <th scope="col" className="px-4 py-2 font-medium">Provider</th>
+              <th scope="col" className="px-4 py-2 font-medium">Status</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Accounts</th>
+              <th scope="col" className="px-4 py-2 font-medium">Last 24 hours</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Requests</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Success</th>
+              <th scope="col" className="px-4 py-2 text-right font-medium">Worst p95</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {providers.map((p) => {
+              const accs = accountsByProvider.get(p.id) ?? [];
+              const paused = accs.filter((a) => a.disabled).length;
+              const h = healthByProvider.get(p.id);
+              const status = providerStatus(accs, h);
+              const badHours = h ? h.buckets.filter((b) => b.status === "degraded" || b.status === "down").length : 0;
+              return (
+                <tr key={p.id} className="cursor-pointer transition-colors hover:bg-hover" onClick={() => navigate(`/providers/${p.id}`)}>
+                  <td className="px-4 py-2">
+                    <Link
+                      to={`/providers/${p.id}`}
+                      className="flex items-center gap-2.5 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      {h.buckets.map((b) => (
-                        <span key={b.start} className={cn("h-3.5 min-w-[2px] flex-1 rounded-[1.5px]", TICK_CLASS[b.status] ?? "bg-track")} />
-                      ))}
-                    </div>
-                  ) : (
-                    <span className="text-[12px] text-fg-faint">No traffic</span>
-                  )}
-                </td>
-                <td className="px-4 py-2 text-right text-fg">{h ? h.requests.toLocaleString("en-US") : <NoData />}</td>
-                <td className={cn("px-4 py-2 text-right", h && h.requests ? (h.success_rate >= 0.99 ? "text-fg" : h.success_rate >= 0.95 ? "text-warn" : "text-bad") : "text-fg-faint")}>
-                  {h && h.requests ? `${(h.success_rate * 100).toFixed(1)}%` : <NoData />}
-                </td>
-                <td className="px-4 py-2 text-right text-fg-muted">{h && h.worst_p95_ms ? fmtLatency(h.worst_p95_ms) : <NoData />}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                      <ProviderLogo icon={p.icon} name={p.display_name} size={24} />
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium text-fg">{p.display_name}</span>
+                        <span className="block truncate font-mono text-[11.5px] text-fg-faint">{p.id}</span>
+                      </span>
+                    </Link>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-2">
+                    <Badge tone={BADGE_TONE[status.tone]}>
+                      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+                      {status.label}
+                    </Badge>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-2 text-right">
+                    <span className="tabular-nums text-fg">{accs.length}</span>
+                    {paused > 0 && paused < accs.length && <span className="block text-[11.5px] text-fg-faint">{paused} paused</span>}
+                  </td>
+                  <td className="px-4 py-2">
+                    {h ? (
+                      <div
+                        className="flex w-40 gap-[2px]"
+                        role="img"
+                        aria-label={badHours ? `${badHours} of ${h.buckets.length} hours had errors` : `No errors in ${h.buckets.length} hours`}
+                      >
+                        {h.buckets.map((b) => (
+                          <span key={b.start} className={cn("h-3.5 min-w-[2px] flex-1 rounded-[1.5px]", TICK_CLASS[b.status] ?? "bg-track")} />
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-[12px] text-fg-faint">No traffic</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right text-fg">{h ? h.requests.toLocaleString("en-US") : <NoData />}</td>
+                  <td className={cn("px-4 py-2 text-right", h && h.requests ? (h.success_rate >= 0.99 ? "text-fg" : h.success_rate >= 0.95 ? "text-warn" : "text-bad") : "text-fg-faint")}>
+                    {h && h.requests ? `${(h.success_rate * 100).toFixed(1)}%` : <NoData />}
+                  </td>
+                  <td className="px-4 py-2 text-right text-fg-muted">{h && h.worst_p95_ms ? fmtLatency(h.worst_p95_ms) : <NoData />}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -466,7 +505,12 @@ function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[
               className="h-9 w-full rounded-lg border border-input bg-surface pl-8 pr-3 text-[13px] text-fg placeholder:text-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             />
           </div>
-          <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Capability" onKeyDown={onRadioKeys}>
+          <div
+            className="-mx-5 flex gap-1.5 overflow-x-auto px-5 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
+            role="radiogroup"
+            aria-label="Capability"
+            onKeyDown={onRadioKeys}
+          >
             {kindFilters.map((k) => {
               const active = filter === k.id;
               return (
@@ -478,7 +522,7 @@ function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[
                   tabIndex={active ? 0 : -1}
                   onClick={() => setFilter(k.id)}
                   className={cn(
-                    "h-7 rounded-lg border px-2.5 text-[12.5px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                    "h-8 shrink-0 whitespace-nowrap rounded-lg border px-2.5 text-[12.5px] font-medium transition-colors sm:h-7 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                     active ? "border-accent-500/30 bg-accent-500/10 text-link" : "border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg",
                   )}
                 >
@@ -491,7 +535,7 @@ function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[
       }
       footer={
         <>
-          <span className="mr-auto text-[12.5px] text-fg-muted">Not listed?</span>
+          <span className="mr-auto hidden text-[12.5px] text-fg-muted sm:inline">Not listed?</span>
           <SecondaryAction onClick={onCustom}>
             <Plus aria-hidden="true" />
             New custom provider

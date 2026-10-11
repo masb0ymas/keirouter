@@ -47,6 +47,7 @@ import {
   Kpi,
   KpiGrid,
   Modal,
+  ModalFooter,
   SectionTitle,
   Select,
   Skeleton,
@@ -210,7 +211,7 @@ export function MediaProviderDetailPage() {
               {isNoAuth && <Badge tone="neutral">No credentials</Badge>}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-fg-muted">
-              <span className="font-mono text-[12.5px]">{provider.id}</span>
+              <span className="break-all font-mono text-[12.5px]">{provider.id}</span>
               <Dot />
               <CapabilityChips provider={provider} current={metaKind} />
             </div>
@@ -533,7 +534,7 @@ function AddAccountDialog({ provider, open, onClose }: { provider: Provider; ope
           )}
           {error && <ErrorBanner message={error} />}
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
+        <ModalFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -541,7 +542,7 @@ function AddAccountDialog({ provider, open, onClose }: { provider: Provider; ope
             {create.isPending && <Loader2 className="animate-spin" aria-hidden="true" />}
             {create.isPending ? "Adding…" : isNoAuth ? "Connect" : "Add account"}
           </Button>
-        </div>
+        </ModalFooter>
       </form>
     </Modal>
   );
@@ -628,7 +629,7 @@ function AccountsPanel({
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     aria-label={`Actions for ${name}`}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 md:h-8 md:w-8"
                   >
                     <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
                   </DropdownMenuTrigger>
@@ -712,30 +713,66 @@ function ModelsPanel({ provider, models, loading, label }: { provider: Provider;
       {filteredModels.length === 0 ? (
         <p className="px-6 py-10 text-center text-[13px] text-fg-muted">No models match “{modelSearchQuery}”.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-[13px]">
-            <caption className="sr-only">{provider.display_name} models</caption>
-            <thead>
-              <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-                <th scope="col" className="px-4 py-2 font-medium">Model</th>
-                <th scope="col" className="px-4 py-2 font-medium">Kind</th>
-                <th scope="col" className="px-4 py-2 font-medium">Route as</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {paged.map((m) => (
-                <ModelRow key={m.id} model={m} route={`${provider.id}/${m.id}`} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <ul className="divide-y divide-line md:hidden" aria-label={`${provider.display_name} models`}>
+            {paged.map((m) => {
+              const route = `${provider.id}/${m.id}`;
+              return (
+                <li key={m.id} className="px-4 py-2.5 text-[13px]">
+                  <ModelName model={m} />
+                  <div className="flex min-w-0 items-center gap-2 text-[12px] text-fg-muted">
+                    {m.kind && (
+                      <>
+                        <span className="shrink-0">{m.kind}</span>
+                        <span aria-hidden="true" className="text-fg-faint">
+                          ·
+                        </span>
+                      </>
+                    )}
+                    <span className="min-w-0">
+                      <RouteCopy route={route} />
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[560px] text-[13px]">
+              <caption className="sr-only">{provider.display_name} models</caption>
+              <thead>
+                <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
+                  <th scope="col" className="px-4 py-2 font-medium">Model</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Kind</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Route as</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {paged.map((m) => (
+                  <ModelRow key={m.id} model={m} route={`${provider.id}/${m.id}`} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
       <TablePagination page={page} pages={pages} total={total} onPage={setPage} />
     </section>
   );
 }
 
-function ModelRow({ model: m, route }: { model: ProviderModel; route: string }) {
+function ModelName({ model: m }: { model: ProviderModel }) {
+  return (
+    <>
+      <p className="truncate font-medium text-fg" title={m.name || m.id}>{m.name || m.id}</p>
+      {m.name && m.name !== m.id && <p className="truncate font-mono text-[11.5px] text-fg-muted">{m.id}</p>}
+    </>
+  );
+}
+
+// RouteCopy copies the routable model id. The copy icon fades in on hover only
+// on devices that can hover; touch screens always show it.
+function RouteCopy({ route }: { route: string }) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -749,30 +786,35 @@ function ModelRow({ model: m, route }: { model: ProviderModel; route: string }) 
     }
   };
   return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={`Copy ${route}`}
+      title="Copy model name"
+      className="group inline-flex min-h-9 max-w-full items-center gap-1.5 rounded-md font-mono text-[12px] text-fg-muted hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 md:min-h-6"
+    >
+      <span className="truncate">{route}</span>
+      {copied ? (
+        <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden="true" />
+      ) : (
+        <Copy
+          className="h-3.5 w-3.5 shrink-0 transition-opacity group-focus-visible:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+          aria-hidden="true"
+        />
+      )}
+    </button>
+  );
+}
+
+function ModelRow({ model: m, route }: { model: ProviderModel; route: string }) {
+  return (
     <tr className="transition-colors hover:bg-hover/60">
       <td className="max-w-[340px] px-4 py-2">
-        <p className="truncate font-medium text-fg" title={m.name || m.id}>{m.name || m.id}</p>
-        {m.name && m.name !== m.id && <p className="truncate font-mono text-[11.5px] text-fg-muted">{m.id}</p>}
+        <ModelName model={m} />
       </td>
       <td className="px-4 py-2 text-[12.5px] text-fg-muted">{m.kind || "—"}</td>
       <td className="max-w-[320px] px-4 py-2">
-        <button
-          type="button"
-          onClick={copy}
-          aria-label={`Copy ${route}`}
-          title="Copy model name"
-          className="group inline-flex min-h-6 max-w-full items-center gap-1.5 rounded-md font-mono text-[12px] text-fg-muted hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-        >
-          <span className="truncate">{route}</span>
-          {copied ? (
-            <Check className="h-3.5 w-3.5 shrink-0 text-ok" aria-hidden="true" />
-          ) : (
-            <Copy
-              className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-              aria-hidden="true"
-            />
-          )}
-        </button>
+        <RouteCopy route={route} />
       </td>
     </tr>
   );
@@ -866,7 +908,7 @@ function PlaygroundLayout({
           <SectionTitle id={`${baseId}-request`} icon={Icon} title={title} />
         </div>
         <div className="flex-1 space-y-3.5 px-4 py-4">{form}</div>
-        <div className="flex items-center gap-2 border-t border-line bg-subtle px-4 py-3">{action}</div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-line bg-subtle px-4 py-3 [&>button:first-child]:flex-1 sm:[&>button:first-child]:flex-none">{action}</div>
       </section>
 
       <section

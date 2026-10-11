@@ -131,9 +131,19 @@ function ScopeLabel({ scope }: { scope: GuardrailScope }) {
   );
 }
 
+// On phones the footer stacks full-width buttons (primary last, matching tab order); from sm up
+// they sit in a row on the right.
 function DialogFooter({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center justify-end gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3">{children}</div>;
+  return (
+    <div className="flex flex-col gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end [&>button]:w-full sm:[&>button]:w-auto">
+      {children}
+    </div>
+  );
 }
+
+// Dialog bodies scroll inside the dialog so the footer stays on screen on
+// short phone viewports.
+const dialogBody = "max-h-[calc(100dvh-15rem)] overflow-y-auto sm:max-h-[70vh]";
 
 // FormField wires a visible label (and optional one-line hint) to its control.
 function FormField({
@@ -169,7 +179,7 @@ const chipClass = (active: boolean) =>
   );
 
 const iconButton =
-  "flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
+  "flex h-9 w-9 shrink-0 items-center justify-center md:h-8 md:w-8 rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
 
 const textareaClass =
   "w-full resize-y rounded-lg border border-input bg-surface px-3 py-2 font-mono text-[12px] leading-5 text-fg transition-[border-color,box-shadow] placeholder:text-fg-faint hover:border-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
@@ -565,7 +575,13 @@ function PoliciesTab({
                   </button>
                 )}
               </div>
-              <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Filter by scope" onKeyDown={rovingKeys('[role="radio"]')}>
+              {/* Phones: one horizontally scrolling row that bleeds to the screen edge. */}
+              <div
+                className="-mx-4 -my-1 flex gap-1.5 overflow-x-auto px-4 py-1 [scrollbar-width:none] sm:mx-0 sm:my-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:py-0"
+                role="radiogroup"
+                aria-label="Filter by scope"
+                onKeyDown={rovingKeys('[role="radio"]')}
+              >
                 {(["all", ...SCOPES] as ScopeFilter[]).map((s) => {
                   const active = scopeFilter === s;
                   return (
@@ -576,7 +592,7 @@ function PoliciesTab({
                       aria-checked={active}
                       tabIndex={active ? 0 : -1}
                       onClick={() => onScopeFilter(s)}
-                      className={chipClass(active)}
+                      className={cn(chipClass(active), "shrink-0")}
                     >
                       {s === "all" ? "All" : <ScopeLabel scope={s} />}
                       <span className={cn("tabular-nums", !active && "text-fg-faint")}>{counts[s]}</span>
@@ -625,7 +641,22 @@ function PoliciesTab({
                   ) : null}
                 </div>
               ) : (
-                <div className="overflow-x-auto">
+                <>
+                <ul className="divide-y divide-line md:hidden" aria-label="Policies">
+                  {visible.map((p) => (
+                    <PolicyCard
+                      key={p.id}
+                      policy={p}
+                      target={targetLabel(p.scope, p.scope_id)}
+                      pending={toggling.has(p.id)}
+                      onEdit={() => setEditing(p)}
+                      onToggle={(enabled) => onToggle(p, enabled)}
+                      onDelete={() => onDelete(p)}
+                      onOpenKey={p.scope === "apikey" && p.scope_id ? () => navigate(`/keys/${p.scope_id}`) : undefined}
+                    />
+                  ))}
+                </ul>
+                <div className="hidden overflow-x-auto md:block">
                   <table className="w-full min-w-[820px] text-[13px]">
                     <thead>
                       <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -654,6 +685,7 @@ function PoliciesTab({
                     </tbody>
                   </table>
                 </div>
+                </>
               )}
             </section>
           </div>
@@ -666,23 +698,7 @@ function PoliciesTab({
   );
 }
 
-function PolicyRow({
-  policy,
-  target,
-  pending,
-  onEdit,
-  onToggle,
-  onDelete,
-  onOpenKey,
-}: {
-  policy: GuardrailPolicy;
-  target?: string;
-  pending: boolean;
-  onEdit: () => void;
-  onToggle: (enabled: boolean) => void;
-  onDelete: () => void;
-  onOpenKey?: () => void;
-}) {
+function PolicyRow({ policy, target, pending, onEdit, onToggle, onDelete, onOpenKey }: PolicyItemProps) {
   const cfg = policy.config ?? {};
   const detectors = useMemo(() => enabledDetectorNames(cfg), [cfg]);
   const strongest = useMemo(() => strongestAction(cfg), [cfg]);
@@ -756,30 +772,94 @@ function PolicyRow({
         {policy.updated_at ? new Date(policy.updated_at).toLocaleDateString() : "—"}
       </td>
       <td className="px-2 py-2.5" onClick={stop}>
-        <DropdownMenu>
-          <DropdownMenuTrigger aria-label={`Actions for ${policy.name}`} className={iconButton}>
-            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onEdit}>
-              <Pencil />
-              Edit policy
-            </DropdownMenuItem>
-            {onOpenKey && (
-              <DropdownMenuItem onSelect={onOpenKey}>
-                <KeyRound />
-                Open key page
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem tone="danger" onSelect={onDelete}>
-              <Trash2 />
-              Delete policy
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <PolicyMenu name={policy.name} onEdit={onEdit} onOpenKey={onOpenKey} onDelete={onDelete} />
       </td>
     </tr>
+  );
+}
+
+type PolicyItemProps = {
+  policy: GuardrailPolicy;
+  target?: string;
+  pending: boolean;
+  onEdit: () => void;
+  onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
+  onOpenKey?: () => void;
+};
+
+// PolicyMenu is the row menu shared by the table row and the phone card.
+function PolicyMenu({ name, onEdit, onOpenKey, onDelete }: { name: string; onEdit: () => void; onOpenKey?: () => void; onDelete: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={`Actions for ${name}`} className={iconButton}>
+        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onEdit}>
+          <Pencil />
+          Edit policy
+        </DropdownMenuItem>
+        {onOpenKey && (
+          <DropdownMenuItem onSelect={onOpenKey}>
+            <KeyRound />
+            Open key page
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem tone="danger" onSelect={onDelete}>
+          <Trash2 />
+          Delete policy
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// PolicyCard is a policy row stacked for phones (below md): name and status,
+// scope and detectors, then the enforce switch, enforcement and the menu.
+function PolicyCard({ policy, target, pending, onEdit, onToggle, onDelete, onOpenKey }: PolicyItemProps) {
+  const cfg = policy.config ?? {};
+  const detectors = enabledDetectorNames(cfg);
+  const strongest = strongestAction(cfg);
+  const targetText = policy.scope === "global" ? "All traffic" : target ?? (policy.scope_id || "—");
+  return (
+    <li className="space-y-2 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <button
+          type="button"
+          onClick={onEdit}
+          className={cn(
+            "min-w-0 truncate rounded-sm py-0.5 text-left text-[13px] font-medium hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+            policy.enabled ? "text-fg" : "text-fg-muted",
+          )}
+          title={policy.name}
+        >
+          {policy.name}
+        </button>
+        <Badge tone={policy.enabled ? "success" : "neutral"}>{policy.enabled ? "Active" : "Paused"}</Badge>
+      </div>
+      <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-fg-muted">
+        <ScopeLabel scope={policy.scope} />
+        <span aria-hidden="true">·</span>
+        <span className={cn("min-w-0 truncate", policy.scope !== "global" && !target && "font-mono")} title={policy.scope_id || undefined}>
+          {targetText}
+        </span>
+      </p>
+      <p className="text-[12px] text-fg-muted">
+        {detectors.length === 0 ? "No detectors" : detectors.join(", ")}
+      </p>
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-3">
+          <span className="inline-flex items-center gap-2">
+            <Toggle checked={policy.enabled} onChange={onToggle} disabled={pending} label={`Enforce ${policy.name}`} />
+            <span className="text-[12.5px] text-fg" aria-hidden="true">Enforce</span>
+          </span>
+          <EnforcementBadge action={strongest} />
+        </span>
+        <PolicyMenu name={policy.name} onEdit={onEdit} onOpenKey={onOpenKey} onDelete={onDelete} />
+      </div>
+    </li>
   );
 }
 
@@ -914,7 +994,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       subtitle="Same name and scope overwrites the existing policy"
       maxWidth="max-w-2xl"
     >
-      <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
+      <div className={cn(dialogBody, "space-y-4 px-5 py-4")}>
         <div className="flex flex-wrap items-center gap-3">
           <input
             ref={fileRef}
@@ -1057,7 +1137,7 @@ function EditPolicyModal({
       subtitle={policy.scope === "global" ? "Global · all traffic" : `${scopeLabel} · ${targetLabel ?? policy.scope_id}`}
       maxWidth="max-w-3xl"
     >
-      <div className="max-h-[70vh] space-y-5 overflow-y-auto px-5 py-4">
+      <div className={cn(dialogBody, "space-y-5 px-5 py-4")}>
         <div className="max-w-md">
           <FormField label="Policy name">
             {(ids) => <Input {...ids} value={name} onChange={(e) => setName(e.target.value)} />}
@@ -1137,7 +1217,7 @@ function CreatePolicyModal({
 
   return (
     <Modal open onClose={onClose} title={<DialogTitle icon={ICONS.guardrails}>New guardrail policy</DialogTitle>} subtitle="Enforced as soon as it is created" maxWidth="max-w-3xl">
-      <div className="max-h-[70vh] space-y-5 overflow-y-auto px-5 py-4">
+      <div className={cn(dialogBody, "space-y-5 px-5 py-4")}>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <FormField label="Policy name">
             {(ids) => <Input {...ids} value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultNameFor(scope)} />}
@@ -1200,7 +1280,7 @@ function CreatePolicyModal({
       </div>
       <DialogFooter>
         {missingTarget && (
-          <span id={missingId} className="mr-auto text-[12.5px] text-fg-muted">
+          <span id={missingId} className="order-last text-[12.5px] text-fg-muted sm:order-none sm:mr-auto">
             Pick a {SCOPE_LABEL[scope].toLowerCase()} to create this policy.
           </span>
         )}
@@ -1240,7 +1320,7 @@ function TemplatePickerModal({
   const list = templates.data?.templates ?? [];
   return (
     <Modal open onClose={onClose} title={<DialogTitle icon={Sparkles}>Start from a template</DialogTitle>} subtitle="Replaces the current detector settings" maxWidth="max-w-xl">
-      <div className="max-h-[70vh] overflow-y-auto px-5 py-4" aria-busy={templates.isLoading}>
+      <div className={cn(dialogBody, "px-5 py-4")} aria-busy={templates.isLoading}>
         {templates.isLoading ? (
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -1378,7 +1458,7 @@ function LogsTab() {
             </span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
           <label className="sr-only" htmlFor="guardrail-log-detector">Detector</label>
           <Select id="guardrail-log-detector" className="w-full sm:w-36" value={detector} onChange={(e) => setDetector(e.target.value)}>
             <option value="">All detectors</option>
@@ -1430,7 +1510,13 @@ function LogsTab() {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        <ul className="divide-y divide-line md:hidden" aria-label="Audit entries">
+          {rows.map((row) => (
+            <LogCard key={row.id} row={row} open={expanded.has(row.id)} onToggle={() => toggle(row.id)} />
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[860px] text-[13px]">
             <thead>
               <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -1528,8 +1614,69 @@ function LogsTab() {
             </tbody>
           </table>
         </div>
+        </>
       )}
     </section>
+  );
+}
+
+// LogCard is an audit row stacked for phones (below md). The whole summary is
+// the disclosure button; findings open underneath it.
+function LogCard({ row, open, onToggle }: { row: GuardrailLogEntry; open: boolean; onToggle: () => void }) {
+  const findings = row.findings ?? [];
+  const isTest = row.api_key_id === "test-panel";
+  const entityCounts = countEntities(findings);
+  const when = new Date(row.created_at).toLocaleString();
+  const detailsId = `guardrail-log-card-${row.id}`;
+  const DetectorIcon = DETECTOR_BY_ID[row.detector]?.icon;
+  const source = isTest ? "Test panel" : row.provider || row.model ? `${row.provider || "?"}${row.model ? `/${row.model}` : ""}` : null;
+  return (
+    <li className={cn(open && "bg-hover")}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? detailsId : undefined}
+        onClick={onToggle}
+        className="flex w-full items-start gap-2 px-4 py-3 text-left transition-colors hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+      >
+        <ChevronRight className={cn("mt-0.5 h-4 w-4 shrink-0 text-fg-faint transition-transform", open && "rotate-90")} strokeWidth={1.75} aria-hidden="true" />
+        <span className="min-w-0 flex-1 space-y-1">
+          <span className="flex items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-1.5 font-mono text-[12.5px] text-fg">
+              {DetectorIcon && <DetectorIcon className="h-3.5 w-3.5 shrink-0 text-tone" strokeWidth={1.75} aria-hidden="true" />}
+              <span className="truncate">{row.detector}</span>
+              {row.severity && <span className="shrink-0 font-sans text-[12px] text-fg-muted">· {row.severity}</span>}
+            </span>
+            <Badge tone={actionBadgeTone(row.action)}>{ACTION_LABEL[row.action] ?? row.action}</Badge>
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-fg-muted">
+            <span className="shrink-0 tabular-nums">{when}</span>
+            {source && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className={cn("min-w-0 truncate", !isTest && "font-mono")} title={source}>{source}</span>
+              </>
+            )}
+          </span>
+          {entityCounts.length > 0 && (
+            <span className="flex flex-wrap gap-1">
+              {entityCounts.map(([e, n]) => (
+                <Badge key={e} tone="neutral">
+                  <span className="font-mono">{e}</span>
+                  {n > 1 ? <span className="tabular-nums">×{n}</span> : null}
+                </Badge>
+              ))}
+            </span>
+          )}
+          {row.reason && <span className="line-clamp-2 block text-[12px] text-fg-muted">{row.reason}</span>}
+        </span>
+      </button>
+      {open && (
+        <div id={detailsId} className="border-t border-line bg-subtle px-4 py-3">
+          <FindingsDetails row={row} />
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -1555,9 +1702,9 @@ function FindingsDetails({
   return (
     <div className="space-y-2.5 text-[12px]">
       <dl className="flex flex-wrap gap-x-6 gap-y-1 text-fg-muted">
-        <div className="flex gap-1.5">
+        <div className="flex min-w-0 gap-1.5">
           <dt>Request</dt>
-          <dd className="font-mono text-fg">{row.request_id || "—"}</dd>
+          <dd className="min-w-0 break-all font-mono text-fg">{row.request_id || "—"}</dd>
         </div>
         <div className="flex gap-1.5">
           <dt>Direction</dt>
@@ -1567,11 +1714,11 @@ function FindingsDetails({
       {findings.length === 0 ? (
         <p className="text-fg-muted">No findings recorded.</p>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-line bg-surface">
-          <table className="w-full text-left">
+        <div className="overflow-x-auto rounded-lg border border-line bg-surface" tabIndex={0} role="region" aria-label="Findings">
+          <table className="w-full min-w-[420px] text-left">
             <thead>
               <tr className="border-b border-line text-[12px] text-fg-faint">
-                <th scope="col" className="px-3 py-1.5 font-medium">Entity</th>
+                <th scope="col" className="sticky left-0 z-[1] bg-surface px-3 py-1.5 font-medium">Entity</th>
                 <th scope="col" className="px-3 py-1.5 text-right font-medium">Score</th>
                 <th scope="col" className="px-3 py-1.5 font-medium">Original (truncated)</th>
                 <th scope="col" className="px-3 py-1.5 font-medium">Replacement</th>
@@ -1580,7 +1727,7 @@ function FindingsDetails({
             <tbody className="divide-y divide-line">
               {findings.map((f, i) => (
                 <tr key={i}>
-                  <td className="px-3 py-1.5 font-mono text-fg">{f.entity}</td>
+                  <td className="sticky left-0 z-[1] bg-surface px-3 py-1.5 font-mono text-fg">{f.entity}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">{(f.score * 100).toFixed(0)}%</td>
                   <td className="px-3 py-1.5 font-mono">
                     {f.original ? (

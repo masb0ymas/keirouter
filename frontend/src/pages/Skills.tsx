@@ -1,11 +1,13 @@
-import { useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Copy, Check, ChevronRight, MoreHorizontal, ExternalLink, AlertCircle, BookOpen, Binary, AudioLines, Mic, Search, type LucideIcon } from "lucide-react";
+import { Plus, Trash2, Copy, Check, MoreHorizontal, ExternalLink, AlertCircle, BookOpen, Binary, AudioLines, Mic, Search, Pencil, NotebookPen, Info, type LucideIcon } from "lucide-react";
 import { ICONS } from "../lib/icons";
-import { api, type Skill } from "../lib/api";
+import { api, type APIKey, type Plan, type Skill, type SkillScope } from "../lib/api";
+import { ModelMultiSelect } from "../components/ModelSelect";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
-import { Button, EmptyState, IconTile, Input, Modal, SectionTitle, Skeleton, Toggle, ErrorBanner } from "../components/ui";
+import { Badge, Button, EmptyState, Field, IconTile, Input, Modal, SectionTitle, SegmentedControl, Skeleton, Textarea, Toggle, ErrorBanner } from "../components/ui";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import {
   DropdownMenu,
@@ -15,10 +17,9 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
 
-// Built-in reference skills — documentation pages that teach AI agents how to
-// call KeiRouter endpoints. These are static docs with copyable URLs, not
-// runtime request modifiers. The entry skill indexes the rest, so it stays
-// visible; the endpoint skills are grouped behind a disclosure.
+// Built-in reference skills — SKILL.md pages that teach AI agents how to call
+// KeiRouter endpoints. These are static docs with copyable URLs, not runtime
+// request modifiers.
 const REFERENCE_SKILLS = [
   { id: "keirouter", name: "KeiRouter (entry)", endpoint: null as string | null, description: "Setup guide and index of all capabilities.", group: "entry" },
   { id: "keirouter-chat", name: "Chat", endpoint: "/v1/chat/completions", description: "Chat and code generation via OpenAI or Anthropic format with streaming.", group: "Text" },
@@ -46,47 +47,97 @@ const REFERENCE_ICONS: Record<string, LucideIcon> = {
 
 const ENTRY_SKILL = REFERENCE_SKILLS.find((skill) => skill.group === "entry")!;
 const ENDPOINT_SKILLS = REFERENCE_SKILLS.filter((skill) => skill.group !== "entry");
-const ENDPOINT_GROUPS = [...new Set(ENDPOINT_SKILLS.map((skill) => skill.group))].map((group) => ({
-  group,
-  skills: ENDPOINT_SKILLS.filter((skill) => skill.group === group),
-}));
+
+// Mirrors the gateway's limit in backend/internal/gateway/skills.go.
+const MAX_PROMPT_CHARS = 20000;
+// Above this many injected tokens every request pays a noticeable tax.
+const HEAVY_TOKENS = 2000;
 
 const focusRing = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
 
 const skillUrl = (id: string) => `https://raw.githubusercontent.com/mydisha/keirouter/main/skills/${id}/SKILL.md`;
+const agentInstruction = (id: string) => `Read this skill and use it: ${skillUrl(id)}`;
+
+// Rough token estimate (~4 characters per token) — enough to flag heavy skills.
+const estimateTokens = (text: string) => Math.ceil(text.trim().length / 4);
+const formatTokens = (n: number) => `~${n.toLocaleString()} token${n === 1 ? "" : "s"}`;
+
+type Mode = "all" | "specific";
+type Draft = {
+  id?: string;
+  name: string;
+  description: string;
+  prompt: string;
+  optional: boolean;
+  audience: Mode;
+  plans: string[];
+  keys: string[];
+  modelMode: Mode;
+  models: string[];
+};
+const EMPTY_DRAFT: Draft = { name: "", description: "", prompt: "", optional: false, audience: "all", plans: [], keys: [], modelMode: "all", models: [] };
+
+const draftFromSkill = (sk: Skill): Draft => {
+  const plans = sk.scope?.plans ?? [];
+  const keys = sk.scope?.keys ?? [];
+  const models = sk.scope?.models ?? [];
+  return {
+    id: sk.id,
+    name: sk.name,
+    description: sk.description,
+    prompt: sk.prompt,
+    optional: !!sk.optional,
+    audience: plans.length || keys.length ? "specific" : "all",
+    plans,
+    keys,
+    modelMode: models.length ? "specific" : "all",
+    models,
+  };
+};
+
+const draftScope = (d: Draft): SkillScope => ({
+  plans: d.audience === "specific" ? d.plans : [],
+  keys: d.audience === "specific" ? d.keys : [],
+  models: d.modelMode === "specific" ? d.models : [],
+});
+
+const isGlobal = (sk: Skill) => !sk.scope?.plans?.length && !sk.scope?.keys?.length && !sk.scope?.models?.length;
+
+// Lookup tables that turn scope ids into names for badges and pickers.
+type Directory = { plans: Map<string, string>; keys: Map<string, string> };
 
 export function SkillsPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const askConfirm = useConfirm();
   const skills = useQuery({ queryKey: ["skills"], queryFn: () => api.listSkills() });
+  const plans = useQuery({ queryKey: ["plans"], queryFn: () => api.listPlans(), staleTime: 60_000 });
+  const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys(), staleTime: 60_000 });
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [prompt, setPrompt] = useState("");
+  const directory = useMemo<Directory>(() => ({
+    plans: new Map((plans.data?.plans ?? []).map((p) => [p.id, p.name])),
+    keys: new Map((keys.data?.keys ?? []).map((k) => [k.id, k.name])),
+  }), [plans.data, keys.data]);
+
+  const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
 
-  const create = useMutation({
-    mutationFn: () => api.createSkill({ name, description, prompt }),
-    onSuccess: () => {
+  const save = useMutation({
+    mutationFn: (d: Draft) => {
+      const body = { name: d.name.trim(), description: d.description.trim(), prompt: d.prompt.trim(), optional: d.optional, scope: draftScope(d) };
+      return d.id ? api.updateSkill(d.id, body) : api.createSkill(body);
+    },
+    onSuccess: (_, d) => {
       qc.invalidateQueries({ queryKey: ["skills"] });
-      setName("");
-      setDescription("");
-      setPrompt("");
+      setDraft(null);
       setError("");
-      setCreateOpen(false);
-      toast.success("Skill created", `"${name}" is ready to apply to requests.`);
+      toast.success(d.id ? "Skill updated" : "Skill created", `"${d.name.trim()}" applies to new matching requests.`);
     },
-    onError: (e) => {
-      setError((e as Error).message);
-      toast.error("Skill creation failed", (e as Error).message);
-    },
+    onError: (e) => setError((e as Error).message),
   });
 
   const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      api.updateSkill(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.updateSkill(id, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["skills"] }),
     onError: (e) => toast.error("Skill toggle failed", (e as Error).message),
   });
@@ -103,7 +154,7 @@ export function SkillsPage() {
   const deleteSkill = async (sk: Skill) => {
     const ok = await askConfirm({
       title: `Delete "${sk.name}"?`,
-      description: "Its prompt stops being injected into matching requests immediately. This cannot be undone.",
+      description: "Its prompt stops being added to requests immediately. This cannot be undone.",
       confirmLabel: "Delete skill",
       tone: "danger",
     });
@@ -119,18 +170,25 @@ export function SkillsPage() {
     }
   };
 
+  const openEditor = (d: Draft) => {
+    setError("");
+    setDraft(d);
+  };
+
   const custom = skills.data?.skills ?? [];
+  const active = custom.filter((sk) => sk.enabled && sk.prompt.trim());
+  const everyTokens = active.filter(isGlobal).reduce((sum, sk) => sum + estimateTokens(sk.prompt), 0);
+  const maxTokens = active.reduce((sum, sk) => sum + estimateTokens(sk.prompt), 0);
   const isEmpty = !skills.isLoading && !skills.isError && custom.length === 0;
-  const openCreate = () => setCreateOpen(true);
 
   return (
     <>
       <PageHeader
         title="Skills"
-        description="System prompts the gateway adds to matching requests."
+        description="Standing instructions the gateway adds to matching chat requests, plus reference docs that teach agents to use KeiRouter."
         action={
           isEmpty ? undefined : (
-            <Button onClick={openCreate}>
+            <Button onClick={() => openEditor(EMPTY_DRAFT)}>
               <Plus aria-hidden="true" />
               New skill
             </Button>
@@ -144,31 +202,31 @@ export function SkillsPage() {
           <div className="border-b border-line px-4 py-3">
             <SectionTitle
               id="custom-skills-heading"
-              icon={ICONS.skills}
+              icon={NotebookPen}
               title={(
                 <>
                   Custom skills
                   {custom.length > 0 && <span className="ml-2 text-[12px] font-normal tabular-nums text-fg-muted">{custom.length}</span>}
                 </>
               )}
+              subtitle="Prepended to the system prompt of matching chat requests — no client changes needed"
             />
           </div>
 
+          {custom.length > 0 && <InjectionSummary activeCount={active.length} everyTokens={everyTokens} maxTokens={maxTokens} />}
+
           {skills.isLoading ? (
-            <div aria-busy="true" aria-label="Loading skills">
-              <div className="h-9 border-b border-line bg-subtle" />
-              <div className="divide-y divide-line">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="flex items-center gap-4 px-4 py-3">
-                    <Skeleton className="h-7 w-7 rounded-lg" />
-                    <div className="flex-1 space-y-1.5">
-                      <Skeleton className="h-3.5 w-40" />
-                      <Skeleton className="h-3 w-64" />
-                    </div>
-                    <Skeleton className="h-5 w-9 rounded-full" />
+            <div aria-busy="true" aria-label="Loading skills" className="divide-y divide-line">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-4 px-4 py-3">
+                  <Skeleton className="h-7 w-7 rounded-lg" />
+                  <div className="flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-40" />
+                    <Skeleton className="h-3 w-64" />
                   </div>
-                ))}
-              </div>
+                  <Skeleton className="h-5 w-9 rounded-full" />
+                </div>
+              ))}
             </div>
           ) : skills.isError ? (
             <div className="p-4">
@@ -181,43 +239,30 @@ export function SkillsPage() {
             </div>
           ) : custom.length === 0 ? (
             <EmptyState
-              icon={ICONS.skills}
+              icon={NotebookPen}
               title="No custom skills yet"
-              hint="A skill gives every tool the same instructions without changing its config."
+              hint="Write an instruction once — house style, review rules, a persona — and every request routed through KeiRouter receives it. Scope it to plans, API keys or models when it shouldn't apply everywhere."
               action={(
-                <Button onClick={openCreate}>
+                <Button onClick={() => openEditor(EMPTY_DRAFT)}>
                   <Plus aria-hidden="true" />
                   Create skill
                 </Button>
               )}
             />
           ) : (
-            <div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] text-[13px]">
-                  <thead>
-                    <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-muted">
-                      <th scope="col" className="px-4 py-2 font-medium">Skill</th>
-                      <th scope="col" className="px-4 py-2 font-medium">Prompt</th>
-                      <th scope="col" className="px-4 py-2 text-right font-medium">Created</th>
-                      <th scope="col" className="px-4 py-2 font-medium">Enabled</th>
-                      <th scope="col" className="w-10 px-2 py-2"><span className="sr-only">Actions</span></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-line">
-                    {custom.map((sk) => (
-                      <SkillRow
-                        key={sk.id}
-                        skill={sk}
-                        onToggle={(enabled) => toggle.mutate({ id: sk.id, enabled })}
-                        onDelete={() => deleteSkill(sk)}
-                        onCopyPrompt={() => copyText(sk.prompt, `Prompt for ${sk.name}`)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <ul className="divide-y divide-line">
+              {custom.map((sk) => (
+                <SkillRow
+                  key={sk.id}
+                  skill={sk}
+                  directory={directory}
+                  onToggle={(enabled) => toggle.mutate({ id: sk.id, enabled })}
+                  onEdit={() => openEditor(draftFromSkill(sk))}
+                  onDelete={() => deleteSkill(sk)}
+                  onCopyPrompt={() => copyText(sk.prompt, `Prompt for ${sk.name}`)}
+                />
+              ))}
+            </ul>
           )}
         </section>
 
@@ -225,76 +270,406 @@ export function SkillsPage() {
         <ReferenceSkills />
       </div>
 
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="New skill"
-      >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (name.trim() && !create.isPending) create.mutate();
-          }}
-          aria-busy={create.isPending || undefined}
-        >
-          <div className="space-y-4 px-5 py-4">
-            <FormField id="skill-name" label="Name" required>
-              <Input id="skill-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Concise reviewer" autoFocus aria-required="true" />
-            </FormField>
-            <FormField id="skill-description" label="Description" optional>
-              <Input
-                id="skill-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Short summary of what it does"
-              />
-            </FormField>
-            <FormField id="skill-prompt" label="Prompt" hint="Added as a system prompt to every matching request.">
-              <textarea
-                id="skill-prompt"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={6}
-                spellCheck={false}
-                aria-describedby="skill-prompt-hint"
-                placeholder="You are a meticulous code reviewer. Prefer small, safe diffs…"
-                className="w-full rounded-lg border border-input bg-surface px-3 py-2 font-mono text-[12px] leading-5 text-fg placeholder:text-fg-faint transition-colors hover:border-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-              />
-            </FormField>
-            {error && <ErrorBanner message={error} />}
-          </div>
-          <div className="flex justify-end gap-2 border-t border-line bg-subtle px-5 py-3">
-            <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!name.trim() || create.isPending}>
-              {create.isPending ? "Creating…" : "Create skill"}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      <SkillEditor
+        draft={draft}
+        error={error}
+        pending={save.isPending}
+        plans={plans.data?.plans ?? []}
+        keys={keys.data?.keys ?? []}
+        directoryLoading={plans.isLoading || keys.isLoading}
+        onChange={setDraft}
+        onClose={() => setDraft(null)}
+        onSubmit={() => draft && save.mutate(draft)}
+      />
     </>
   );
 }
 
-function FormField({ id, label, hint, optional, required, children }: { id: string; label: string; hint?: string; optional?: boolean; required?: boolean; children: ReactNode }) {
+// InjectionSummary states what the enabled skills cost: global skills ride
+// along on every request, scoped ones only when they match.
+function InjectionSummary({ activeCount, everyTokens, maxTokens }: { activeCount: number; everyTokens: number; maxTokens: number }) {
+  const heavy = maxTokens > HEAVY_TOKENS;
   return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="flex items-baseline justify-between text-[12.5px] font-medium text-fg">
-        {label}
-        {optional && <span className="text-[12px] font-normal text-fg-muted">Optional</span>}
-        {required && <span className="text-[12px] font-normal text-fg-muted">Required</span>}
-      </label>
-      {children}
-      {hint && <p id={`${id}-hint`} className="text-[12px] leading-5 text-fg-muted">{hint}</p>}
+    <div className={`flex items-start gap-2 border-b border-line px-4 py-2.5 text-[12.5px] ${heavy ? "bg-warn/10 text-warn" : "bg-subtle text-fg-muted"}`}>
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+      <p>
+        {activeCount === 0 ? (
+          "No skill is active — requests pass through unchanged."
+        ) : (
+          <>
+            <span className="font-medium text-fg">{activeCount} active</span>
+            {" · "}
+            <span className="tabular-nums">{formatTokens(everyTokens)}</span> on every chat request
+            {maxTokens > everyTokens && (
+              <>
+                , up to <span className="tabular-nums">{formatTokens(maxTokens)}</span> when scoped skills match
+              </>
+            )}
+            {heavy && ". Consider trimming — this is billed as input on each call."}
+          </>
+        )}
+      </p>
     </div>
   );
 }
 
-// ReferenceSkills shows the entry skill up front and groups the per-endpoint
-// skills behind one disclosure, so the reference list doesn't crowd the page.
+function SkillEditor({
+  draft,
+  error,
+  pending,
+  plans,
+  keys,
+  directoryLoading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  draft: Draft | null;
+  error: string;
+  pending: boolean;
+  plans: Plan[];
+  keys: APIKey[];
+  directoryLoading: boolean;
+  onChange: (d: Draft) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  const d = draft ?? EMPTY_DRAFT;
+  const editing = !!d.id;
+  const chars = d.prompt.trim().length;
+  const over = chars > MAX_PROMPT_CHARS;
+  const audienceMissing = d.audience === "specific" && d.plans.length + d.keys.length === 0;
+  const modelsMissing = d.modelMode === "specific" && d.models.length === 0;
+  const canSave = !!d.name.trim() && !over && !audienceMissing && !modelsMissing && !pending;
+  const toggleIn = (list: string[], id: string) => (list.includes(id) ? list.filter((v) => v !== id) : [...list, id]);
+
+  return (
+    <Modal
+      open={draft !== null}
+      onClose={onClose}
+      title={editing ? "Edit skill" : "New skill"}
+      subtitle="Prepended to the system prompt of matching chat requests"
+      maxWidth="max-w-2xl"
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSave) onSubmit();
+        }}
+        aria-busy={pending || undefined}
+      >
+        <div className="max-h-[calc(100dvh-15rem)] space-y-4 overflow-y-auto px-4 py-4 sm:max-h-[70vh] sm:px-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Name" required>
+              <Input value={d.name} onChange={(e) => onChange({ ...d, name: e.target.value })} placeholder="Concise reviewer" maxLength={80} autoFocus />
+            </Field>
+            <Field label="Description" optional>
+              <Input value={d.description} onChange={(e) => onChange({ ...d, description: e.target.value })} placeholder="Short summary of what it does" />
+            </Field>
+          </div>
+          <Field
+            label="Prompt"
+            hint={(
+              <span className="flex justify-between gap-3">
+                <span>Write it as a direct instruction to the model.</span>
+                <span className={`shrink-0 tabular-nums ${over ? "text-bad" : ""}`}>
+                  {chars.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()} · {formatTokens(estimateTokens(d.prompt))}
+                </span>
+              </span>
+            )}
+            error={over ? "Prompt is too long." : undefined}
+          >
+            <Textarea
+              value={d.prompt}
+              onChange={(e) => onChange({ ...d, prompt: e.target.value })}
+              rows={8}
+              spellCheck={false}
+              placeholder="You are a meticulous code reviewer. Prefer small, safe diffs…"
+              className="font-mono text-[12px]"
+            />
+          </Field>
+
+          <fieldset className="space-y-4 rounded-xl border border-line p-4 pt-1 [&>legend]:mb-0">
+            <legend className="px-1 text-[12.5px] font-semibold text-fg">Applies to</legend>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span id="skill-audience-label" className="text-[12.5px] font-medium text-fg">Callers</span>
+                <SegmentedControl
+                  aria-labelledby="skill-audience-label"
+                  value={d.audience}
+                  onChange={(audience) => onChange({ ...d, audience })}
+                  options={[{ value: "all", label: "Every API key" }, { value: "specific", label: "Specific plans or keys" }]}
+                />
+              </div>
+              {d.audience === "specific" && (
+                <div className="space-y-3">
+                  <ChipPicker
+                    label="Plans"
+                    empty={<>No plans yet — create one in <Link to="/plans" className="text-link underline-offset-2 hover:underline">Plans &amp; budgets</Link>.</>}
+                    loading={directoryLoading}
+                    options={plans.map((p) => ({ id: p.id, label: p.name }))}
+                    selected={d.plans}
+                    onToggle={(id) => onChange({ ...d, plans: toggleIn(d.plans, id) })}
+                  />
+                  <ChipPicker
+                    label="API keys"
+                    empty={<>No API keys yet — create one in <Link to="/keys" className="text-link underline-offset-2 hover:underline">API keys</Link>.</>}
+                    loading={directoryLoading}
+                    options={keys.map((k) => ({ id: k.id, label: k.name || k.display, hint: k.plan_name, title: k.display }))}
+                    selected={d.keys}
+                    onToggle={(id) => onChange({ ...d, keys: toggleIn(d.keys, id) })}
+                  />
+                  <p className={`text-[12px] ${audienceMissing ? "text-bad" : "text-fg-muted"}`}>
+                    {audienceMissing ? "Pick at least one plan or key." : "Matches when the request's key is selected or belongs to a selected plan."}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 border-t border-line pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span id="skill-models-label" className="text-[12.5px] font-medium text-fg">Models</span>
+                <SegmentedControl
+                  aria-labelledby="skill-models-label"
+                  value={d.modelMode}
+                  onChange={(modelMode) => onChange({ ...d, modelMode })}
+                  options={[{ value: "all", label: "All models" }, { value: "specific", label: "Specific models" }]}
+                />
+              </div>
+              {d.modelMode === "specific" && (
+                <>
+                  <ModelMultiSelect value={d.models} onChange={(models) => onChange({ ...d, models })} label="Skill models" />
+                  <p className={`text-[12px] ${modelsMissing ? "text-bad" : "text-fg-muted"}`}>
+                    {modelsMissing
+                      ? "Pick at least one model or pattern."
+                      : "Matched against the requested model and the primary routed model. Patterns like claude-* match a whole family."}
+                  </p>
+                </>
+              )}
+            </div>
+          </fieldset>
+
+          <div className="flex items-start justify-between gap-4 rounded-xl border border-line px-4 py-3">
+            <div className="min-w-0">
+              <p id="skill-optional-label" className="text-[12.5px] font-medium text-fg">Optional</p>
+              <p id="skill-optional-hint" className="mt-0.5 text-[12px] leading-5 text-fg-muted">
+                Clients can skip it by sending <code className="rounded bg-subtle px-1 font-mono text-[11.5px]">X-KeiRouter-Skip-Skills: true</code> (e.g. for evals). Leave off for rules every request must follow.
+              </p>
+            </div>
+            <Toggle
+              checked={d.optional}
+              onChange={(optional) => onChange({ ...d, optional })}
+              aria-labelledby="skill-optional-label"
+              aria-describedby="skill-optional-hint"
+            />
+          </div>
+
+          {error && <ErrorBanner message={error} />}
+        </div>
+        <div className="flex flex-col gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
+          <Button type="button" variant="ghost" onClick={onClose} className="w-full sm:w-auto">
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!canSave} className="w-full sm:w-auto">
+            {pending ? "Saving…" : editing ? "Save changes" : "Create skill"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ChipPicker is a multi-select of toggle buttons (aria-pressed), named by the
+// visible label above it.
+function ChipPicker({
+  label,
+  options,
+  selected,
+  onToggle,
+  empty,
+  loading,
+}: {
+  label: string;
+  options: { id: string; label: string; hint?: string; title?: string }[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  empty: ReactNode;
+  loading: boolean;
+}) {
+  const id = useId();
+  // Keep ids that no longer exist visible so they can be removed.
+  const known = new Set(options.map((o) => o.id));
+  const all = [...options, ...selected.filter((s) => !known.has(s)).map((s) => ({ id: s, label: "Deleted", hint: undefined as string | undefined, title: undefined as string | undefined }))];
+  return (
+    <div className="space-y-1.5">
+      <span id={`${id}-label`} className="text-[12px] font-medium text-fg-muted">
+        {label}
+        {selected.length > 0 && <span className="ml-1.5 tabular-nums">{selected.length}</span>}
+      </span>
+      {loading ? (
+        <div className="flex flex-wrap gap-1.5" aria-busy="true" aria-label={`Loading ${label.toLowerCase()}`}>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-7 w-24 rounded-lg" />
+          ))}
+        </div>
+      ) : all.length === 0 ? (
+        <p className="text-[12px] text-fg-muted">{empty}</p>
+      ) : (
+        <div role="group" aria-labelledby={`${id}-label`} className="flex flex-wrap gap-1.5">
+          {all.map((o) => {
+            const on = selected.includes(o.id);
+            return (
+              <button
+                key={o.id}
+                type="button"
+                aria-pressed={on}
+                title={o.title}
+                onClick={() => onToggle(o.id)}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors sm:h-7 ${focusRing} ${
+                  on ? "border-accent-500/40 bg-accent-500/10 text-link" : "border-line bg-surface text-fg-muted hover:border-fg-faint hover:text-fg"
+                }`}
+              >
+                {on && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+                {o.label}
+                {o.hint && <span className="font-normal text-fg-faint">· {o.hint}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ScopeBadges summarises where a skill applies; long lists collapse to "+N".
+function ScopeBadges({ skill, directory }: { skill: Skill; directory: Directory }) {
+  const plans = skill.scope?.plans ?? [];
+  const keys = skill.scope?.keys ?? [];
+  const models = skill.scope?.models ?? [];
+  const items: { key: string; icon: LucideIcon; label: string }[] = [
+    ...plans.map((id) => ({ key: `p-${id}`, icon: ICONS.plans, label: directory.plans.get(id) ?? "Deleted plan" })),
+    ...keys.map((id) => ({ key: `k-${id}`, icon: ICONS.keys, label: directory.keys.get(id) ?? "Deleted key" })),
+    ...models.map((m) => ({ key: `m-${m}`, icon: ICONS.model, label: m })),
+  ];
+  const shown = items.slice(0, 4);
+  const rest = items.length - shown.length;
+  return (
+    <span className="mt-1.5 flex flex-wrap items-center gap-1">
+      {items.length === 0 ? (
+        <Badge>All requests</Badge>
+      ) : (
+        <>
+          {shown.map((it) => (
+            <Badge key={it.key} tone="secondary">
+              <it.icon className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" />
+              {it.label}
+            </Badge>
+          ))}
+          {rest > 0 && <Badge title={items.slice(4).map((it) => it.label).join(", ")}>+{rest}</Badge>}
+        </>
+      )}
+      {skill.optional && <Badge title="Clients can skip it with X-KeiRouter-Skip-Skills">Optional</Badge>}
+    </span>
+  );
+}
+
+function SkillRow({
+  skill,
+  directory,
+  onToggle,
+  onEdit,
+  onDelete,
+  onCopyPrompt,
+}: {
+  skill: Skill;
+  directory: Directory;
+  onToggle: (enabled: boolean) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onCopyPrompt: () => void;
+}) {
+  const tokens = estimateTokens(skill.prompt);
+  const updated = new Date(skill.updated_at || skill.created_at);
+  const updatedLabel = Number.isNaN(updated.getTime())
+    ? undefined
+    : `${skill.updated_at ? "Updated" : "Created"} ${updated.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+
+  return (
+    <li className="flex flex-wrap items-start gap-x-3 gap-y-2 px-4 py-3 transition-colors hover:bg-hover sm:flex-nowrap">
+      <IconTile icon={ICONS.prompt} size="sm" tone={skill.enabled ? "section" : "slate"} className="mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <button type="button" onClick={onEdit} className={`block w-full rounded-md text-left ${focusRing}`} aria-label={`Edit ${skill.name}`}>
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            <span className={`truncate text-[13px] font-medium ${skill.enabled ? "text-fg" : "text-fg-muted"}`}>{skill.name}</span>
+            {skill.description && <span className="truncate text-[12px] text-fg-muted">{skill.description}</span>}
+          </span>
+          {skill.prompt ? (
+            <span className="mt-1 line-clamp-2 font-mono text-[12px] leading-5 text-fg-muted">{skill.prompt}</span>
+          ) : (
+            <span className="mt-1 block text-[12px] italic text-fg-faint">No prompt — adds nothing to requests</span>
+          )}
+        </button>
+        <ScopeBadges skill={skill} directory={directory} />
+        <span className="mt-1 block text-[11.5px] tabular-nums text-fg-faint">
+          {formatTokens(tokens)}
+          {updatedLabel && ` · ${updatedLabel}`}
+        </span>
+      </div>
+      <span className="flex w-full shrink-0 items-center justify-between gap-2 pl-10 sm:w-auto sm:justify-start sm:gap-1 sm:pl-0 sm:pt-0.5">
+        <span className="flex items-center gap-2">
+          <Toggle checked={skill.enabled} onChange={onToggle} label={`Enable ${skill.name}`} />
+          <span className="text-[12px] text-fg-muted sm:hidden" aria-hidden="true">{skill.enabled ? "Enabled" : "Disabled"}</span>
+        </span>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={`Actions for ${skill.name}`}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg sm:h-8 sm:w-8 text-fg-muted transition-colors hover:bg-subtle hover:text-fg ${focusRing}`}
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={onEdit}>
+              <Pencil aria-hidden="true" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onCopyPrompt} disabled={!skill.prompt}>
+              <Copy aria-hidden="true" />
+              Copy prompt
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem tone="danger" onSelect={onDelete}>
+              <Trash2 aria-hidden="true" />
+              Delete skill
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </span>
+    </li>
+  );
+}
+
+// useCopy copies text and flips a short-lived "copied" flag for the button.
+function useCopy() {
+  const toast = useToast();
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = async (key: string, text: string, message: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      toast.success("Copied", message);
+      setTimeout(() => setCopied((current) => (current === key ? null : current)), 2000);
+    } catch {
+      toast.error("Copy failed", "The browser blocked clipboard access.");
+    }
+  };
+  return { copied, copy };
+}
+
+// ReferenceSkills leads with the entry skill (the one most agents need) and
+// lists the per-endpoint skills as a compact grid.
 function ReferenceSkills() {
-  const [expanded, setExpanded] = useState(false);
+  const { copied, copy } = useCopy();
   return (
     <section aria-labelledby="reference-skills-heading" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
       <div className="border-b border-line px-4 py-3">
@@ -307,168 +682,81 @@ function ReferenceSkills() {
               <span className="ml-2 text-[12px] font-normal tabular-nums text-fg-muted">{REFERENCE_SKILLS.length}</span>
             </>
           )}
-          subtitle="Teach an agent an endpoint by URL"
+          subtitle="Paste a link into Claude, Cursor, ChatGPT or any agent to teach it a KeiRouter endpoint"
         />
       </div>
-      <div>
-        <ul aria-label="Entry skill">
-          <ReferenceSkillRow skill={ENTRY_SKILL} />
-        </ul>
-        <div className="border-t border-line">
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls="reference-endpoint-skills"
-            onClick={() => setExpanded((current) => !current)}
-            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-[13px] transition-colors hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3.5">
+        <IconTile icon={ICONS.skills} size="md" />
+        <span className="min-w-0 flex-1 basis-60">
+          <span className="block text-[13px] font-medium text-fg">Start here: {ENTRY_SKILL.name}</span>
+          <span className="block text-[12px] text-fg-muted">{ENTRY_SKILL.description} Covers every endpoint below.</span>
+        </span>
+        <span className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+          <Button
+            variant="secondary"
+            onClick={() => copy("entry-url", skillUrl(ENTRY_SKILL.id), "Entry skill URL")}
+            aria-label="Copy entry skill URL"
           >
-            <ChevronRight className={`h-4 w-4 shrink-0 text-fg-faint transition-transform ${expanded ? "rotate-90" : ""}`} strokeWidth={1.75} aria-hidden="true" />
-            <span className="font-medium text-fg">Endpoint skills</span>
-            <span className="text-[12px] tabular-nums text-fg-muted">{ENDPOINT_SKILLS.length}</span>
-          </button>
-          {expanded && (
-            <div id="reference-endpoint-skills" className="border-t border-line">
-              {ENDPOINT_GROUPS.map((g) => (
-                <div key={g.group} className="border-b border-line last:border-b-0">
-                  <h3 id={`reference-group-${g.group}`} className="bg-subtle px-4 py-1.5 text-[12px] font-medium text-fg-muted">{g.group}</h3>
-                  <ul aria-labelledby={`reference-group-${g.group}`} className="divide-y divide-line">
-                    {g.skills.map((sk) => (
-                      <ReferenceSkillRow key={sk.id} skill={sk} />
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+            {copied === "entry-url" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            Copy URL
+          </Button>
+          <Button
+            onClick={() => copy("entry-prompt", agentInstruction(ENTRY_SKILL.id), "Paste it into your agent's chat.")}
+            aria-label="Copy agent instruction for the entry skill"
+          >
+            {copied === "entry-prompt" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            Copy agent prompt
+          </Button>
+        </span>
+        <span className="sr-only" role="status">{copied ? "Copied to clipboard" : ""}</span>
       </div>
+
+      <ul aria-label="Endpoint skills" className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-3">
+        {ENDPOINT_SKILLS.map((sk) => (
+          <ReferenceSkillCard key={sk.id} skill={sk} copied={copied === sk.id} onCopy={() => copy(sk.id, skillUrl(sk.id), `Paste it to your agent to teach it ${sk.name}.`)} />
+        ))}
+      </ul>
     </section>
   );
 }
 
-function ReferenceSkillRow({ skill }: { skill: ReferenceSkill }) {
-  const toast = useToast();
-  const [copied, setCopied] = useState(false);
+function ReferenceSkillCard({ skill, copied, onCopy }: { skill: ReferenceSkill; copied: boolean; onCopy: () => void }) {
   const url = skillUrl(skill.id);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      toast.success("Skill URL copied", `Paste it to your agent to teach it ${skill.name}.`);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast.error("Copy failed", "The browser blocked clipboard access.");
-    }
-  };
-
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 transition-colors hover:bg-hover">
-      <IconTile icon={REFERENCE_ICONS[skill.id] ?? ICONS.skills} size="sm" />
-      <span className="min-w-0 flex-1 basis-56">
-        <span className="block text-[13px] font-medium text-fg">{skill.name}</span>
-        <span className="block text-[12px] text-fg-muted">{skill.description}</span>
+    <li className="flex flex-col gap-2 bg-surface px-4 py-3 transition-colors hover:bg-hover">
+      <span className="flex items-start gap-2.5">
+        <IconTile icon={REFERENCE_ICONS[skill.id] ?? ICONS.skills} size="sm" />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline justify-between gap-2">
+            <span className="text-[13px] font-medium text-fg">{skill.name}</span>
+            <span className="shrink-0 text-[11.5px] text-fg-faint">{skill.group}</span>
+          </span>
+          <span className="block break-all font-mono text-[11.5px] text-fg-muted">{skill.endpoint}</span>
+        </span>
       </span>
-      <span className="shrink-0 text-[12px]">
-        {skill.endpoint ? (
-          <span className="font-mono text-fg-muted">{skill.endpoint}</span>
-        ) : (
-          <span className="text-fg-muted">All endpoints</span>
-        )}
-      </span>
-      <span className="inline-flex shrink-0 items-center gap-0.5">
+      <span className="flex-1 text-[12px] leading-5 text-fg-muted">{skill.description}</span>
+      <span className="-ml-2 inline-flex items-center gap-2 sm:gap-0.5">
         <button
           type="button"
-          onClick={copy}
-          title="Copy skill URL"
+          onClick={onCopy}
           aria-label={`Copy ${skill.name} skill URL`}
-          className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-subtle hover:text-fg ${focusRing}`}
+          className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-subtle hover:text-fg sm:h-7 ${focusRing}`}
         >
           {copied ? <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />}
           <span aria-hidden="true">{copied ? "Copied" : "Copy URL"}</span>
         </button>
-        <span className="sr-only" role="status">{copied ? `${skill.name} skill URL copied` : ""}</span>
         <a
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          title="Open SKILL.md"
           aria-label={`Open ${skill.name} SKILL.md (opens in a new tab)`}
-          className={`flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-subtle hover:text-fg ${focusRing}`}
+          className={`inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-subtle hover:text-fg sm:h-7 ${focusRing}`}
         >
-          <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+          <ExternalLink className="h-3.5 w-3.5 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
+          <span aria-hidden="true">View</span>
         </a>
       </span>
     </li>
-  );
-}
-
-function SkillRow({
-  skill,
-  onToggle,
-  onDelete,
-  onCopyPrompt,
-}: {
-  skill: Skill;
-  onToggle: (enabled: boolean) => void;
-  onDelete: () => void;
-  onCopyPrompt: () => void;
-}) {
-  const created = skill.created_at ? new Date(skill.created_at) : null;
-  const createdLabel =
-    created && !Number.isNaN(created.getTime())
-      ? created.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-      : "—";
-
-  return (
-    <tr className="transition-colors hover:bg-hover">
-      <td className="max-w-[300px] px-4 py-2.5 align-top">
-        <span className="flex min-w-0 items-start gap-2.5">
-          <IconTile icon={ICONS.prompt} size="sm" tone={skill.enabled ? "section" : "slate"} className="mt-0.5" />
-          <span className="min-w-0">
-            <span className="block truncate font-medium text-fg">{skill.name}</span>
-            {skill.description ? (
-              <span className="block truncate text-[12px] text-fg-muted">{skill.description}</span>
-            ) : (
-              <span className="block truncate font-mono text-[12px] text-fg-muted">{skill.id}</span>
-            )}
-          </span>
-        </span>
-      </td>
-      <td className="max-w-[360px] px-4 py-2.5 align-top">
-        {skill.prompt ? (
-          <span className="line-clamp-2 font-mono text-[12px] leading-5 text-fg-muted" title={skill.prompt}>
-            {skill.prompt}
-          </span>
-        ) : (
-          <span className="text-[12px] text-fg-muted">No prompt</span>
-        )}
-      </td>
-      <td className="whitespace-nowrap px-4 py-2.5 text-right align-top text-[12px] text-fg-muted">{createdLabel}</td>
-      <td className="px-4 py-2.5 align-top">
-        <Toggle checked={skill.enabled} onChange={onToggle} label={`Enable ${skill.name}`} />
-      </td>
-      <td className="px-2 py-2 text-right align-top">
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            aria-label={`Actions for ${skill.name}`}
-            className={`flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-subtle hover:text-fg ${focusRing}`}
-          >
-            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onCopyPrompt} disabled={!skill.prompt}>
-              <Copy aria-hidden="true" />
-              Copy prompt
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem tone="danger" onSelect={onDelete}>
-              <Trash2 aria-hidden="true" />
-              Delete skill
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </td>
-    </tr>
   );
 }

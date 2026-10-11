@@ -119,9 +119,11 @@ func chainResult(ctx context.Context, chains ChainSource, latency LatencyReader,
 			case chainStrategyCost:
 				steps = orderStepsByCost(steps)
 				opts.Strategy = dispatch.StrategyFallback
+				opts.FixedOrder = true
 			case chainStrategyLatency:
 				steps = orderStepsByLatency(ctx, latency, tenantID, steps)
 				opts.Strategy = dispatch.StrategyFallback
+				opts.FixedOrder = true
 			default:
 				opts.Strategy = dispatch.StrategyFallback
 			}
@@ -133,6 +135,7 @@ func chainResult(ctx context.Context, chains ChainSource, latency LatencyReader,
 					Provider: c.FallbackProvider,
 					Model:    c.FallbackModel,
 				})
+				opts.PinnedTail = 1
 			}
 			return resolveResult{Targets: targets, PlanOpts: opts}, nil
 		}

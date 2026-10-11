@@ -3,10 +3,12 @@ import type { LucideIcon } from "lucide-react";
 import type { SeriesPoint, UsageInsights } from "../../lib/api";
 import { ICONS } from "../../lib/icons";
 import { cn } from "@/lib/utils";
+import { PlotTooltip, useElementWidth, usePlotPointer, xLabelCount, xLabelStyle } from "./TimeSeries";
 
 // TrafficCard is the shared requests / tokens / cost / latency bar chart used
 // by Overview and Usage. Plain HTML bars (no charting library), stacked where
-// a metric has two parts, with a hover tooltip.
+// a metric has two parts, with a hover tooltip. On touch, tapping or dragging
+// across the plot moves the crosshair (see usePlotPointer in TimeSeries).
 
 // ── Traffic chart ────────────────────────────────────────────────────────────
 
@@ -83,7 +85,9 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
     return niceScale(peak);
   }, [series, def]);
 
-  const labelEvery = Math.max(1, Math.ceil(series.length / 7));
+  const [plotRef, plotWidth] = useElementWidth<HTMLDivElement>();
+  const labelEvery = Math.max(1, Math.ceil(series.length / xLabelCount(plotWidth, 7, 84)));
+  const pointer = usePlotPointer(series.length, setHover, () => viaKeys && setViaKeys(false));
   // Series colours as classes (accent first, then the lightness-separated alt).
   const aClass = "bg-accent-500";
   const bClass = def.bTone === "alt" ? "bg-[var(--series-alt)]" : "bg-accent-300";
@@ -135,7 +139,8 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
   return (
     <section aria-label="Traffic" className={cn("flex min-w-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]", className)}>
       <div className="flex flex-wrap items-stretch border-b border-line">
-        <div className="flex flex-wrap items-stretch" role="tablist" aria-label="Chart metric" onKeyDown={onTabKeyDown}>
+        {/* Phones: a 2×2 grid of metric tabs; from sm a single row. */}
+        <div className="grid w-full grid-cols-2 sm:flex sm:w-auto sm:flex-wrap sm:items-stretch" role="tablist" aria-label="Chart metric" onKeyDown={onTabKeyDown}>
           {METRIC_KEYS.map((key) => {
             const active = key === metric;
             const MetricIcon = METRICS[key].icon;
@@ -150,7 +155,7 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
                 tabIndex={active ? 0 : -1}
                 onClick={() => setMetric(key)}
                 className={cn(
-                  "relative flex min-w-[128px] flex-col items-start gap-0.5 border-r border-line px-4 py-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500",
+                  "relative flex min-w-0 flex-col items-start gap-0.5 border-r border-line px-4 py-2.5 text-left even:border-r-0 [&:nth-child(-n+2)]:border-b sm:min-w-[128px] sm:even:border-r sm:[&:nth-child(-n+2)]:border-b-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500",
                   active ? "bg-surface" : "bg-subtle hover:bg-hover",
                 )}
               >
@@ -166,7 +171,7 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
             );
           })}
         </div>
-        <div className="ml-auto flex items-center gap-3.5 px-4 py-2 text-[12px] text-fg-muted">
+        <div className="flex items-center gap-3.5 px-4 py-2 text-[12px] text-fg-muted sm:ml-auto">
           <LegendSwatch className={aClass} label={def.legendA} />
           {def.legendB && <LegendSwatch className={bClass} label={def.legendB} />}
         </div>
@@ -180,7 +185,8 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <div
-            className="relative h-[220px] rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-4 focus-visible:ring-offset-surface"
+            ref={plotRef}
+            className="relative h-[220px] touch-pan-y select-none rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-4 focus-visible:ring-offset-surface"
             tabIndex={0}
             role="group"
             aria-roledescription="chart"
@@ -188,8 +194,7 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
             aria-describedby={`${uid}-summary`}
             onKeyDown={onPlotKeyDown}
             onBlur={() => setHover(null)}
-            onMouseLeave={() => setHover(null)}
-            onMouseMove={() => viaKeys && setViaKeys(false)}
+            {...pointer}
           >
             <span id={`${uid}-summary`} className="sr-only">{summary}</span>
             <span className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</span>
@@ -205,7 +210,6 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
                   <div
                     key={p.start}
                     className={cn("flex h-full min-w-[2px] flex-1 flex-col justify-end gap-px", hover !== null && hover !== i && "opacity-60")}
-                    onMouseEnter={() => setHover(i)}
                   >
                     {b > 0 && <div className={cn("rounded-t-[2px]", bClass)} style={{ height: `${(b / max) * 100}%` }} />}
                     <div className={cn(aClass, b > 0 ? "rounded-[1px]" : "rounded-t-[2px]")} style={{ height: `${(a / max) * 100}%` }} />
@@ -224,10 +228,10 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
               />
             )}
           </div>
-          <div className="relative h-4 text-[11px] tabular-nums text-fg-faint" aria-hidden="true">
+          <div className="relative h-4 overflow-hidden text-[11px] tabular-nums text-fg-faint" aria-hidden="true">
             {series.map((p, i) =>
               i % labelEvery === 0 ? (
-                <span key={p.start} className="absolute -translate-x-0" style={{ left: `${(i / series.length) * 100}%` }}>
+                <span key={p.start} className="absolute whitespace-nowrap" style={xLabelStyle(i, series.length)}>
                   {p.label}
                 </span>
               ) : null,
@@ -260,24 +264,17 @@ function LegendSwatch({ className, label }: { className: string; label: string }
 }
 
 function ChartTooltip({ leftPct, title, rows }: { leftPct: number; title: string; rows: { label: string; value: string; className: string }[] }) {
-  const alignRight = leftPct > 70;
   return (
-    <>
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute top-1 z-10 min-w-36 rounded-xl border border-line bg-surface px-2.5 py-2 text-[12px] shadow-[var(--shadow-pop)]"
-        style={alignRight ? { right: `${100 - leftPct}%`, marginRight: 8 } : { left: `${leftPct}%`, marginLeft: 8 }}
-      >
-        <p className="mb-1 font-medium text-fg">{title}</p>
-        {rows.map((r) => (
-          <p key={r.label} className="flex items-center gap-2 text-fg-muted">
-            <span className={cn("h-2 w-2 rounded-[2px]", r.className)} />
-            {r.label}
-            <span className="ml-auto pl-3 font-medium tabular-nums text-fg">{r.value}</span>
-          </p>
-        ))}
-      </div>
-    </>
+    <PlotTooltip leftPct={leftPct}>
+      <p className="mb-1 font-medium text-fg">{title}</p>
+      {rows.map((r) => (
+        <p key={r.label} className="flex items-center gap-2 text-fg-muted">
+          <span className={cn("h-2 w-2 shrink-0 rounded-[2px]", r.className)} />
+          {r.label}
+          <span className="ml-auto pl-3 font-medium tabular-nums text-fg">{r.value}</span>
+        </p>
+      ))}
+    </PlotTooltip>
   );
 }
 

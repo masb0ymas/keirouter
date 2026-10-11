@@ -2,35 +2,26 @@ import { useId, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, typ
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, Copy, Check, ChevronRight, Loader2, RotateCcw, FileCog, AlertTriangle,
+  ArrowLeft, Copy, Check, ChevronRight, Loader2, RotateCcw, FileCog, AlertTriangle, RefreshCw,
 } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type CLITool, type CLIToolsResponse } from "../lib/api";
+import { cliConnection, cliToolMeta, detectedViaLabel } from "../lib/cliTools";
 import { useToast } from "../components/Toast";
 import { ProviderLogo } from "../components/ProviderLogo";
+import { useModelCatalog } from "../components/ModelSelect";
 import { useConfirm } from "../components/ui/confirm-dialog";
-import { Badge, Button, IconTile, Input, Select, Skeleton } from "../components/ui";
+import { Badge, Button, IconTile, Input, SegmentedControl, Skeleton } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { cn } from "@/lib/utils";
 
-// Tool metadata — descriptions, logos, install commands.
-const toolMeta: Record<string, { description: string; image: string; installCmd?: string }> = {
-  claude:       { description: "Anthropic's CLI coding agent", image: "/providers/claude.png", installCmd: "npm install -g @anthropic-ai/claude-code" },
-  codex:        { description: "OpenAI Codex CLI", image: "/providers/codex.png", installCmd: "npm install -g @openai/codex" },
-  cline:        { description: "VS Code AI coding assistant", image: "/providers/cline.png" },
-  copilot:      { description: "GitHub Copilot Chat", image: "/providers/copilot.png" },
-  droid:        { description: "Factory Droid CLI", image: "/providers/droid.png", installCmd: "curl -fsSL https://factory.ai/install.sh | sh" },
-  openclaw:     { description: "OpenClaw agent framework", image: "/providers/openclaw.png", installCmd: "npm install -g openclaw" },
-  opencode:     { description: "OpenCode multi-model agent", image: "/providers/opencode.png", installCmd: "npm install -g @opencode-ai/opencode" },
-  kilo:         { description: "Kilo Code AI assistant", image: "/providers/kilocode.png", installCmd: "npm install -g kilo-code" },
-  hermes:       { description: "Hermes Agent CLI", image: "/providers/hermes.png", installCmd: "npm install -g hermes-agent" },
-  deepseek:     { description: "DeepSeek TUI", image: "/providers/deepseek-tui.png", installCmd: "npm install -g deepseek-tui" },
-  jcode:        { description: "jcode coding agent", image: "/providers/jcode.png", installCmd: "npm install -g jcode" },
-};
+// Placeholders the backend puts in manual-setup snippets.
+const KEY_PLACEHOLDER = "kr_YOUR_API_KEY";
+const MODEL_PLACEHOLDER = "provider/model-id";
 
-const CUSTOM_KEY = "__custom__";
+type KeyMode = "keep" | "new" | "paste";
 
 export function CLIToolDetailPage() {
-  const { toolId } = useParams<{ toolId: string }>();
+  const { toolId = "" } = useParams<{ toolId: string }>();
   const qc = useQueryClient();
   const toast = useToast();
   const askConfirm = useConfirm();
@@ -39,62 +30,96 @@ export function CLIToolDetailPage() {
     queryKey: ["cli-tools"],
     queryFn: () => api.cliTools(),
   });
-
-  const keys = useQuery({
-    queryKey: ["api-keys"],
-    queryFn: () => api.listKeys(),
-  });
+  const catalog = useModelCatalog();
 
   const tool = tools.data?.tools.find((t) => t.id === toolId);
-  const meta = toolMeta[toolId ?? ""];
+  const meta = cliToolMeta[toolId];
+  const gatewayURL = tools.data?.base_url ?? "";
+  const stored = tool?.settings;
+  const canKeepKey = stored?.key_status === "valid";
 
-  // Form state
+  // Form state, seeded from what the tool's config currently holds so the
+  // page shows (and by default re-writes) the saved connection.
   const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [customKey, setCustomKey] = useState("");
   const [model, setModel] = useState("");
-
-  // The key that is written / shown in the snippet. "Custom…" in the key
-  // picker switches to a free-text field without losing the selection.
-  const effectiveKey = apiKey === CUSTOM_KEY ? customKey : apiKey;
-
-  // Initialize base URL when data loads
-  const initializedKey = `${tools.data?.base_url}-${toolId}`;
-  const [initKey, setInitKey] = useState("");
-  if (tools.data?.base_url && initKey !== initializedKey) {
-    setInitKey(initializedKey);
-    setBaseUrl(tools.data.base_url);
+  const [keyMode, setKeyMode] = useState<KeyMode>("new");
+  const [pastedKey, setPastedKey] = useState("");
+  const [keyName, setKeyName] = useState("");
+  const [seededFor, setSeededFor] = useState("");
+  if (tool && tools.data && seededFor !== tool.id) {
+    setSeededFor(tool.id);
+    // Only reuse stored values that belong to this gateway — an endpoint and
+    // model from another service would be wrong to write back.
+    const ours = stored?.endpoint_match ?? false;
+    setBaseUrl(ours ? stored!.base_url : gatewayURL);
+    setModel(ours ? (stored?.model ?? "") : "");
+    setKeyMode(stored?.key_status === "valid" ? "keep" : "new");
+    setPastedKey("");
+    setKeyName(`${tool.name} (CLI)`);
   }
 
-  // Mutations
+  // Swap the refreshed tool into the list cache: no full rescan needed.
+  const applyTool = (next: CLITool) => {
+    qc.setQueryData<CLIToolsResponse>(["cli-tools"], (prev) =>
+      prev ? { ...prev, tools: prev.tools.map((t) => (t.id === next.id ? next : t)) } : prev,
+    );
+  };
+
+  const rescan = useMutation({
+    mutationFn: () => api.cliTool(toolId),
+    onSuccess: applyTool,
+    onError: (e: Error) => toast.error("Rescan failed", e.message),
+  });
+
   const configureMut = useMutation({
-    mutationFn: () =>
-      api.cliToolConfigure(toolId!, {
-        base_url: baseUrl,
-        api_key: effectiveKey || "sk_keirouter",
-        models: model ? [model] : undefined,
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["cli-tools"] });
-      toast.success("Tool configured", `${tool?.name} is now routing through KeiRouter. All requests will use the proxy endpoint.`);
+    mutationFn: async () => {
+      let apiKey: string | undefined;
+      if (keyMode === "paste") apiKey = pastedKey.trim();
+      if (keyMode === "new") {
+        const created = await api.createKey(keyName.trim() || `${tool?.name ?? toolId} (CLI)`);
+        apiKey = created.key;
+        // Keep the plaintext so a failed write can be retried with the same
+        // key instead of minting another one.
+        setPastedKey(created.key);
+        setKeyMode("paste");
+        qc.invalidateQueries({ queryKey: ["api-keys"] });
+      }
+      return api.cliToolConfigure(toolId, { base_url: baseUrl.trim(), api_key: apiKey, model: model.trim() || undefined });
+    },
+    onSuccess: (res) => {
+      applyTool(res.tool);
+      setKeyMode("keep");
+      setPastedKey("");
+      setBaseUrl(res.tool.settings?.base_url ?? baseUrl);
+      toast.success("Tool configured", `${res.tool.name} now routes through KeiRouter. Restart it to pick up the change.`);
     },
     onError: (e: Error) => toast.error("Tool configuration failed", e.message),
   });
 
   const removeMut = useMutation({
-    mutationFn: () => api.cliToolRemove(toolId!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["cli-tools"] });
-      toast.success("Config removed", `${tool?.name} has been disconnected from KeiRouter and will use its default endpoint.`);
+    mutationFn: () => api.cliToolRemove(toolId),
+    onSuccess: (res) => {
+      applyTool(res.tool);
+      setKeyMode("new");
+      toast.success("Config removed", `${res.tool.name} is disconnected from KeiRouter and will use its default endpoint.`);
     },
     onError: (e: Error) => toast.error("Config removal failed", e.message),
   });
 
-  const snippetWithVars = (tool?.snippet ?? "")
-    .replace(/http:\/\/localhost:\d+\/v1/g, baseUrl ? `${baseUrl.replace(/\/+$/, "")}/v1` : "http://localhost:20180/v1")
-    .replace(/sk_keirouter/g, effectiveKey || "sk_keirouter");
+  // Manual snippet with the form's values filled in. The backend renders it
+  // for the gateway's own address, so that root is swapped for the chosen one.
+  const snippetWithVars = useMemo(() => {
+    let text = tool?.snippet ?? "";
+    const root = baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+    if (gatewayURL && root) text = text.split(gatewayURL).join(root);
+    if (keyMode === "paste" && pastedKey.trim()) text = text.split(KEY_PLACEHOLDER).join(pastedKey.trim());
+    if (model.trim()) text = text.split(MODEL_PLACEHOLDER).join(model.trim());
+    else if (tool && !tool.model_required) text = dropLinesWith(text, MODEL_PLACEHOLDER);
+    return text;
+  }, [tool, baseUrl, gatewayURL, keyMode, pastedKey, model]);
   const files = useMemo(() => splitSnippet(snippetWithVars), [snippetWithVars]);
   const envVars = useMemo(() => extractEnvVars(files), [files]);
+  const modelListId = useId();
 
   if (tools.isLoading) {
     return (
@@ -124,19 +149,30 @@ export function CLIToolDetailPage() {
     );
   }
 
-  const configTarget = tool.config_path || "its config file";
+  const conn = cliConnection(tool);
+  const configTarget = tool.config_files?.length ? tool.config_files.join(", ") : tool.config_path || "its config file";
+  const modelMissing = tool.model_required && !model.trim();
+  const keyMissing = keyMode === "paste" && !pastedKey.trim();
+  const pastedLooksMasked = keyMode === "paste" && pastedKey.includes("…");
+  const busy = configureMut.isPending || removeMut.isPending;
+  const canWrite = !!baseUrl.trim() && !modelMissing && !keyMissing && !pastedLooksMasked && !busy;
+  const endpointDiffers = !!gatewayURL && normalizeRoot(baseUrl) !== normalizeRoot(gatewayURL);
 
   const applyConfig = async () => {
     const ok = await askConfirm({
       title: `Write ${tool.name} config?`,
       description: (
         <>
-          KeiRouter writes the endpoint, key{model ? " and model" : ""} into{" "}
-          <span className="font-mono text-[12px] text-fg">{configTarget}</span>. Existing provider settings in that file are
-          replaced. Restart {tool.name} afterwards to pick up the change.
+          KeiRouter writes {joinList(["the endpoint", keyMode === "new" ? "a new API key" : "the API key", model.trim() && "the model"])} into{" "}
+          <span className="font-mono text-[12px] text-fg">{configTarget}</span>.
+          Your other settings in those files are kept, but comments are not.{" "}
+          {tool.configured
+            ? "A copy of each file from before KeiRouter first edited it is kept next to it as .keirouter.bak."
+            : "A copy of each existing file is saved next to it as .keirouter.bak first."}{" "}
+          Restart {tool.name} afterwards to pick up the change.
         </>
       ),
-      confirmLabel: "Write config",
+      confirmLabel: keyMode === "new" ? "Create key and write" : "Write config",
     });
     if (ok) configureMut.mutate();
   };
@@ -144,20 +180,19 @@ export function CLIToolDetailPage() {
   const resetConfig = async () => {
     const ok = await askConfirm({
       title: `Disconnect ${tool.name}?`,
-      description: `The KeiRouter settings are removed from ${configTarget}, so ${tool.name} goes back to its default endpoint. Requests stop routing through KeiRouter.`,
+      description: `The KeiRouter settings are removed from ${configTarget}; everything else in those files stays. ${tool.name} goes back to its default endpoint and requests stop routing through KeiRouter.`,
       confirmLabel: "Remove config",
       tone: "danger",
     });
     if (ok) removeMut.mutate();
   };
 
-  const status = tool.configured
-    ? { tone: "success" as const, label: "Connected" }
-    : tool.installed
-      ? { tone: "warning" as const, label: "Not configured" }
-      : { tone: "neutral" as const, label: "Not installed" };
-
-  const keyList = keys.data?.keys ?? [];
+  const via = detectedViaLabel(tool);
+  const keyOptions: { value: KeyMode; label: string }[] = [
+    ...(canKeepKey ? [{ value: "keep" as const, label: "Keep current" }] : []),
+    { value: "new", label: "Create new" },
+    { value: "paste", label: "Paste key" },
+  ];
 
   return (
     <>
@@ -181,40 +216,65 @@ export function CLIToolDetailPage() {
         </ol>
       </nav>
 
-      <header className="mb-5 flex min-w-0 items-center gap-3">
+      <header className="mb-5 flex min-w-0 flex-wrap items-center gap-3">
         <ProviderLogo icon={meta?.image} name={tool.name} size={40} className="rounded-lg" />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em] text-fg">{tool.name}</h1>
-            <Badge tone={status.tone}>{status.label}</Badge>
+            <Badge tone={conn.tone}>{conn.label}</Badge>
           </div>
           <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] text-fg-muted">
             <span>{meta?.description ?? tool.dialect}</span>
-            {meta?.description && (
+            {tool.version && (
               <>
                 <span aria-hidden="true" className="text-fg-faint">
                   ·
                 </span>
-                <span className="font-mono text-[12.5px]">{tool.dialect}</span>
+                <span className="font-mono text-[12.5px]">v{tool.version}</span>
               </>
             )}
           </p>
         </div>
+        <Button variant="secondary" onClick={() => rescan.mutate()} disabled={rescan.isPending}>
+          <RefreshCw className={cn(rescan.isPending && "animate-spin")} strokeWidth={1.75} aria-hidden="true" />
+          {rescan.isPending ? "Scanning…" : "Rescan"}
+        </Button>
       </header>
+
+      {conn.kind === "attention" && (
+        <div role="alert" className="mb-4 flex max-w-3xl items-start gap-2 rounded-xl border border-warn/30 bg-warn/10 px-3.5 py-2.5 text-[12.5px] leading-5 text-fg">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" strokeWidth={1.75} aria-hidden="true" />
+          <span className="break-words">
+            <span className="font-medium">{conn.label}.</span> {conn.detail}
+          </span>
+        </div>
+      )}
+
+      {tool.configured && stored && <CurrentConnection tool={tool} />}
 
       <ol className="max-w-3xl divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
         {/* 1. Install */}
         <Step n={1} done={tool.installed} title={`Install ${tool.name}`}>
           {tool.installed ? (
-            <p className="flex items-center gap-1.5 text-[13px] text-fg-muted">
-              <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" />
-              Detected on this machine.
-            </p>
+            <div className="space-y-1 text-[13px] text-fg-muted">
+              <p className="flex items-center gap-1.5">
+                <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" />
+                Detected on this machine{via ? ` (${via})` : ""}.
+              </p>
+              {tool.binary_path && <p className="break-all font-mono text-[12px]">{tool.binary_path}</p>}
+              {tool.extension && <p className="break-all font-mono text-[12px]">{tool.extension}</p>}
+              {!tool.binary_path && !tool.extension && (
+                <p className="text-[12.5px]">
+                  Only its config file was found. If the CLI is installed, its binary isn&apos;t on this gateway&apos;s PATH — the
+                  config still works.
+                </p>
+              )}
+            </div>
           ) : (
             <div className="space-y-3">
               <p className="flex items-start gap-1.5 text-[13px] leading-5 text-fg">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" strokeWidth={1.75} aria-hidden="true" />
-                <span>Not detected here. Install it, or set it up by hand in step 4.</span>
+                <span>Not detected here. Install it and rescan, or set it up by hand in step 4.</span>
               </p>
               {meta?.installCmd && <CodeWell code={meta.installCmd} label="Shell" copyLabel="install command" />}
             </div>
@@ -222,16 +282,23 @@ export function CLIToolDetailPage() {
         </Step>
 
         {/* 2. Connection settings */}
-        <Step n={2} title="Choose endpoint and key">
+        <Step n={2} title="Choose endpoint, key and model">
           <div className="max-w-xl space-y-4">
             <FieldRow
               id="cli-endpoint"
               label="Endpoint URL"
               required
               hint={
-                <>
-                  Gateway: <span className="font-mono">{tools.data?.base_url ?? "—"}</span>
-                </>
+                endpointDiffers ? (
+                  <>
+                    This gateway is at <span className="font-mono">{gatewayURL}</span>.{" "}
+                    <button type="button" className="font-medium text-link hover:underline" onClick={() => setBaseUrl(gatewayURL)}>
+                      Use it
+                    </button>
+                  </>
+                ) : (
+                  "This gateway's address."
+                )
               }
             >
               <Input
@@ -245,50 +312,75 @@ export function CLIToolDetailPage() {
               />
             </FieldRow>
 
-            <FieldRow id="cli-key" label="API key" hint="Use a dedicated key so you can revoke it on its own.">
-              {keyList.length > 0 ? (
-                <Select id="cli-key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} aria-describedby="cli-key-hint">
-                  <option value="">sk_keirouter (default)</option>
-                  {keyList.filter((k) => !k.disabled).map((k) => (
-                    <option key={k.id} value={k.display}>
-                      {k.name || k.display}
-                    </option>
-                  ))}
-                  <option value={CUSTOM_KEY}>Custom…</option>
-                </Select>
-              ) : (
-                <Input
-                  id="cli-key"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk_keirouter"
-                  type="password"
-                  className="font-mono"
-                  aria-describedby="cli-key-hint"
-                />
+            <div className="space-y-1.5">
+              <span id="cli-key-label" className="block text-[12.5px] font-medium text-fg">
+                API key
+              </span>
+              <SegmentedControl value={keyMode} onChange={setKeyMode} options={keyOptions} aria-labelledby="cli-key-label" />
+              {keyMode === "keep" && stored && (
+                <p className="text-[12px] leading-5 text-fg-muted">
+                  Keeps <span className="font-mono text-fg">{stored.api_key_hint}</span>
+                  {stored.key_name && <> ({stored.key_name})</>} already in the config.
+                </p>
               )}
-              {apiKey === CUSTOM_KEY && (
-                <Input
-                  value={customKey}
-                  onChange={(e) => setCustomKey(e.target.value)}
-                  placeholder="Enter custom API key"
-                  aria-label="Custom API key"
-                  type="password"
-                  className="mt-2 font-mono"
-                  autoFocus
-                />
+              {keyMode === "new" && (
+                <div className="space-y-1.5">
+                  <Input value={keyName} onChange={(e) => setKeyName(e.target.value)} aria-label="New key name" placeholder={`${tool.name} (CLI)`} />
+                  <p className="text-[12px] leading-5 text-fg-muted">
+                    A dedicated key is created when you write the config, so you can revoke this tool on its own.
+                  </p>
+                </div>
               )}
-            </FieldRow>
+              {keyMode === "paste" && (
+                <div className="space-y-1.5">
+                  <Input
+                    value={pastedKey}
+                    onChange={(e) => setPastedKey(e.target.value)}
+                    placeholder="kr_…"
+                    aria-label="API key"
+                    aria-invalid={pastedLooksMasked || undefined}
+                    type="password"
+                    autoComplete="off"
+                    className="font-mono"
+                  />
+                  <p className={cn("text-[12px] leading-5", pastedLooksMasked ? "text-bad" : "text-fg-muted")}>
+                    {pastedLooksMasked
+                      ? "That's the masked form from the key list — paste the full key shown when it was created."
+                      : "Paste the full key (it starts with kr_). It's checked against this gateway before anything is written."}
+                  </p>
+                </div>
+              )}
+            </div>
 
-            <FieldRow id="cli-model" label="Default model" optional hint="Leave empty to pick a model inside the tool.">
+            <FieldRow
+              id="cli-model"
+              label="Default model"
+              optional={!tool.model_required}
+              required={tool.model_required}
+              hint={
+                tool.model_required
+                  ? `${tool.name} needs a model to send requests. Use a provider/model id or chain:<name>.`
+                  : "Leave empty to keep the tool's own default model."
+              }
+            >
               <Input
                 id="cli-model"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="provider/model-id or chain:my-chain"
                 className="font-mono"
+                list={modelListId}
+                autoComplete="off"
+                aria-required={tool.model_required || undefined}
                 aria-describedby="cli-model-hint"
               />
+              <datalist id={modelListId}>
+                {catalog.models.map((m, i) => (
+                  <option key={`${m.providerName}:${m.id}:${i}`} value={m.id}>
+                    {m.providerName}
+                  </option>
+                ))}
+              </datalist>
             </FieldRow>
           </div>
         </Step>
@@ -296,49 +388,46 @@ export function CLIToolDetailPage() {
         {/* 3. Apply */}
         <Step
           n={3}
-          done={tool.configured}
+          done={conn.kind === "connected"}
           title="Write the config"
           description={
-            tool.config_path ? (
-              <>
-                Updates <span className="break-all font-mono text-[12px] text-fg">{tool.config_path}</span>
-              </>
-            ) : (
-              "Updates the tool's config file on this machine."
-            )
+            <>
+              Updates <span className="break-all font-mono text-[12px] text-fg">{configTarget}</span>
+            </>
           }
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <Button onClick={applyConfig} disabled={configureMut.isPending || !baseUrl}>
+            <Button onClick={applyConfig} disabled={!canWrite}>
               {configureMut.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <FileCog aria-hidden="true" />}
               {tool.configured ? "Rewrite config" : "Write config"}
             </Button>
             {tool.configured && (
-              <Button variant="danger" onClick={resetConfig} disabled={removeMut.isPending}>
+              <Button variant="danger" onClick={resetConfig} disabled={busy}>
                 {removeMut.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RotateCcw aria-hidden="true" />}
                 Remove config
               </Button>
             )}
           </div>
+          {modelMissing && <p className="mt-2 text-[12px] text-fg-muted">Pick a default model first.</p>}
 
           <div role="status" className="empty:hidden">
-            {configureMut.isSuccess && (
+            {configureMut.isSuccess && !configureMut.isPending && (
               <p className="mt-3 flex items-center gap-1.5 text-[12.5px] text-ok">
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Configured. Restart {tool.name} to pick up the change.
               </p>
             )}
-            {removeMut.isSuccess && (
+            {removeMut.isSuccess && !removeMut.isPending && (
               <p className="mt-3 flex items-center gap-1.5 text-[12.5px] text-ok">
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Config removed.
               </p>
             )}
           </div>
-          {configureMut.isError && (
+          {(configureMut.isError || removeMut.isError) && (
             <p role="alert" className="mt-3 flex items-start gap-1.5 text-[12.5px] text-bad">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span className="break-words">{(configureMut.error as Error)?.message}</span>
+              <span className="break-words">{((configureMut.error ?? removeMut.error) as Error)?.message}</span>
             </p>
           )}
         </Step>
@@ -360,6 +449,11 @@ export function CLIToolDetailPage() {
             </summary>
             <div className="mt-3 space-y-4 sm:pl-10">
               {tool.instructions && <p className="text-[12.5px] leading-5 text-fg-muted">{tool.instructions}</p>}
+              {keyMode !== "paste" && (
+                <p className="text-[12.5px] leading-5 text-fg-muted">
+                  Replace <span className="font-mono text-fg">{KEY_PLACEHOLDER}</span> with a full API key.
+                </p>
+              )}
               <SnippetWell files={files} fullText={snippetWithVars} />
               {envVars.length > 0 && <EnvTable vars={envVars} />}
             </div>
@@ -368,6 +462,93 @@ export function CLIToolDetailPage() {
       </ol>
     </>
   );
+}
+
+// CurrentConnection shows what the tool's config holds right now, with a
+// check or warning per field so a stale endpoint or dead key is obvious.
+function CurrentConnection({ tool }: { tool: CLITool }) {
+  const s = tool.settings!;
+  const keyNote: Record<typeof s.key_status, string> = {
+    valid: s.key_name ? `Valid · ${s.key_name}` : "Valid",
+    invalid: "Not a key on this gateway",
+    disabled: s.key_name ? `Disabled · ${s.key_name}` : "Disabled",
+    missing: "No key stored",
+  };
+  return (
+    <section aria-labelledby="cli-current-heading" className="mb-4 max-w-3xl rounded-2xl border border-line bg-surface px-4 py-3.5 shadow-[var(--shadow-card)] sm:px-5">
+      <h2 id="cli-current-heading" className="text-[13px] font-semibold text-fg">
+        Saved in the config
+      </h2>
+      <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12.5px]">
+        <dt className="text-fg-muted">Endpoint</dt>
+        <dd className="flex min-w-0 flex-wrap items-center gap-x-2">
+          <span className="break-all font-mono text-[12px] text-fg">{s.base_url}</span>
+          <StateNote ok={s.endpoint_match} text={s.endpoint_match ? "This gateway" : "Different address"} />
+        </dd>
+        <dt className="text-fg-muted">API key</dt>
+        <dd className="flex min-w-0 flex-wrap items-center gap-x-2">
+          {s.api_key_hint && <span className="font-mono text-[12px] text-fg">{s.api_key_hint}</span>}
+          <StateNote ok={s.key_status === "valid"} text={keyNote[s.key_status]} />
+        </dd>
+        <dt className="text-fg-muted">Model</dt>
+        <dd className="min-w-0 break-all font-mono text-[12px] text-fg">{s.model || <span className="font-sans text-fg-muted">Tool default</span>}</dd>
+        <dt className="text-fg-muted">Files</dt>
+        <dd className="min-w-0 space-y-0.5">
+          {(tool.config_files?.length ? tool.config_files : [tool.config_path]).map((f) => (
+            <span key={f} className="block break-all font-mono text-[12px] text-fg-muted">
+              {f}
+            </span>
+          ))}
+        </dd>
+        {tool.backup_path && (
+          <>
+            <dt className="text-fg-muted">Backup</dt>
+            <dd className="min-w-0 break-all font-mono text-[12px] text-fg-muted" title="The file as it was before KeiRouter first edited it">
+              {tool.backup_path}
+            </dd>
+          </>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function StateNote({ ok, text }: { ok: boolean; text: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-[12px]", ok ? "text-ok" : "text-warn")}>
+      {ok ? (
+        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : (
+        <AlertTriangle className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+      )}
+      {text}
+    </span>
+  );
+}
+
+// joinList renders ["a", "b", "c"] as "a, b and c", skipping empty entries.
+function joinList(items: (string | false | undefined)[]): string {
+  const xs = items.filter(Boolean) as string[];
+  return xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
+}
+
+function normalizeRoot(u: string): string {
+  return u.trim().replace(/\/+$/, "").replace(/\/v1$/, "").toLowerCase();
+}
+
+// dropLinesWith removes snippet lines containing needle (an unfilled optional
+// field) and the trailing comma that would leave behind in JSON.
+function dropLinesWith(text: string, needle: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line.includes(needle)) continue;
+    out.push(line);
+  }
+  for (let i = 0; i < out.length - 1; i++) {
+    if (/^\s*[}\]]/.test(out[i + 1])) out[i] = out[i].replace(/,\s*$/, "");
+  }
+  return out.join("\n");
 }
 
 // ── Layout pieces ────────────────────────────────────────────────────────────
@@ -559,9 +740,15 @@ function SnippetWell({ files, fullText }: { files: SnippetFile[]; fullText: stri
 
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-subtle">
-      <div className="flex items-center justify-between gap-2 border-b border-line pl-1 pr-1.5">
+      {/* On phones the copy buttons drop under the file tabs instead of squeezing them. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 border-b border-line pl-1 pr-1.5">
         {multi ? (
-          <div className="flex min-w-0 gap-1 overflow-x-auto" role="tablist" aria-label="Config files" onKeyDown={onKeyDown}>
+          <div
+            className="flex min-w-0 max-w-full gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            role="tablist"
+            aria-label="Config files"
+            onKeyDown={onKeyDown}
+          >
             {files.map((f, i) => {
               const on = i === idx;
               return (
@@ -576,7 +763,7 @@ function SnippetWell({ files, fullText }: { files: SnippetFile[]; fullText: stri
                   title={f.path}
                   onClick={() => setActive(i)}
                   className={cn(
-                    "relative whitespace-nowrap px-2.5 py-2 font-mono text-[12px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                    "relative shrink-0 whitespace-nowrap px-2.5 py-2.5 font-mono text-[12px] transition-colors sm:py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                     on ? "text-fg" : "text-fg-muted hover:text-fg",
                   )}
                 >
@@ -587,9 +774,11 @@ function SnippetWell({ files, fullText }: { files: SnippetFile[]; fullText: stri
             })}
           </div>
         ) : (
-          <span className="truncate px-2.5 py-2 font-mono text-[12px] text-fg-muted">{file.path || "Snippet"}</span>
+          <span className="min-w-0 flex-1 truncate px-2.5 py-2 font-mono text-[12px] text-fg-muted" title={file.path || undefined}>
+            {file.path || "Snippet"}
+          </span>
         )}
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-1">
           {multi && <CopyButton text={fullText} label="Copy all" toastLabel="config files" />}
           <CopyButton text={file.body} label="Copy" toastLabel={file.path ? basename(file.path) : "snippet"} />
         </div>
@@ -603,12 +792,12 @@ function SnippetWell({ files, fullText }: { files: SnippetFile[]; fullText: stri
         className="focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
       >
         {multi && file.path && (
-          <p className="border-b border-line px-3.5 py-1.5 font-mono text-[11.5px] text-fg-muted">{file.path}</p>
+          <p className="break-all border-b border-line px-3.5 py-1.5 font-mono text-[11.5px] text-fg-muted">{file.path}</p>
         )}
         {file.notes.length > 0 && (
           <p className="border-b border-line px-3.5 py-1.5 text-[12px] text-fg-muted">{file.notes.join(" ")}</p>
         )}
-        <pre className="max-h-[420px] overflow-auto px-3.5 py-3 font-mono text-[12px] leading-5 text-fg">{file.body}</pre>
+        <pre className="max-h-[60vh] overflow-auto px-3.5 py-3 sm:max-h-[420px] font-mono text-[12px] leading-5 text-fg">{file.body}</pre>
       </div>
     </div>
   );
@@ -621,7 +810,14 @@ function CodeWell({ code, label, copyLabel }: { code: string; label: string; cop
         <span className="py-1.5 text-[12px] text-fg-muted">{label}</span>
         <CopyButton text={code} label="Copy" toastLabel={copyLabel} />
       </div>
-      <pre className="overflow-x-auto px-3.5 py-2.5 font-mono text-[12px] leading-5 text-fg">{code}</pre>
+      <pre
+        tabIndex={0}
+        role="region"
+        aria-label={`${label} command`}
+        className="overflow-x-auto px-3.5 py-2.5 font-mono text-[12px] leading-5 text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+      >
+        {code}
+      </pre>
     </div>
   );
 }
@@ -629,7 +825,20 @@ function CodeWell({ code, label, copyLabel }: { code: string; label: string; cop
 function EnvTable({ vars }: { vars: EnvVar[] }) {
   return (
     <div className="overflow-hidden rounded-xl border border-line">
-      <div className="overflow-x-auto">
+      {/* Phones: one stacked entry per variable, full value wraps instead of truncating. */}
+      <ul className="divide-y divide-line md:hidden" aria-label="Environment variables in the config">
+        {vars.map((v) => (
+          <li key={`${v.file}:${v.name}`} className="flex items-start gap-2 py-2.5 pl-3.5 pr-1.5">
+            <div className="min-w-0 flex-1">
+              <p className="break-all font-mono text-[12px] font-medium text-fg">{v.name}</p>
+              <p className="mt-0.5 break-all font-mono text-[12px] text-fg-muted">{v.value || "—"}</p>
+              {v.file && <p className="mt-0.5 break-all font-mono text-[11.5px] text-fg-faint">{basename(v.file)}</p>}
+            </div>
+            <CopyButton text={v.value} toastLabel={`${v.name} value`} />
+          </li>
+        ))}
+      </ul>
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[520px] text-[13px]">
           <caption className="sr-only">Environment variables in the config</caption>
           <thead>
@@ -679,7 +888,7 @@ function CopyButton({ text, label, toastLabel }: { text: string; label?: string;
       onClick={copy}
       aria-label={label ? `${label} ${toastLabel}` : `Copy ${toastLabel}`}
       title={label ? undefined : `Copy ${toastLabel}`}
-      className="inline-flex h-7 min-w-7 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+      className="inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:h-7 sm:min-w-7"
     >
       {copied ? (
         <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" />

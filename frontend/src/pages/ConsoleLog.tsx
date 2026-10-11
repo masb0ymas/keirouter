@@ -62,8 +62,15 @@ const ROW_HEIGHT = 24; // approximate px per collapsed row
 const COL_CHEVRON = "w-6";
 const COL_TIME = "w-[88px]";
 const COL_LEVEL = "w-11";
-// px-3 (12) + chevron (24) + gap (12) + time (88) + gap (12) + level (44) + gap (12)
-const DETAIL_INDENT = "pl-12 sm:pl-[204px]";
+// px-3 (12) + chevron (24) + gap (12) + time (88) + gap (12) + level (44) + gap (12).
+// Phones put the message on its own line under time + level, indented past the
+// chevron (pl-9 = 36px); the detail block lines up with it.
+const DETAIL_INDENT = "pl-9 sm:pl-[204px]";
+
+// Layout: the log fills the viewport only when the screen is wide AND tall
+// ([@media(min-width:48rem)_and_(min-height:40rem)]); otherwise the page flows
+// and the log gets a fixed share of the dynamic viewport, so there is always
+// page around it to scroll with (no scroll trap on phones).
 
 // Normalize an arbitrary server level string into a known LogLevel.
 function normalizeLevel(level: string): LogLevel {
@@ -233,7 +240,7 @@ const LogRow = memo(function LogRow({
       {/* Summary line */}
       <div
         onClick={expandable ? toggle : undefined}
-        className={cn("flex items-start gap-3 px-3 py-[3px] transition-colors hover:bg-hover", expandable && "cursor-pointer")}
+        className={cn("flex flex-wrap items-start gap-x-3 px-3 py-[3px] transition-colors hover:bg-hover sm:flex-nowrap", expandable && "cursor-pointer")}
         style={{ minHeight: ROW_HEIGHT }}
       >
         {expandable ? (
@@ -262,7 +269,7 @@ const LogRow = memo(function LogRow({
         <span className={cn("shrink-0 font-medium", COL_LEVEL, LEVEL_TEXT[level])}>
           {level !== "LOG" ? level : ""}
         </span>
-        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-fg [overflow-wrap:anywhere]">
+        <span className="min-w-0 basis-full whitespace-pre-wrap break-words pl-9 text-fg [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
           <HighlightMessage message={entry.msg} query={query} />
         </span>
       </div>
@@ -301,7 +308,7 @@ const LogRow = memo(function LogRow({
                 e.stopPropagation();
                 onCopyLine(entry);
               }}
-              className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 font-sans text-[12px] text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              className="inline-flex h-9 items-center gap-1 rounded-md px-1.5 font-sans text-[12px] sm:h-6 text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               <Copy className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
               Copy line
@@ -336,12 +343,21 @@ function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:border-line-strong hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:h-4 [&_svg]:w-4",
+        "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-surface sm:h-8 sm:w-8 text-fg-muted transition-colors hover:border-line-strong hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:h-4 [&_svg]:w-4",
         tone === "danger" ? "hover:text-bad" : "hover:text-fg",
       )}
     >
       {children}
     </button>
+  );
+}
+
+function StreamStatus({ status, className }: { status: { label: string; dot: string; live: boolean }; className?: string }) {
+  return (
+    <span className={cn("inline-flex h-8 items-center gap-1.5 px-1 text-[12px] font-medium text-fg-muted", className)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", status.dot, status.live && "live-dot")} aria-hidden="true" />
+      {status.label}
+    </span>
   );
 }
 
@@ -641,9 +657,10 @@ export function ConsoleLogPage() {
   }, [search, activeLevels]);
 
   return (
-    // Fill the viewport below the top bar (h-14) minus the Layout's py-6, so
-    // the log list — not the page — is what scrolls.
-    <div className="flex h-[calc(100dvh-6.5rem)] min-h-[560px] flex-col">
+    // On wide + tall screens, fill the viewport below the top bar (h-14) minus
+    // the Layout's py-6, so the log list (not the page) is what scrolls. Smaller
+    // screens let the page flow (see the Layout note at the top).
+    <div className="flex flex-col [@media(min-width:48rem)_and_(min-height:40rem)]:h-[calc(100dvh-6.5rem)]">
       <PageHeader
         title="Console log"
         description={`Live gateway output; this tab keeps the latest ${MAX_LINES} lines.`}
@@ -652,10 +669,10 @@ export function ConsoleLogPage() {
         {announcement}
       </p>
 
-      <Card className="flex min-h-0 flex-1 flex-col">
+      <Card className="flex flex-col [@media(min-width:48rem)_and_(min-height:40rem)]:min-h-0 [@media(min-width:48rem)_and_(min-height:40rem)]:flex-1">
         {/* ── Toolbar ─────────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2.5">
-          <div className="relative min-w-[220px] flex-1">
+          <div className="relative w-full sm:w-auto sm:min-w-[220px] sm:flex-1">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-faint"
               strokeWidth={1.75}
@@ -669,7 +686,7 @@ export function ConsoleLogPage() {
               placeholder="Search messages and details"
               aria-label="Search logs"
               aria-keyshortcuts="/"
-              className="h-8 w-full rounded-lg border border-input bg-surface pl-9 pr-10 text-[13px] text-fg placeholder:text-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [&::-webkit-search-cancel-button]:hidden"
+              className="h-9 w-full rounded-lg border border-input bg-surface pl-9 pr-10 text-[13px] sm:h-8 text-fg placeholder:text-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [&::-webkit-search-cancel-button]:hidden"
             />
             {search ? (
               <button
@@ -678,7 +695,7 @@ export function ConsoleLogPage() {
                   setSearch("");
                   searchRef.current?.focus();
                 }}
-                className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+                className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
                 aria-label="Clear search"
               >
                 <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -690,7 +707,7 @@ export function ConsoleLogPage() {
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by level">
+          <div className="grid w-full grid-cols-2 gap-1.5 sm:flex sm:w-auto sm:flex-wrap sm:items-center" role="group" aria-label="Filter by level">
             {LEVELS.map((level) => {
               const active = activeLevels.has(level);
               const count = stats[level];
@@ -715,11 +732,9 @@ export function ConsoleLogPage() {
             })}
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
-            <span className="inline-flex h-8 items-center gap-1.5 px-1 text-[12px] font-medium text-fg-muted">
-              <span className={cn("h-1.5 w-1.5 rounded-full", status.dot, status.live && "live-dot")} aria-hidden="true" />
-              {status.label}
-            </span>
+          <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+            {/* On phones the stream status moves to the footer to keep this row on one line. */}
+            <StreamStatus status={status} className="hidden sm:inline-flex" />
             <span className="inline-flex h-8 items-center gap-2 px-1 text-[12.5px] text-fg-muted">
               <Toggle
                 id={`${autoScrollId}-toggle`}
@@ -731,7 +746,7 @@ export function ConsoleLogPage() {
                 Auto-scroll
               </label>
             </span>
-            <span className="mx-0.5 h-5 w-px bg-line" aria-hidden="true" />
+            <span className="ml-auto mr-0.5 h-5 w-px bg-line sm:ml-0.5" aria-hidden="true" />
             <IconButton label={copied ? "Copied" : "Copy visible lines"} onClick={handleCopy} disabled={filtered.length === 0}>
               {copied ? <Check className="text-ok" strokeWidth={1.75} aria-hidden="true" /> : <Copy strokeWidth={1.75} aria-hidden="true" />}
             </IconButton>
@@ -749,11 +764,12 @@ export function ConsoleLogPage() {
           <span className={cn("shrink-0", COL_CHEVRON)} />
           <span className={cn("shrink-0", COL_TIME)}>Time</span>
           <span className={cn("shrink-0", COL_LEVEL)}>Level</span>
-          <span className="min-w-0 flex-1">Message</span>
+          <span className="hidden min-w-0 flex-1 sm:block">Message</span>
         </div>
 
         {/* ── Log output ──────────────────────────────────────────────────── */}
-        <div className="relative min-h-0 flex-1">
+        {/* Phones / short screens: 60% of the dynamic viewport, leaving page above and below to scroll. */}
+        <div className="relative h-[60dvh] min-h-[280px] [@media(min-width:48rem)_and_(min-height:40rem)]:h-auto [@media(min-width:48rem)_and_(min-height:40rem)]:min-h-0 [@media(min-width:48rem)_and_(min-height:40rem)]:flex-1">
           <div
             ref={scrollContainerRef}
             onScroll={handleScroll}
@@ -852,10 +868,13 @@ export function ConsoleLogPage() {
         </div>
 
         {/* ── Footer ──────────────────────────────────────────────────────── */}
-        <div className="flex shrink-0 items-center border-t border-line bg-subtle px-3 py-1.5 text-[12px] tabular-nums text-fg-muted">
-          {filtersActive
-            ? `${filtered.length.toLocaleString()} of ${entries.length.toLocaleString()} lines`
-            : `${entries.length.toLocaleString()} line${entries.length === 1 ? "" : "s"}`}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-line bg-subtle px-3 py-1.5 text-[12px] tabular-nums text-fg-muted">
+          <span>
+            {filtersActive
+              ? `${filtered.length.toLocaleString()} of ${entries.length.toLocaleString()} lines`
+              : `${entries.length.toLocaleString()} line${entries.length === 1 ? "" : "s"}`}
+          </span>
+          <StreamStatus status={status} className="h-auto sm:hidden" />
         </div>
       </Card>
     </div>

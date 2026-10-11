@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/normalizer"
 	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/ponytail"
+	"github.com/mydisha/keirouter/backend/internal/skills"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/terse"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -190,6 +192,9 @@ type Options struct {
 	// minimal output. Both run inside applyTokenSaving before format translation.
 	Headroom headroom.Config
 	Ponytail ponytail.Config
+	// Skills carries the operator's enabled custom skills, pre-rendered into
+	// one block that is prepended to the system prompt.
+	Skills skills.Config
 	// Limits carries already-resolved per-key rate limits. Zero values mean unlimited.
 	Limits limits.EffectiveLimits
 	// OnStreamPending, when set, is invoked once if a streaming attempt is
@@ -227,7 +232,10 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		p.recordLocalTerminal(ctx, req.Metadata, opts.Targets, err, requestStarted)
 		return nil, err
 	}
-	defer release(0)
+	// Settle the TPM reservation with real usage on exit. Paths that never
+	// reach an upstream (inbound block, cache hit, plan failure) refund it.
+	limitTokens := limits.Refund
+	defer func() { release(limitTokens) }()
 
 	// Guardrails inbound: PII masking, prompt-injection block, etc. Runs
 	// before any token-saving transform so the masked text is what the
@@ -301,6 +309,20 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	attempt, hasAttempt := planner.Current()
 	rlRetries := 0
 	waitBudget := CooldownRetryMax
+	// The request timeout bounds the whole non-streaming request, fallbacks
+	// and rate-limit waits included, so a chain of slow providers cannot run
+	// past the configured limit once per attempt.
+	reqTimeout := p.resolvedRequestTimeout()
+	var requestDeadline time.Time
+	if reqTimeout > 0 {
+		requestDeadline = time.Now().Add(reqTimeout)
+	}
+	withRequestDeadline := func(c context.Context) (context.Context, context.CancelFunc) {
+		if requestDeadline.IsZero() {
+			return c, func() {}
+		}
+		return context.WithDeadline(c, requestDeadline)
+	}
 	for i := 0; ; i++ {
 		if !hasAttempt {
 			// Every candidate was tried. When all of them were throttled with
@@ -308,6 +330,9 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			// the client a 429 (parity with the streaming path).
 			wait, shouldRetry := streamRateLimitWait(core.AsProviderError(lastErr), rlRetries, waitBudget)
 			if !shouldRetry {
+				break
+			}
+			if !requestDeadline.IsZero() && time.Now().Add(wait).After(requestDeadline) {
 				break
 			}
 			rlRetries++
@@ -330,6 +355,10 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			fellBack = true
 			req.Metadata.FallbackCount++
 		}
+		if lastErr != nil && !requestDeadline.IsZero() && !time.Now().Before(requestDeadline) {
+			lastErr = requestTimeoutError(lastAttempt, reqTimeout, lastErr)
+			break
+		}
 		lastAttempt = attempt
 		started := time.Now()
 		p.log.Debug("attempt start", "i", i, "provider", attempt.Target.Provider,
@@ -350,28 +379,16 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 
 		// Inject proxy config from credentials into context so the connector's
 		// HTTP client uses the right proxy/relay for this account.
-		callCtx := core.WithProxy(ctx, attempt.Creds)
-		var cancelTimeout context.CancelFunc
-		if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
-			callCtx, cancelTimeout = context.WithTimeout(callCtx, reqTimeout)
-		}
+		callCtx, cancelTimeout := withRequestDeadline(core.WithProxy(ctx, attempt.Creds))
 		resp, callErr := attempt.Conn.Chat(callCtx, attemptReq, attempt.Creds)
-		if cancelTimeout != nil {
-			cancelTimeout() // cancel immediately to avoid timer goroutine leak
-		}
+		cancelTimeout() // cancel immediately to avoid timer goroutine leak
 		if callErr != nil && isUnsupportedCloudflareImageError(callErr, attempt.Target.Provider, attempt.Target.Model, attemptReq) {
 			p.log.Debug("retrying Cloudflare request without images", "model", attempt.Target.Model)
 			retryReq := cloneForAttempt(attemptBaseReq, attempt.Target.Model)
 			capability.StripImages(retryReq)
-			retryCtx := core.WithProxy(ctx, attempt.Creds)
-			var retryCancel context.CancelFunc
-			if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
-				retryCtx, retryCancel = context.WithTimeout(retryCtx, reqTimeout)
-			}
+			retryCtx, retryCancel := withRequestDeadline(core.WithProxy(ctx, attempt.Creds))
 			resp, callErr = attempt.Conn.Chat(retryCtx, retryReq, attempt.Creds)
-			if retryCancel != nil {
-				retryCancel()
-			}
+			retryCancel()
 		}
 		latency := time.Since(started)
 
@@ -385,18 +402,12 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		if callErr != nil && isStreamRequiredError(callErr) {
 			p.log.Debug("provider requires streaming, retrying via Stream()",
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model)
-			streamCtx := core.WithProxy(ctx, attempt.Creds)
-			var streamCancel context.CancelFunc
-			if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
-				streamCtx, streamCancel = context.WithTimeout(streamCtx, reqTimeout)
-			}
+			streamCtx, streamCancel := withRequestDeadline(core.WithProxy(ctx, attempt.Creds))
 			streamReq := cloneForAttempt(attemptBaseReq, attempt.Target.Model)
 			stream, sErr := attempt.Conn.Stream(streamCtx, streamReq, attempt.Creds, core.StreamConfig{})
 			if sErr == nil {
 				sResp, drainErr := drainStream(stream, req.Model)
-				if streamCancel != nil {
-					streamCancel()
-				}
+				streamCancel()
 				if drainErr == nil {
 					callErr = nil
 					resp = sResp
@@ -405,9 +416,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 					callErr = drainErr
 				}
 			} else {
-				if streamCancel != nil {
-					streamCancel()
-				}
+				streamCancel()
 				callErr = sErr
 			}
 		}
@@ -437,6 +446,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 				pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, attempt, pe, priorAttemptUsage,
 					latency, time.Since(requestStarted), 0, nil, fellBack)
 				p.budgetConfirm(scope, cost)
+				limitTokens = failedUsageTokens(priorAttemptUsage)
 				return nil, pe
 			}
 			var nextAttempt dispatch.Attempt
@@ -492,6 +502,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			// successfully and should remain healthy.
 			p.recordSuccessTelemetry(req.Metadata, attempt, resp.Usage, latency, 0, fellBack, cost)
 			p.budgetConfirm(scope, cost)
+			limitTokens = usageTokens(resp.Usage)
 			return nil, blockErr
 		}
 
@@ -500,6 +511,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		p.cacheStore(ctx, vec, resp)
 		// Confirm budget reservation — usage is now recorded in DB.
 		p.budgetConfirm(scope, cost)
+		limitTokens = usageTokens(resp.Usage)
 		p.log.Debug("attempt success", "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "latency_ms", latency.Milliseconds(),
 			"prompt_tok", resp.Usage.PromptTokens, "completion_tok", resp.Usage.CompletionTokens)
@@ -523,7 +535,21 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, lastAttempt, lastErr, priorAttemptUsage,
 		lastLatency, time.Since(requestStarted), 0, nil, fellBack)
 	p.budgetConfirm(scope, cost)
+	limitTokens = failedUsageTokens(priorAttemptUsage)
 	return nil, pe
+}
+
+// requestTimeoutError reports that the non-streaming request timeout ran out
+// before another fallback attempt could start.
+func requestTimeoutError(last dispatch.Attempt, timeout time.Duration, lastErr error) *core.ProviderError {
+	return &core.ProviderError{
+		Kind:     core.ErrTimeout,
+		Scope:    core.FailureScopeRequest,
+		Provider: last.Target.Provider,
+		Model:    last.Target.Model,
+		Message:  fmt.Sprintf("request timeout of %s reached before the next fallback; last error: %v", timeout, lastErr),
+		Cause:    lastErr,
+	}
 }
 
 // StreamResult is delivered before chunks start flowing, identifying the chosen
@@ -591,7 +617,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 	// Streamed output is scanned in pumpStream.
 	if gres := p.guardrails.Inbound(ctx, req); gres.Action == guardrails.ActionBlock {
 		p.log.Debug("guardrails blocked inbound stream", "reason", gres.Reason)
-		release(0)
+		release(limits.Refund)
 		err := &core.ProviderError{Kind: core.ErrPolicyBlocked, Message: gres.Reason}
 		p.recordLocalTerminal(ctx, req.Metadata, opts.Targets, err, requestStarted)
 		return nil, err
@@ -608,7 +634,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 	attempts, err := p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 	if err != nil {
 		p.log.Debug("stream dispatcher plan failed", "err", err)
-		release(0)
+		release(limits.Refund)
 		p.budgetRelease(scope)
 		p.recordLocalTerminal(ctx, req.Metadata, opts.Targets, err, requestStarted)
 		return nil, err
@@ -629,7 +655,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		pe := providerErrorForAttempt(sErr, lastAttempt)
 		wait, shouldRetry := streamRateLimitWait(pe, rlRetries, waitBudget)
 		if !shouldRetry {
-			release(0)
+			release(limits.Refund)
 			if !budgetReleased {
 				p.budgetRelease(scope)
 			}
@@ -645,7 +671,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			release(0)
+			release(limits.Refund)
 			if !budgetReleased {
 				p.budgetRelease(scope)
 			}
@@ -658,6 +684,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		// Re-reserve budget if it was released by streamExec (not-fallbackable path).
 		if budgetReleased {
 			if rerr := p.budget.Reserve(ctx, scope, 0); rerr != nil {
+				release(limits.Refund)
 				status, errorKind := terminalStatusAndKind(rerr)
 				p.recordOutcomeWithTTFT(context.WithoutCancel(ctx), req.Metadata, lastAttempt, core.Usage{},
 					status, errorKind, false, lastLatency, time.Since(requestStarted), 0, nil)
@@ -668,6 +695,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		attempts, err = p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 		if err != nil {
 			p.log.Debug("stream re-plan after rate-limit failed", "err", err)
+			release(limits.Refund)
 			p.budgetRelease(scope)
 			pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, lastAttempt, sErr, core.Usage{},
 				lastLatency, time.Since(requestStarted), 0, nil, true)
@@ -769,7 +797,6 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 					lastLatency = attemptLatency
 					if !pe.Fallbackable() {
 						p.recordFailureTelemetry(req.Metadata, attempt, pe, attemptLatency, false)
-						release(0)
 						p.budgetRelease(scope)
 						return nil, pe, true, attempt, attemptLatency, fellBack
 					}
@@ -815,11 +842,14 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 				var completeOnce sync.Once
 				completeFunc := func(streamErr error) {
 					completeOnce.Do(func() {
-						defer release(0)
+						var settled int64
+						defer func() { release(settled) }()
 						recordCtx := context.WithoutCancel(ctx)
 						usage := capturedStreamUsage(req, capture.Bytes())
+						settled = usageTokens(usage)
 						if errors.Is(streamErr, context.Canceled) {
 							usage = partialStreamUsage(req, usage, 0)
+							settled = usageTokens(usage)
 							status, errorKind := terminalStatusAndKind(streamErr)
 							cost := p.recordOutcomeWithTTFT(recordCtx, meta, acc, usage, status, errorKind, false,
 								time.Since(started), time.Since(requestStarted), ttft, saveCopy)
@@ -874,7 +904,6 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			if !pe.Fallbackable() {
 				p.recordFailureTelemetry(req.Metadata, attempt, pe, attemptLatency, false)
 				p.log.Debug("stream attempt not fallbackable, aborting", "kind", pe.Kind)
-				release(0)
 				p.budgetRelease(scope)
 				return nil, pe, true, attempt, attemptLatency, fellBack
 			}
@@ -908,7 +937,6 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			lastLatency = attemptLatency
 			if !pe.Fallbackable() {
 				p.recordFailureTelemetry(req.Metadata, attempt, pe, attemptLatency, false)
-				release(0)
 				p.budgetRelease(scope)
 				return nil, pe, true, attempt, attemptLatency, fellBack
 			}
@@ -953,7 +981,6 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 	if lastAttempt.Target.Provider == "" && lastAttempt.Target.Model == "" {
 		lastAttempt = attemptForTargets(opts.Targets)
 	}
-	release(0)
 	p.budgetRelease(scope)
 	return nil, lastErr, true, lastAttempt, lastLatency, fellBack
 }
@@ -975,7 +1002,6 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 	ttft *time.Duration, save *saveState, scope budget.Scope, release limits.ReleaseFunc,
 	fellBack bool, cancelUpstream context.CancelFunc) {
 	defer close(out)
-	defer release(0)
 	defer cancelUpstream()
 
 	// Resolve effective stall timeout (dynamic from dashboard or static config).
@@ -1017,6 +1043,9 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 	// and an error is reported when none does.
 	var sawFinish, sawToolCall bool
 	nameRestorer := newToolNameRestorer(req.Tools)
+	// Every exit settles the rate-limit reservation with the reported usage,
+	// or an estimate from the streamed output when the upstream sent none.
+	defer func() { release(usageTokens(partialStreamUsage(req, usage, completionChars))) }()
 
 	settleClientCancellation := func() {
 		cancelUpstream()
@@ -1358,7 +1387,9 @@ func (p *Pipeline) acquireLimit(ctx context.Context, req *core.ChatRequest, opts
 		APIKeyID:        req.Metadata.APIKeyID,
 		Provider:        provider,
 		Model:           model,
-		EstimatedTokens: estimateChatTokens(req),
+		EstimatedTokens: int64(core.EstimatePromptTokens(req)),
+		Generative:      true,
+		MaxOutputTokens: maxOutputTokens(req),
 		Limits:          opts.Limits,
 	})
 	if err != nil {
@@ -1377,15 +1408,30 @@ func firstTarget(targets []dispatch.Target) (string, string) {
 	return targets[0].Provider, targets[0].Model
 }
 
-func estimateChatTokens(req *core.ChatRequest) int64 {
-	if req == nil {
-		return 0
-	}
-	tokens := int64(core.EstimatePromptTokens(req))
+// maxOutputTokens is the client's requested output cap, 0 when unset.
+func maxOutputTokens(req *core.ChatRequest) int64 {
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		tokens += int64(*req.MaxTokens)
+		return int64(*req.MaxTokens)
 	}
-	return tokens
+	return 0
+}
+
+// usageTokens is the token count a request is charged against TPM. Zero means
+// the upstream reported nothing, which keeps the up-front reservation.
+func usageTokens(u core.Usage) int64 {
+	if u.TotalTokens > 0 {
+		return int64(u.TotalTokens)
+	}
+	return int64(u.PromptTokens + u.CompletionTokens)
+}
+
+// failedUsageTokens settles a failed request: tokens burned by failed
+// attempts are charged, otherwise the reservation is refunded.
+func failedUsageTokens(u core.Usage) int64 {
+	if tokens := usageTokens(u); tokens > 0 {
+		return tokens
+	}
+	return limits.Refund
 }
 
 func rateLimitError(decision limits.Decision) *core.ProviderError {
@@ -1485,8 +1531,10 @@ func (p *Pipeline) planWithCooldownRetry(ctx context.Context, tenantID string, t
 // (terse, caveman, ponytail) token-saving transforms in place, in a fixed
 // deterministic order before format translation:
 //
-//	normalizer -> slimmer -> headroom -> normalizer (input) -> terse -> caveman -> ponytail (output)
+//	normalizer -> slimmer -> headroom -> normalizer (input) -> skills -> terse -> caveman -> ponytail (output)
 //
+// Skills prepends the operator's custom instructions ahead of the client's
+// system text before any output-saver touches it.
 // Terse and caveman both inject system-prompt directives; if both are enabled,
 // terse runs first and caveman appends after, but in practice only one
 // output-saver is used. Ponytail appends its block last, preserving any
@@ -1515,6 +1563,7 @@ func (p *Pipeline) applyTokenSaving(ctx context.Context, req *core.ChatRequest, 
 	// final message history again before it reaches a provider connector.
 	normalizer.Apply(req)
 
+	skills.Apply(req, opts.Skills)
 	terse.Apply(req, opts.Terse)
 	caveman.Apply(req, opts.Caveman)
 	ponytail.Apply(req, opts.Ponytail)

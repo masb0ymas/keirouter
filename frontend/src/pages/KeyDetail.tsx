@@ -122,7 +122,7 @@ function CopyIconButton({ label, value, title, description }: { label: string; v
       }
       aria-label={label}
       title={label}
-      className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
+      className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-fg sm:h-7 sm:w-7", FOCUS_RING)}
     >
       {copied ? <Check className="h-3.5 w-3.5 text-ok" strokeWidth={1.75} aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />}
     </button>
@@ -154,11 +154,12 @@ function PanelCard({ icon, title, action, children, footer }: { icon: LucideIcon
   );
 }
 
+// Phones: status on top, buttons stacked full width with the save action first.
 function SaveBar({ status, children }: { status: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-line bg-subtle px-4 py-3 sm:px-5">
+    <div className="flex flex-col gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:px-5">
       <div role="status" className="min-w-0 flex-1 text-[12.5px]">{status}</div>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center [&>button]:w-full sm:[&>button]:w-auto">{children}</div>
     </div>
   );
 }
@@ -295,7 +296,7 @@ export function KeyDetailPage() {
           <IconTile icon={ICONS.keys} size="lg" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-[22px] font-semibold leading-tight tracking-[-0.02em] text-fg">{key.name}</h1>
+              <h1 className="min-w-0 max-w-full truncate text-[22px] font-semibold leading-tight tracking-[-0.02em] text-fg">{key.name}</h1>
               {key.disabled ? <Badge tone="neutral">Disabled</Badge> : <Badge tone="success">Active</Badge>}
             </div>
             <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] text-fg-muted">
@@ -344,7 +345,7 @@ export function KeyDetailPage() {
         </div>
       </header>
 
-      <div className="mb-5 flex gap-1 overflow-x-auto border-b border-line" role="tablist" aria-label={`${key.name} sections`} onKeyDown={onTabKeyDown}>
+      <div className="mb-5 flex gap-1 overflow-x-auto border-b border-line [scrollbar-width:none]" role="tablist" aria-label={`${key.name} sections`} onKeyDown={onTabKeyDown}>
         {TAB_VALUES.map((value) => {
           const active = tab === value;
           return (
@@ -358,7 +359,7 @@ export function KeyDetailPage() {
               tabIndex={active ? 0 : -1}
               onClick={() => setTab(value)}
               className={cn(
-                "relative -mb-px inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors",
+                "relative -mb-px inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors",
                 FOCUS_RING,
                 active ? "text-fg" : "text-fg-muted hover:text-fg",
               )}
@@ -518,7 +519,7 @@ function GeneralTab({
               const pctText = r.pct >= 100 ? "Limit reached" : `${r.pct.toFixed(r.pct < 10 ? 1 : 0)}%`;
               return (
                 <div key={r.id} className="space-y-1.5 px-4 py-3 sm:px-5">
-                  <div className="flex items-baseline gap-2 text-[13px]">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
                     <span className="font-medium text-fg">{r.title}</span>
                     <span className="tabular-nums text-fg-muted">
                       {r.used} of {r.limit}
@@ -805,7 +806,45 @@ function ModelsTab({ apiKey, plan, plansLoading }: { apiKey: APIKey; plan?: Plan
               {editing && show === "selected" ? "Nothing selected yet." : "No models match."}
             </p>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            {/* Phones: one row per model; in edit mode the whole row toggles it. */}
+            <ul className="divide-y divide-line md:hidden" aria-label={editing ? "Models to allow" : "Allowed models"}>
+              {paged.map((r) => {
+                const checked = selectedSet.has(r.id);
+                const isPattern = !r.option;
+                return (
+                  <li key={`${r.option?.providerId ?? "custom"}:${r.id}`} className={cn("flex items-center gap-1 pr-2", editing && checked && "bg-accent-500/5")}>
+                    {editing ? (
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 py-2.5 pl-4">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleModel(r.id)}
+                          aria-label={`Allow ${r.option?.name || r.id}`}
+                          className="h-4 w-4 shrink-0 rounded border-input accent-accent-500"
+                        />
+                        <ModelSummary row={r} resolving={catalog.loading} />
+                      </label>
+                    ) : (
+                      <div className="min-w-0 flex-1 py-2.5 pl-4">
+                        <ModelSummary row={r} resolving={catalog.loading} />
+                      </div>
+                    )}
+                    {editing && isPattern && (
+                      <button
+                        type="button"
+                        onClick={() => setModels(models.filter((m) => m !== r.id))}
+                        aria-label={`Remove ${r.id}`}
+                        className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg", FOCUS_RING)}
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[620px] text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -887,11 +926,38 @@ function ModelsTab({ apiKey, plan, plansLoading }: { apiKey: APIKey; plan?: Plan
                 </tbody>
               </table>
             </div>
+            </>
           )}
           {pages > 1 && <TablePagination page={page} pages={pages} total={total} onPage={setPage} />}
         </>
       )}
     </PanelCard>
+  );
+}
+
+/** Phone row content: model name, then provider and id on one muted line. */
+function ModelSummary({ row: r, resolving }: { row: ModelRowData; resolving: boolean }) {
+  if (!r.option) {
+    return (
+      <span className="min-w-0 flex-1">
+        <span className="block break-all font-mono text-[12.5px] font-medium text-fg">{r.id}</span>
+        <span className="block text-[12px] text-fg-muted">
+          {resolving ? "Resolving…" : r.id.includes("*") ? "Wildcard pattern" : "Custom model"}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-2.5">
+      <ProviderLogo icon={r.option.icon} name={r.option.providerName} size={18} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium text-fg" title={r.option.name}>{r.option.name}</span>
+        <span className="block truncate text-[12px] text-fg-muted">
+          {r.option.providerName}
+          {r.option.name !== r.id && <span className="font-mono text-fg-faint"> · {r.id}</span>}
+        </span>
+      </span>
+    </span>
   );
 }
 
@@ -1078,7 +1144,7 @@ function GuardrailsTab({ apiKey }: { apiKey: APIKey }) {
               <ChevronDown className={cn("h-4 w-4 text-fg-faint transition-transform", showMerged && "rotate-180")} strokeWidth={1.75} aria-hidden="true" />
             </button>
             {showMerged && (
-              <pre id={mergedId} className="max-h-72 overflow-auto border-t border-line bg-subtle px-4 py-3 font-mono text-[11.5px] leading-5 text-fg-muted sm:px-5">{JSON.stringify(effective.data?.policy ?? {}, null, 2)}</pre>
+              <pre id={mergedId} tabIndex={0} role="region" aria-label="Merged configuration" className={cn("max-h-72 overflow-auto border-t border-line bg-subtle px-4 py-3 font-mono text-[11.5px] leading-5 text-fg-muted sm:px-5", FOCUS_RING)}>{JSON.stringify(effective.data?.policy ?? {}, null, 2)}</pre>
             )}
           </div>
         )}

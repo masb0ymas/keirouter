@@ -143,9 +143,11 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
           ) : (
             <ul className="space-y-2.5">
               {rules.map((r) => (
-                <li key={r.rule} className="grid grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 text-[12.5px]">
+                // Phones: rule + figures on one line, the bar full width below.
+                // From sm: rule · bar · figures in one row.
+                <li key={r.rule} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 text-[12.5px] sm:grid-cols-[minmax(0,9rem)_1fr_auto] sm:gap-y-0">
                   <span className="truncate font-mono text-fg" title={r.rule}>{r.rule}</span>
-                  <span className="h-1.5 overflow-hidden rounded-full bg-track" aria-hidden="true">
+                  <span className="order-last col-span-2 h-1.5 overflow-hidden rounded-full bg-track sm:order-none sm:col-span-1" aria-hidden="true">
                     <span className="block h-full rounded-full bg-accent-500" style={{ width: `${Math.max(3, (r.bytes_saved / maxBytes) * 100)}%` }} />
                   </span>
                   <span className="whitespace-nowrap text-right tabular-nums text-fg-muted">
@@ -161,10 +163,10 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
           <ul className="divide-y divide-line">
             {shapers.map((s) => (
               <li key={s.label} className="flex items-baseline justify-between gap-3 py-2 text-[13px] first:pt-0">
-                <span>
+                <span className="min-w-0">
                   <span className="text-fg">{s.label}</span> <span className="text-[12px] text-fg-faint">{s.hint}</span>
                 </span>
-                <span className="tabular-nums text-fg-muted">
+                <span className="shrink-0 tabular-nums text-fg-muted">
                   {s.count ? (
                     <>
                       <span className="text-fg">{share(s.count)}</span> · {fmtNum(s.count)}

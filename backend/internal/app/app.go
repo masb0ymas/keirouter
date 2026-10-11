@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/mydisha/keirouter/backend/internal/audit"
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/cache"
@@ -66,6 +69,11 @@ type App struct {
 	healthChecker      *healthcheck.Checker
 	providerHealth     *health.Service
 	probeRunner        *health.ProbeRunner
+	audit              *audit.Recorder
+	auditSweeper       *audit.Sweeper
+	// sharedState releases the redis limiter/budget resources; nil with the
+	// memory backend.
+	sharedState func()
 
 	// bg tracks long-lived background workers that touch the DB (oauth
 	// keepalive, health checker, cooldown sweeper) so shutdown can wait for
@@ -111,6 +119,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	if err != nil {
 		return nil, fmt.Errorf("app: build sealer: %w", err)
 	}
+
+	auditRec, auditSweeper := buildAudit(cfg, db, masterKey, version, log)
 
 	// Construct services.
 	v := vault.New(sealer)
@@ -246,6 +256,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	}
 	proxyNotifier := gateway.NewProxyNotifier(proxyEnabled, proxyURL, noProxy)
 	disp.SetGlobalProxy(proxyNotifier)
+	oauth.SetGlobalProxy(proxyNotifier)
 
 	cfg.Limits.Enabled = true
 	if raw, err := db.Settings().Get(ctx, "endpoint_settings"); err == nil && raw != "" {
@@ -334,11 +345,12 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		log.Info("guardrails: audit retention sweeper started", "days", cfg.Guardrails.AuditRetentionDays)
 	}
 
-	limiter := limits.NewMemory(limits.MemoryConfig{
-		Enabled:         cfg.Limits.Enabled,
-		Window:          cfg.Limits.Window,
-		CleanupInterval: cfg.Limits.CleanupInterval,
-	})
+	// Tunable options start from config.yaml; the gateway overlays any
+	// dashboard overrides when it is constructed.
+	limiter, sharedState, err := buildLimiter(ctx, cfg, bud, mtr, log)
+	if err != nil {
+		return nil, err
+	}
 
 	// Actionable provider health dashboard: real-traffic telemetry aggregation
 	// + synthetic probe runner. Best-effort, never blocks the request path.
@@ -352,6 +364,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	}, log, db.ProviderHealth())
 	probeRunner := health.NewProbeRunner(log, db.ProviderHealth(), db.Accounts(), connRegistry, v,
 		cfg.ProviderHealth.LatencyThresholds, cfg.ProviderHealth.ProbeTimeout)
+	probeRunner.SetCredentialPreparer(disp)
 
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher:         disp,
@@ -416,6 +429,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		DB:                   db,
 		Identity:             idSvc,
 		Auth:                 authSvc,
+		Audit:                auditRec,
 		Pipeline:             pipe,
 		Conns:                connRegistry,
 		Chains:               db.Chains(),
@@ -471,7 +485,107 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, audit: auditRec, auditSweeper: auditSweeper, sharedState: sharedState}, nil
+}
+
+// keyLimiter is the per-key limiter surface the pipeline and gateway need.
+type keyLimiter interface {
+	limits.Limiter
+	gateway.RateLimitController
+}
+
+// buildLimiter builds the per-key limiter. With limits.backend=redis it also
+// moves budget spend onto shared redis counters, so every replica behind a
+// load balancer enforces the same RPM/TPM windows, concurrency pool and
+// budgets. The returned closer releases the redis resources (nil for memory).
+func buildLimiter(ctx context.Context, cfg config.Config, bud *budget.Engine, mtr *meter.Meter, log *slog.Logger) (keyLimiter, func(), error) {
+	opts := limits.Options{
+		ReconcileTokens:       cfg.Limits.ReconcileTokens,
+		OutputTokenFloor:      cfg.Limits.OutputTokenFloor,
+		OutputReserveCap:      cfg.Limits.OutputReserveCap,
+		ConcurrencyRetryAfter: cfg.Limits.ConcurrencyRetryAfter,
+	}
+	if cfg.Limits.Backend != "redis" {
+		return limits.NewMemory(limits.MemoryConfig{
+			Enabled:         cfg.Limits.Enabled,
+			Window:          cfg.Limits.Window,
+			CleanupInterval: cfg.Limits.CleanupInterval,
+			Options:         opts,
+		}), nil, nil
+	}
+
+	ropts, err := redis.ParseURL(cfg.Limits.RedisURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("app: limits.redis_url: %w", err)
+	}
+	// Honour the per-call deadlines on the request path instead of the
+	// client's multi-second socket timeouts.
+	ropts.ContextTimeoutEnabled = true
+	client := redis.NewClient(ropts)
+	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		// Not fatal: requests follow limits.fail_mode until redis answers.
+		log.Warn("limits: redis unreachable at startup", "addr", ropts.Addr, "fail_mode", cfg.Limits.FailMode, "err", err)
+	}
+
+	rl := limits.NewRedis(limits.RedisConfig{
+		Client:   client,
+		Enabled:  cfg.Limits.Enabled,
+		Window:   cfg.Limits.Window,
+		Options:  opts,
+		LeaseTTL: cfg.Limits.LeaseTTL,
+		Timeout:  cfg.Limits.RedisTimeout,
+		FailMode: cfg.Limits.FailMode,
+		Logger:   log,
+	})
+	bud.EnableSharedCounter(budget.NewRedisCounter(client, cfg.Limits.RedisTimeout, log), cfg.Limits.BudgetCounterTTL, log)
+	mtr.SetRecordObserver(bud.ObserveUsage)
+	log.Info("limits: shared redis backend (rate limits, concurrency, budgets)",
+		"addr", ropts.Addr, "fail_mode", cfg.Limits.FailMode)
+	return rl, func() {
+		bud.Close()
+		rl.Close()
+		_ = client.Close()
+	}, nil
+}
+
+// buildAudit starts the audit recorder (and its OTLP exporter and retention
+// sweeper) when audit.enabled is set; both results are nil otherwise.
+func buildAudit(cfg config.Config, db *store.DB, masterKey []byte, version string, log *slog.Logger) (*audit.Recorder, *audit.Sweeper) {
+	if !cfg.Audit.Enabled {
+		return nil, nil
+	}
+	instanceID := audit.NewInstanceID()
+	var exp audit.Exporter
+	otlpCfg, ok, err := audit.ResolveOTLPConfig(cfg.Audit.OTLP, version, instanceID, os.Getenv)
+	switch {
+	case err != nil:
+		log.Warn("audit: OTLP export disabled", "err", err)
+	case ok:
+		otlpCfg.Logger = log
+		exp = audit.NewOTLPExporter(otlpCfg)
+		log.Info("audit: exporting events as OTLP logs", "endpoint", otlpCfg.URL)
+	}
+	rec := audit.New(db.Audit(), exp, audit.Config{
+		BufferSize:      cfg.Audit.BufferSize,
+		Key:             audit.DeriveKey(masterKey),
+		InstanceID:      instanceID,
+		DefaultTenantID: store.DefaultTenantID,
+		Logger:          log,
+	})
+	rec.Record(audit.Event{
+		Action: "system.start", ActorType: audit.ActorSystem, ActorID: "system", ResourceType: "system",
+		Details: map[string]string{
+			"version":        version,
+			"instance_id":    instanceID,
+			"database":       cfg.Database.Driver,
+			"limits_backend": cfg.Limits.Backend,
+		},
+	})
+	sweeper := audit.NewSweeper(db.Audit(), log, time.Duration(cfg.Audit.RetentionDays)*24*time.Hour)
+	sweeper.Start()
+	return rec, sweeper
 }
 
 // seedFreeAccounts auto-creates a default account for providers that are free
@@ -614,6 +728,12 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		if a.meter != nil {
 			a.meter.Close(a.cfg.Meter.ShutdownFlushTimeout)
+		}
+		a.auditSweeper.Stop(2 * time.Second)
+		a.audit.Record(audit.Event{Action: "system.stop", ActorType: audit.ActorSystem, ActorID: "system", ResourceType: "system"})
+		a.audit.Stop(5 * time.Second)
+		if a.sharedState != nil {
+			a.sharedState()
 		}
 		if a.providerHealth != nil {
 			a.providerHealth.Close(5 * time.Second)

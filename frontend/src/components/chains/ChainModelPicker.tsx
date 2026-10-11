@@ -136,14 +136,20 @@ export function ChainModelPicker({ value, providers, onChange, autoFocus = false
         <ChevronDown className={cn("h-4 w-4 shrink-0 text-fg-faint transition-transform", open && "rotate-180")} strokeWidth={1.75} aria-hidden="true" />
       </button>
       {open && (
+        // Below sm the picker is a bottom sheet over a scrim so it always fits
+        // the phone viewport; from sm up it is a popover under the trigger.
+        <div className="fixed inset-0 z-50 bg-black/45 sm:hidden" aria-hidden="true" onClick={() => close()} />
+      )}
+      {open && (
         <div
           id={popoverId}
           role="dialog"
           aria-label={`${label ?? "Model"} picker`}
-          className="absolute left-0 z-30 mt-1 w-full min-w-[min(320px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-float)]"
+          className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-line bg-surface pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-float)] sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:z-30 sm:mt-1 sm:max-h-none sm:w-full sm:min-w-[320px] sm:rounded-2xl sm:border-b sm:pb-0"
         >
-          <div className="flex items-center gap-1.5 border-b border-line p-1.5">
-            <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-input bg-surface px-2.5 focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500">
+          <p className="shrink-0 px-3 pt-3 text-[13px] font-semibold text-fg sm:hidden" aria-hidden="true">{label ?? "Model"}</p>
+          <div className="flex shrink-0 items-center gap-1.5 border-b border-line p-1.5">
+            <div className="flex h-9 min-w-0 flex-1 sm:h-8 items-center gap-2 rounded-lg border border-input bg-surface px-2.5 focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500">
               <Search className="h-4 w-4 shrink-0 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
               <input
                 type="search"
@@ -160,14 +166,14 @@ export function ChainModelPicker({ value, providers, onChange, autoFocus = false
             <button
               type="button"
               onClick={() => close()}
-              className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg", focusRing)}
+              className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-8 sm:w-8", focusRing)}
               aria-label="Close model picker"
             >
               <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
             </button>
           </div>
           {custom ? (
-            <div className="space-y-3 p-3">
+            <div className="min-h-0 space-y-3 overflow-y-auto p-3">
               <label className="block space-y-1.5">
                 <span className="text-[12.5px] font-medium text-fg">Provider</span>
                 <Select value={value.provider} onChange={(event) => onChange({ provider: event.target.value, model: "" })}>
@@ -195,7 +201,7 @@ export function ChainModelPicker({ value, providers, onChange, autoFocus = false
             </div>
           ) : (
             <>
-              <div id={`${uid}-list`} ref={listRef} role="listbox" aria-label="Models" onKeyDown={onListKeyDown} aria-busy={catalog.loading || undefined} className="max-h-64 overflow-y-auto p-1">
+              <div id={`${uid}-list`} ref={listRef} role="listbox" aria-label="Models" onKeyDown={onListKeyDown} aria-busy={catalog.loading || undefined} className="min-h-0 flex-1 overflow-y-auto p-1 sm:max-h-64 sm:flex-none">
                 {catalog.loading ? (
                   <p role="status" className="px-3 py-4 text-center text-[12.5px] text-fg-muted">Loading models…</p>
                 ) : filtered.length === 0 ? (
@@ -211,7 +217,7 @@ export function ChainModelPicker({ value, providers, onChange, autoFocus = false
                         aria-selected={isSelected}
                         onClick={() => select(model.providerId, model.id)}
                         className={cn(
-                          "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover focus:outline-none focus-visible:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500",
+                          "flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left sm:min-h-0 transition-colors hover:bg-hover focus:outline-none focus-visible:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500",
                           isSelected && "bg-accent-500/10",
                         )}
                       >
@@ -234,11 +240,11 @@ export function ChainModelPicker({ value, providers, onChange, autoFocus = false
               {!catalog.loading && filtered.length > 0 && (
                 <span className="sr-only" role="status">{filtered.length} models shown</span>
               )}
-              <div className="border-t border-line p-1">
+              <div className="shrink-0 border-t border-line p-1">
                 <button
                   type="button"
                   onClick={() => setCustom(true)}
-                  className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12.5px] font-medium text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+                  className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[12.5px] font-medium text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none sm:h-8 focus-visible:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
                 >
                   <Plus className="h-3.5 w-3.5 text-tone" strokeWidth={1.75} aria-hidden="true" />
                   Use a custom model ID

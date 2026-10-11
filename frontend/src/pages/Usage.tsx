@@ -35,7 +35,7 @@ const USAGE_REFRESH_DEBOUNCE_MS = 8_000;
 
 const FOCUS_RING = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
 const SEARCH_INPUT =
-  "h-8 w-full rounded-lg border border-input bg-surface pl-8 text-[13px] text-fg placeholder:text-fg-faint hover:border-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
+  "h-9 w-full rounded-lg border border-input bg-surface pl-8 sm:h-8 text-[13px] text-fg placeholder:text-fg-faint hover:border-fg-faint focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
 
 type Tab = "overview" | "providers" | "models" | "requests";
 const TABS: { value: Tab; label: string }[] = [
@@ -128,6 +128,20 @@ export function UsagePage() {
   const data = insights.data;
   const setTab = (t: Tab) => setParam("tab", t, "overview");
 
+  // The tab row scrolls sideways on phones; keep the selected tab visible
+  // (deep links like ?tab=requests would otherwise land on an off-screen tab).
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const tabsReady = !!data;
+  useEffect(() => {
+    const list = tabListRef.current;
+    const activeTab = list?.querySelector<HTMLElement>("[data-active]");
+    if (!list || !activeTab) return;
+    const left = activeTab.getBoundingClientRect().left - list.getBoundingClientRect().left + list.scrollLeft;
+    const right = left + activeTab.offsetWidth;
+    if (left < list.scrollLeft) list.scrollTo({ left: Math.max(0, left - 16) });
+    else if (right > list.scrollLeft + list.clientWidth) list.scrollTo({ left: right - list.clientWidth + 16 });
+  }, [tab, tabsReady]);
+
   return (
     <>
       <PageHeader
@@ -136,7 +150,7 @@ export function UsagePage() {
         action={
           <>
             <div
-              className="inline-flex h-8 items-center rounded-xl border border-line bg-subtle p-0.5"
+              className="inline-flex h-9 items-center rounded-xl border border-line bg-subtle p-0.5 sm:h-8"
               role="radiogroup"
               aria-label="Period"
               onKeyDown={(e) => onGroupArrowKeys(e, "radio")}
@@ -165,7 +179,7 @@ export function UsagePage() {
               onClick={handleRefresh}
               aria-label="Refresh usage"
               aria-busy={refreshing}
-              className={cn("inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
+              className={cn("inline-flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-8 sm:w-8", FOCUS_RING)}
             >
               <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} strokeWidth={1.75} aria-hidden="true" />
             </button>
@@ -186,7 +200,14 @@ export function UsagePage() {
           <KpiStrip data={data} />
           <PricingCoverageNotice summary={data.summary} />
 
-          <div className="flex gap-1 overflow-x-auto border-b border-line" role="tablist" aria-label="Usage views" onKeyDown={(e) => onGroupArrowKeys(e, "tab")}>
+          {/* Phones: one scrollable row bleeding to the screen edges; the active tab is kept in view. */}
+          <div
+            ref={tabListRef}
+            className="-mx-4 flex gap-1 overflow-x-auto border-b border-line px-4 [scrollbar-width:none] sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden"
+            role="tablist"
+            aria-label="Usage views"
+            onKeyDown={(e) => onGroupArrowKeys(e, "tab")}
+          >
             {TABS.map((t) => {
               const count =
                 t.value === "providers"
@@ -206,9 +227,10 @@ export function UsagePage() {
                   aria-selected={active}
                   aria-controls={`${tabsId}-panel`}
                   tabIndex={active ? 0 : -1}
+                  data-active={active || undefined}
                   onClick={() => setTab(t.value)}
                   className={cn(
-                    "relative inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors",
+                    "relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors",
                     FOCUS_RING,
                     active ? "text-fg" : "text-fg-muted hover:text-fg",
                   )}
@@ -378,6 +400,11 @@ function Empty({ icon = Inbox, title, action }: { icon?: LucideIcon; title: stri
 
 const TH = "px-4 py-2 font-medium";
 const THEAD = "border-b border-line bg-subtle text-left text-[12px] text-fg-faint";
+// Accounting tables scroll sideways on narrow screens; the identity column
+// stays pinned so every number keeps its row label. Opaque backgrounds (and the
+// row-hover colour via `group`) stop scrolled cells showing through.
+const STICKY_TH = "sticky left-0 z-[1] bg-subtle";
+const STICKY_TD = "sticky left-0 z-[1] bg-surface transition-colors group-hover:bg-hover";
 
 // ── Provider distribution ────────────────────────────────────────────────────
 
@@ -458,11 +485,11 @@ function ProviderAccounting({
         {rows.length === 0 ? (
           <Empty icon={ICONS.providers} title="No provider usage in this period" />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" role="region" aria-label="Provider accounting table">
             <table className="w-full min-w-[860px] text-[13px]">
               <thead>
                 <tr className={THEAD}>
-                  <th scope="col" className={TH}>Provider</th>
+                  <th scope="col" className={cn(TH, STICKY_TH)}>Provider</th>
                   <th scope="col" className={cn(TH, "text-right")}>Requests</th>
                   <th scope="col" className={cn(TH, "text-right")}>Input</th>
                   <th scope="col" className={cn(TH, "text-right")}>Output</th>
@@ -475,11 +502,11 @@ function ProviderAccounting({
                 {rows.map((p) => {
                   const h = healthBy.get(p.provider);
                   return (
-                    <tr key={p.provider} className="transition-colors hover:bg-hover">
-                      <td className="px-4 py-2.5">
+                    <tr key={p.provider} className="group transition-colors hover:bg-hover">
+                      <td className={cn("px-4 py-2.5", STICKY_TD)}>
                         <div className="flex items-center gap-2.5">
                           <ProviderLogo icon={p.icon} name={p.display_name || p.provider} size={22} />
-                          <div className="min-w-0">
+                          <div className="min-w-0 max-w-[160px] sm:max-w-none">
                             <Link to={`/providers/${p.provider}`} className={cn("block truncate rounded-sm font-medium text-fg hover:underline", FOCUS_RING)}>
                               {p.display_name || p.provider}
                             </Link>
@@ -614,11 +641,11 @@ function ModelUsageTable({ models, loading, error }: { models: ModelUsage[]; loa
         />
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" role="region" aria-label="Model accounting table">
             <table className="w-full min-w-[880px] text-[13px]">
               <thead>
                 <tr className={THEAD}>
-                  <SortableHeader label="Model" k="model" active={sortKey} dir={dir} onSort={sort} />
+                  <SortableHeader label="Model" k="model" active={sortKey} dir={dir} onSort={sort} sticky />
                   <SortableHeader label="Requests" k="requests" active={sortKey} dir={dir} onSort={sort} right />
                   <SortableHeader label="Tokens" k="tokens" active={sortKey} dir={dir} onSort={sort} right />
                   <SortableHeader label="Cost" k="cost" active={sortKey} dir={dir} onSort={sort} right />
@@ -628,12 +655,12 @@ function ModelUsageTable({ models, loading, error }: { models: ModelUsage[]; loa
               </thead>
               <tbody className="divide-y divide-line">
                 {paged.map((m) => (
-                  <tr key={`${m.provider}/${m.model}`} className="transition-colors hover:bg-hover">
-                    <td className="px-4 py-2.5">
+                  <tr key={`${m.provider}/${m.model}`} className="group transition-colors hover:bg-hover">
+                    <td className={cn("px-4 py-2.5", STICKY_TD)}>
                       <div className="flex items-center gap-2.5">
                         <ProviderLogo icon={m.provider_icon} name={m.provider_name || m.provider} size={22} />
                         <div className="min-w-0">
-                          <div className="max-w-xs truncate font-mono text-[12.5px] text-fg" title={m.model}>
+                          <div className="max-w-[160px] truncate font-mono text-[12.5px] text-fg sm:max-w-xs" title={m.model}>
                             {m.model}
                           </div>
                           <div className="truncate text-[11.5px] text-fg-muted">{m.provider_name || m.provider}</div>
@@ -676,10 +703,26 @@ function ModelUsageTable({ models, loading, error }: { models: ModelUsage[]; loa
   );
 }
 
-function SortableHeader({ label, k, active, dir, onSort, right }: { label: string; k: ModelSortKey; active: ModelSortKey; dir: "asc" | "desc"; onSort: (k: ModelSortKey) => void; right?: boolean }) {
+function SortableHeader({
+  label,
+  k,
+  active,
+  dir,
+  onSort,
+  right,
+  sticky,
+}: {
+  label: string;
+  k: ModelSortKey;
+  active: ModelSortKey;
+  dir: "asc" | "desc";
+  onSort: (k: ModelSortKey) => void;
+  right?: boolean;
+  sticky?: boolean;
+}) {
   const Icon = active !== k ? ArrowUpDown : dir === "asc" ? ArrowUp : ArrowDown;
   return (
-    <th scope="col" aria-sort={active === k ? (dir === "asc" ? "ascending" : "descending") : "none"} className={cn(TH, right && "text-right")}>
+    <th scope="col" aria-sort={active === k ? (dir === "asc" ? "ascending" : "descending") : "none"} className={cn(TH, right && "text-right", sticky && STICKY_TH)}>
       <button
         type="button"
         onClick={() => onSort(k)}
@@ -735,7 +778,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
         icon={ICONS.requests}
         title="Recent requests"
         action={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <div className="relative w-full sm:w-56">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
               <input
@@ -751,13 +794,14 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
                   type="button"
                   onClick={() => setQuery("")}
                   aria-label="Clear search"
-                  className={cn("absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-fg-muted hover:text-fg", FOCUS_RING)}
+                  className={cn("absolute right-0.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-fg-muted hover:text-fg sm:right-1 sm:h-6 sm:w-6", FOCUS_RING)}
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               )}
             </div>
-            <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Status" onKeyDown={(e) => onGroupArrowKeys(e, "radio")}>
+            {/* Wraps to at most two lines on phones; wider gaps there keep taps apart. */}
+            <div className="flex flex-wrap gap-2 sm:gap-1" role="radiogroup" aria-label="Status" onKeyDown={(e) => onGroupArrowKeys(e, "radio")}>
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.value}
@@ -767,7 +811,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
                   tabIndex={status === f.value ? 0 : -1}
                   onClick={() => setStatus(f.value)}
                   className={cn(
-                    "h-8 rounded-lg border px-2.5 text-[12px] font-medium transition-colors",
+                    "h-9 rounded-lg border px-2.5 text-[12px] font-medium transition-colors sm:h-8",
                     FOCUS_RING,
                     status === f.value ? "border-accent-500/30 bg-accent-500/10 text-link" : "border-line bg-surface text-fg-muted hover:text-fg",
                   )}
@@ -790,7 +834,52 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            {/* Phones: each request is one card; tapping it opens the same detail drawer. */}
+            <ul className="divide-y divide-line md:hidden" aria-label="Requests">
+              {paged.map((r) => (
+                <li key={r.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(r)}
+                    className="block w-full px-4 py-3 text-left transition-colors hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={20} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-[12.5px] text-fg" title={`${r.provider}/${r.model}`}>
+                          {r.model || "—"}
+                        </span>
+                        {(r.api_key_name || r.client) && (
+                          <span className="block truncate text-[11.5px] text-fg-muted">
+                            {r.api_key_name && <span className="font-mono">{r.api_key_name}</span>}
+                            {r.api_key_name && r.client && " · "}
+                            {r.client && prettyClient(r.client)}
+                          </span>
+                        )}
+                      </span>
+                      <span className="flex shrink-0 flex-col items-end gap-1">
+                        <StatusBadge status={r.status} />
+                        {r.usage_source !== "provider" && <UsageSourceBadge source={r.usage_source} />}
+                      </span>
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap gap-x-1.5 text-[12px] tabular-nums text-fg-muted">
+                      <span title={formatDateTime(r.created_at)}>{relativeTime(r.created_at)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        {fmtCompact(r.prompt_tokens)} → {fmtCompact(r.completion_tokens)}
+                        <span className="sr-only"> tokens in and out</span>
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className={cn(r.pricing_status === "missing" ? "text-warn" : "text-fg")}>{requestCharged(r)}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{fmtMs(r.end_to_end_latency_ms)}</span>
+                    </span>
+                    <span className="sr-only">. Open request details</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[820px] text-[13px]">
                 <thead>
                   <tr className={THEAD}>
@@ -852,7 +941,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
                         </td>
                         <Cell main={`${fmtInteger(r.prompt_tokens)} → ${fmtInteger(r.completion_tokens)}`} sub={tokenNotes || undefined} />
                         <td className="whitespace-nowrap px-4 py-2.5 text-right tabular-nums">
-                          <div className={cn(r.pricing_status === "missing" ? "text-warn" : "text-fg")}>{r.pricing_status === "missing" ? "Unpriced" : r.cache_hit ? "$0.00" : fmtUSD(r.cost_usd)}</div>
+                          <div className={cn(r.pricing_status === "missing" ? "text-warn" : "text-fg")}>{requestCharged(r)}</div>
                           {r.pricing_status !== "priced" && r.pricing_status !== "missing" && <div className="text-[11.5px] text-fg-muted">{humanize(r.pricing_status)}</div>}
                         </td>
                         <Cell main={fmtMs(r.end_to_end_latency_ms)} sub={`upstream ${fmtMs(r.upstream_latency_ms)}`} />
@@ -868,12 +957,16 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
       </Panel>
 
       <Sheet open={selected != null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent side="right" className="w-full max-w-[640px]">
+        <SheetContent side="right" className="w-full sm:max-w-[640px]">
           {selected && <RequestDetail record={selected} onClose={() => setSelected(null)} />}
         </SheetContent>
       </Sheet>
     </>
   );
+}
+
+function requestCharged(r: RecentActivity): string {
+  return r.pricing_status === "missing" ? "Unpriced" : r.cache_hit ? "$0.00" : fmtUSD(r.cost_usd);
 }
 
 // ── Request detail drawer ────────────────────────────────────────────────────
@@ -926,7 +1019,7 @@ function RequestDetail({ record, onClose }: { record: RecentActivity; onClose: (
   return (
     // The Sheet portals outside <main data-tone>, so restate the Monitor tone for the group icons.
     <div data-tone="blue" className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-line px-5 pb-0 pt-4">
+      <div className="border-b border-line px-4 pb-0 pt-4 sm:px-5">
         <div className="flex items-start gap-3">
           <ProviderLogo icon={record.provider_icon} name={record.provider_name || record.provider} size={32} className="mt-0.5" />
           <div className="min-w-0 flex-1">
@@ -946,7 +1039,7 @@ function RequestDetail({ record, onClose }: { record: RecentActivity; onClose: (
             type="button"
             onClick={onClose}
             aria-label="Close request details"
-            className={cn("-mr-1.5 flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted hover:bg-hover hover:text-fg", FOCUS_RING)}
+            className={cn("-mr-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted hover:bg-hover hover:text-fg sm:h-8 sm:w-8", FOCUS_RING)}
           >
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -979,12 +1072,13 @@ function RequestDetail({ record, onClose }: { record: RecentActivity; onClose: (
         role="tabpanel"
         aria-labelledby={`${tabsId}-tab-${tab}`}
         tabIndex={0}
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 focus:outline-none sm:px-5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
       >
         <NoticeList notices={shown} />
         {tab === "overview" ? (
           <>
-            <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-line bg-line">
+            {/* Three across once there is room for the values; stacked on narrow phones. */}
+            <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-line bg-line min-[420px]:grid-cols-3">
               <Metric label="Total tokens" value={fmtInteger(totalTokens)} hint={`${fmtInteger(record.prompt_tokens)} in · ${fmtInteger(record.completion_tokens)} out`} />
               <Metric label="Charged" value={charged} hint={cacheHit ? "Served from cache" : humanize(record.pricing_status)} />
               <Metric label="End to end" value={fmtMs(record.end_to_end_latency_ms)} hint={`TTFT ${fmtMs(record.ttft_ms)}`} />
@@ -1190,7 +1284,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       type="button"
       onClick={copy}
       aria-label={label}
-      className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-hover hover:text-fg", FOCUS_RING)}
+      className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-6 sm:w-6", FOCUS_RING)}
     >
       <Copy className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
     </button>

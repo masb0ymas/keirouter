@@ -102,7 +102,7 @@ const onTabKeyDown = rovingKeyDown("tab");
 
 function RangeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <div className="inline-flex h-8 items-center rounded-xl border border-line bg-subtle p-0.5" role="radiogroup" aria-label="Time range" onKeyDown={onRadioKeyDown}>
+    <div className="inline-flex h-9 max-w-full items-center overflow-x-auto rounded-xl border border-line bg-subtle p-0.5 [scrollbar-width:none] sm:h-8" role="radiogroup" aria-label="Time range" onKeyDown={onRadioKeyDown}>
       {RANGES.map((r) => {
         const active = value === r.value;
         return (
@@ -115,7 +115,7 @@ function RangeSelect({ value, onChange }: { value: string; onChange: (v: string)
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(r.value)}
             className={cn(
-              "inline-flex h-full min-w-[30px] items-center justify-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium transition-colors",
+              "inline-flex h-full min-w-[30px] shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition-colors sm:px-2.5",
               FOCUS,
               active ? "bg-surface text-fg ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
               r.value !== "15m" && "font-mono",
@@ -210,7 +210,7 @@ function Overview() {
                 qc.invalidateQueries({ queryKey: ["health-chains"] });
               }}
               aria-label="Refresh health"
-              className={cn("inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg", FOCUS)}
+              className={cn("inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-surface text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-8 sm:w-8", FOCUS)}
             >
               <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} strokeWidth={1.75} aria-hidden="true" />
             </button>
@@ -230,30 +230,32 @@ function Overview() {
         <div className="space-y-6">
           <SummaryStrip summary={overview.data.summary} rows={overview.data.providers} />
 
-          <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-b border-line">
-            <div className="-mb-px flex gap-1" role="tablist" aria-label="Health views" onKeyDown={onTabKeyDown}>
-              {TABS.map((t) => {
-                const active = tab === t.value;
-                return (
-                  <button
-                    key={t.value}
-                    id={`health-tab-${t.value}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    aria-controls="health-tabpanel"
-                    tabIndex={active ? 0 : -1}
-                    onClick={() => setParam("tab", t.value === "providers" ? "" : t.value)}
-                    className={cn("relative px-3 py-2.5 text-[13px] font-medium transition-colors", FOCUS, active ? "text-fg" : "text-fg-muted hover:text-fg")}
-                  >
-                    {t.label}
-                    {active && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent-500" aria-hidden="true" />}
-                  </button>
-                );
-              })}
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-x-3 sm:gap-y-2 sm:border-b sm:border-line">
+            <div className="border-b border-line sm:border-b-0">
+              <div className="-mb-px flex gap-1 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Health views" onKeyDown={onTabKeyDown}>
+                {TABS.map((t) => {
+                  const active = tab === t.value;
+                  return (
+                    <button
+                      key={t.value}
+                      id={`health-tab-${t.value}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      aria-controls="health-tabpanel"
+                      tabIndex={active ? 0 : -1}
+                      onClick={() => setParam("tab", t.value === "providers" ? "" : t.value)}
+                      className={cn("relative shrink-0 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors focus-visible:ring-inset", FOCUS, active ? "text-fg" : "text-fg-muted hover:text-fg")}
+                    >
+                      {t.label}
+                      {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent-500" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             {(tab === "providers" || tab === "models") && (
-              <div className="mb-2 flex flex-wrap gap-1" role="radiogroup" aria-label="Filter by status" onKeyDown={onRadioKeyDown}>
+              <div className="flex flex-wrap gap-1.5 sm:mb-2 sm:gap-1" role="radiogroup" aria-label="Filter by status" onKeyDown={onRadioKeyDown}>
                 {STATUS_FILTERS.map((f) => {
                   const active = status === f.value;
                   return (
@@ -265,7 +267,7 @@ function Overview() {
                       tabIndex={active ? 0 : -1}
                       onClick={() => setParam("status", f.value)}
                       className={cn(
-                        "h-7 rounded-lg border px-2.5 text-[12px] font-medium transition-colors",
+                        "h-8 rounded-lg border px-2.5 text-[12px] font-medium transition-colors sm:h-7",
                         FOCUS,
                         active ? "border-accent-500/30 bg-accent-500/10 text-link" : "border-line bg-surface text-fg-muted hover:text-fg",
                       )}
@@ -335,6 +337,20 @@ function stripLabel(name: string, strip: HealthTimelineProvider) {
   return `${name}: ${down} down and ${degraded} degraded of ${strip.buckets.length} intervals`;
 }
 
+function UptimeStrip({ name, strip, className }: { name: string; strip: HealthTimelineProvider; className?: string }) {
+  return (
+    <div className={cn("flex gap-[2px]", className)} role="img" aria-label={stripLabel(name, strip)}>
+      {strip.buckets.map((b) => (
+        <span key={b.start} className={cn("h-3.5 min-w-[2px] flex-1 rounded-[1.5px]", TICK_CLASS[b.status] ?? "bg-track")} title={`${fmtTime(b.start)} · ${b.status}${b.requests ? ` · ${b.requests} req` : ""}`} />
+      ))}
+    </div>
+  );
+}
+
+function successClass(rate: number) {
+  return rate >= 99 ? "text-fg" : rate >= 95 ? "text-warn" : "text-bad";
+}
+
 function ProviderTable({
   rows,
   meta,
@@ -353,7 +369,61 @@ function ProviderTable({
     return <EmptyPanel icon={ICONS.health} title="No provider telemetry in this range" hint="Health appears once requests flow or a probe runs." />;
   }
   return (
-    <TableCard footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
+    <TableCard
+      label="Providers table"
+      footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}
+      mobile={
+        <ul className="divide-y divide-line md:hidden" aria-label="Providers">
+          {paged.map((r) => {
+            const p = meta.get(r.provider);
+            const strip = strips.get(r.provider);
+            const name = p?.display_name ?? r.provider;
+            const href = `/provider-health/${encodeURIComponent(r.provider)}`;
+            return (
+              <li key={r.provider} className="relative px-4 py-3 transition-colors active:bg-hover">
+                <div className="flex items-start justify-between gap-3">
+                  {/* The link's overlay makes the whole card a tap target. */}
+                  <Link to={href} className={cn("flex min-w-0 items-center gap-2.5 rounded-md after:absolute after:inset-0 after:content-['']", FOCUS)}>
+                    <ProviderLogo icon={p?.icon} name={name} size={22} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] font-medium text-fg">{name}</span>
+                      <span className="block truncate font-mono text-[11.5px] text-fg-faint">
+                        {r.provider} · {r.accounts} account{r.accounts === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                  </Link>
+                  <span className="shrink-0">
+                    <HealthStatusBadge status={r.status as HealthStatus} issue={r.main_issue} />
+                  </span>
+                </div>
+                {strip && <UptimeStrip name={name} strip={strip} className="mt-2.5" />}
+                <p className="mt-2 flex flex-wrap gap-x-1.5 text-[12px] tabular-nums text-fg-muted">
+                  <span>{r.requests != null ? r.requests.toLocaleString("en-US") : "—"} requests</span>
+                  <span aria-hidden="true">·</span>
+                  <span className={successClass(r.success_rate)}>{fmtPct(r.success_rate)} success</span>
+                  <span aria-hidden="true">·</span>
+                  <span>p95 {fmtMs(r.latency_p95_ms)}</span>
+                  {r.fallback_count > 0 && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-warn">
+                        {r.fallback_count.toLocaleString("en-US")} fallback{r.fallback_count === 1 ? "" : "s"}
+                      </span>
+                    </>
+                  )}
+                </p>
+                {r.main_issue && (
+                  <p className="mt-1 line-clamp-2 text-[12px] text-fg">
+                    {fmtIssue(r.main_issue)}
+                    {r.recommendation && <span className="text-fg-muted"> · {r.recommendation}</span>}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      }
+    >
       <table className="w-full min-w-[860px] text-[13px]">
         <thead>
           <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -390,11 +460,7 @@ function ProviderTable({
                 </td>
                 <td className="px-4 py-2.5">
                   {strip ? (
-                    <div className="flex w-40 gap-[2px]" role="img" aria-label={stripLabel(name, strip)}>
-                      {strip.buckets.map((b) => (
-                        <span key={b.start} className={cn("h-3.5 min-w-[2px] flex-1 rounded-[1.5px]", TICK_CLASS[b.status] ?? "bg-track")} title={`${fmtTime(b.start)} · ${b.status}${b.requests ? ` · ${b.requests} req` : ""}`} />
-                      ))}
-                    </div>
+                    <UptimeStrip name={name} strip={strip} className="w-40" />
                   ) : (
                     <span className="text-[12px] text-fg-faint">—</span>
                   )}
@@ -407,7 +473,7 @@ function ProviderTable({
                     </span>
                   )}
                 </td>
-                <td className={cn("whitespace-nowrap px-4 py-2.5 text-right tabular-nums", r.success_rate >= 99 ? "text-fg" : r.success_rate >= 95 ? "text-warn" : "text-bad")}>{fmtPct(r.success_rate)}</td>
+                <td className={cn("whitespace-nowrap px-4 py-2.5 text-right tabular-nums", successClass(r.success_rate))}>{fmtPct(r.success_rate)}</td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-right tabular-nums text-fg-muted">{fmtMs(r.latency_p95_ms)}</td>
                 <td className="max-w-[260px] px-4 py-2.5">
                   {r.main_issue ? (
@@ -471,16 +537,39 @@ function EmptyPanel({ icon, title, hint }: { icon: LucideIcon; title: string; hi
   );
 }
 
-function TableCard({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
+function TableCard({ children, footer, label, mobile }: { children: ReactNode; footer?: ReactNode; label: string; mobile?: ReactNode }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
-      <div className="overflow-x-auto">{children}</div>
+      {/* `mobile` is a md:hidden list that stands in for the table on phones. */}
+      {mobile}
+      {/* Focusable so keyboard users can scroll a table wider than the screen (WCAG 2.1.1). */}
+      <div
+        className={cn("overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500", mobile != null && "hidden md:block")}
+        tabIndex={0}
+        role="region"
+        aria-label={label}
+      >
+        {children}
+      </div>
       {footer}
     </div>
   );
 }
 
-function TargetCell({ provider, model }: { provider?: string; model?: string }) {
+// Sticky first column keeps the row identity in view while a table scrolls sideways.
+const TH_STICKY = "sticky left-0 z-[1] bg-subtle px-4 py-2 font-medium";
+const TD_STICKY = "sticky left-0 z-[1] bg-surface px-4 py-2.5 group-hover:bg-hover";
+
+function TargetCell({ provider, model, stack }: { provider?: string; model?: string; stack?: boolean }) {
+  // `stack` puts the provider above the model on phones so a narrow sticky cell stays readable.
+  if (stack) {
+    return (
+      <span className="flex min-w-0 flex-col font-mono text-[12.5px] sm:flex-row sm:items-baseline sm:gap-1">
+        <span className="truncate text-[11.5px] text-fg-muted sm:shrink-0 sm:text-[12.5px]">{provider}/</span>
+        <span className="truncate text-fg" title={model}>{model}</span>
+      </span>
+    );
+  }
   return (
     <span className="flex min-w-0 items-baseline gap-1 font-mono text-[12.5px]">
       <span className="text-fg-muted">{provider}/</span>
@@ -500,11 +589,11 @@ function ModelTable({ query }: { query: UseQueryResult<{ models: HealthModelRow[
 function ModelTableInner({ rows }: { rows: HealthModelRow[] }) {
   const { page, pages, paged, setPage, total } = useClientPagination(rows, 10);
   return (
-    <TableCard footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
+    <TableCard label="Models table" footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
       <table className="w-full min-w-[760px] text-[13px]">
         <thead>
           <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-            <th scope="col" className={TH}>Model</th>
+            <th scope="col" className={TH_STICKY}>Model</th>
             <th scope="col" className={TH}>Status</th>
             <th scope="col" className={TH}>Score</th>
             <th scope="col" className={THR}>Success</th>
@@ -515,8 +604,8 @@ function ModelTableInner({ rows }: { rows: HealthModelRow[] }) {
         </thead>
         <tbody className="divide-y divide-line">
           {paged.map((r: HealthModelRow, i: number) => (
-            <tr key={`${r.provider}/${r.model}-${i}`} className="hover:bg-hover">
-              <td className="max-w-[320px] px-4 py-2.5"><TargetCell provider={r.provider} model={r.model ?? ""} /></td>
+            <tr key={`${r.provider}/${r.model}-${i}`} className="group hover:bg-hover">
+              <td className={cn(TD_STICKY, "max-w-[150px] sm:max-w-[320px]")}><TargetCell provider={r.provider} model={r.model ?? ""} stack /></td>
               <td className="px-4 py-2.5"><HealthStatusBadge status={r.status as HealthStatus} issue={r.main_issue} /></td>
               <td className="px-4 py-2.5"><HealthScoreRing score={r.score} /></td>
               <td className="px-4 py-2.5 text-right tabular-nums text-fg">{fmtPct(r.success_rate)}</td>
@@ -554,11 +643,11 @@ function ChainTable({ query }: { query: UseQueryResult<{ chains: HealthChainRow[
 function ChainTableInner({ rows, selected, onSelect }: { rows: HealthChainRow[]; selected: string | null; onSelect: (id: string) => void }) {
   const { page, pages, paged, setPage, total } = useClientPagination(rows, 10);
   return (
-    <TableCard footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
+    <TableCard label="Chains table" footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
       <table className="w-full min-w-[760px] text-[13px]">
         <thead>
           <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-            <th scope="col" className={TH}>Chain</th>
+            <th scope="col" className={TH_STICKY}>Chain</th>
             <th scope="col" className={TH}>Status</th>
             <th scope="col" className={THR}>Requests</th>
             <th scope="col" className={THR}>Fallback rate</th>
@@ -571,8 +660,8 @@ function ChainTableInner({ rows, selected, onSelect }: { rows: HealthChainRow[];
           {paged.map((r) => {
             const open = selected === r.chain_id;
             return (
-              <tr key={r.chain_id} className={cn("cursor-pointer hover:bg-hover", open && "bg-subtle")} onClick={() => onSelect(r.chain_id)}>
-                <td className="px-4 py-2.5">
+              <tr key={r.chain_id} className={cn("group cursor-pointer hover:bg-hover", open && "bg-subtle")} onClick={() => onSelect(r.chain_id)}>
+                <td className={cn(TD_STICKY, "max-w-[160px] sm:max-w-[280px]", open && "bg-subtle")}>
                   <button
                     id={`chain-row-${r.chain_id}`}
                     type="button"
@@ -582,7 +671,7 @@ function ChainTableInner({ rows, selected, onSelect }: { rows: HealthChainRow[];
                     }}
                     aria-expanded={open}
                     aria-controls={open ? "chain-detail" : undefined}
-                    className={cn("rounded-md text-left font-medium text-fg hover:underline", FOCUS)}
+                    className={cn("rounded-md text-left font-medium text-fg [overflow-wrap:anywhere] hover:underline", FOCUS)}
                   >
                     {r.name}
                   </button>
@@ -636,7 +725,7 @@ function ChainDetail({ id, onClose }: { id: string; onClose: () => void }) {
             )
           }
           action={
-            <button type="button" onClick={onClose} aria-label="Close chain detail" className={cn("inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg", FOCUS)}>
+            <button type="button" onClick={onClose} aria-label="Close chain detail" className={cn("inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg sm:h-7 sm:w-7", FOCUS)}>
               <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
             </button>
           }
@@ -649,14 +738,17 @@ function ChainDetail({ id, onClose }: { id: string; onClose: () => void }) {
       ) : q.data ? (
         <ol className="divide-y divide-line">
           {q.data.steps.map((step) => (
-            <li key={step.position} className="flex items-center gap-3 px-4 py-2.5">
+            <li key={step.position} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
               <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-line bg-subtle text-[11.5px] font-medium tabular-nums text-fg-muted" aria-label={`Step ${step.position + 1}`}>{step.position + 1}</span>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 basis-[calc(100%-36px)] sm:basis-0">
                 <TargetCell provider={step.provider} model={step.model} />
                 {step.main_issue && <p className="mt-0.5 text-[12px] text-fg-muted">{fmtIssue(step.main_issue)}</p>}
               </div>
-              <HealthStatusBadge status={step.status} />
-              <HealthScoreRing score={step.score} />
+              {/* Wraps under the target on phones, aligned with it. */}
+              <div className="flex items-center gap-3 pl-9 sm:pl-0">
+                <HealthStatusBadge status={step.status} />
+                <HealthScoreRing score={step.score} />
+              </div>
             </li>
           ))}
           {q.data.fallback_provider && (
@@ -692,11 +784,11 @@ function ProbeHistoryTable({ range }: { range: string }) {
   const pages = Math.max(1, Math.ceil(total / 50));
   if (rows.length === 0) return <EmptyPanel icon={Play} title="No probes in this range" hint="Run a probe from a provider's health page." />;
   return (
-    <TableCard footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
+    <TableCard label="Probe history table" footer={<TablePagination page={page} pages={pages} total={total} onPage={setPage} />}>
       <table className="w-full min-w-[820px] text-[13px]">
         <thead>
           <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
-            <th scope="col" className={TH}>Time</th>
+            <th scope="col" className={TH_STICKY}>Time</th>
             <th scope="col" className={TH}>Model</th>
             <th scope="col" className={TH}>Result</th>
             <th scope="col" className={THR}>Latency</th>
@@ -707,8 +799,8 @@ function ProbeHistoryTable({ range }: { range: string }) {
         </thead>
         <tbody className="divide-y divide-line">
           {rows.map((r: HealthProbeRow, i) => (
-            <tr key={i} className="hover:bg-hover">
-              <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-fg-muted">{fmtTime(r.time)}</td>
+            <tr key={i} className="group hover:bg-hover">
+              <td className={cn(TD_STICKY, "whitespace-nowrap tabular-nums text-fg-muted")}>{fmtTime(r.time)}</td>
               <td className="max-w-[320px] px-4 py-2.5"><TargetCell provider={r.provider} model={r.model} /></td>
               <td className="px-4 py-2.5">
                 <span className={cn("inline-flex items-center gap-1.5 text-[12.5px]", r.status === "success" ? "text-fg" : "text-bad")}>
@@ -779,7 +871,7 @@ function ProviderDetail({ provider }: { provider: string }) {
             </Link>
           </li>
           <li aria-hidden="true" className="text-fg-faint">/</li>
-          <li aria-current="page" className="text-fg">{name}</li>
+          <li aria-current="page" className="min-w-0 truncate text-fg">{name}</li>
         </ol>
       </nav>
 
@@ -793,7 +885,7 @@ function ProviderDetail({ provider }: { provider: string }) {
               <HealthScoreRing score={d.score} />
             </div>
             <p className="mt-0.5 flex flex-wrap items-center gap-2 text-[13px] text-fg-muted">
-              <span className="font-mono text-[12.5px]">{d.provider}</span>
+              <span className="break-all font-mono text-[12.5px]">{d.provider}</span>
               {meta && (
                 <>
                   <span aria-hidden="true" className="text-fg-faint">·</span>
@@ -902,17 +994,17 @@ function ManualProbeInline({ provider, models }: { provider: string; models: str
     return <p className="text-[13px] text-fg-muted">No models to probe yet.</p>;
   }
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
       <label htmlFor="probe-model" className="sr-only">Model to probe</label>
       <select
         id="probe-model"
         value={model}
         onChange={(e) => setModel(e.target.value)}
-        className={cn("h-9 min-w-0 flex-1 rounded-lg border border-input bg-surface px-2.5 font-mono text-[12.5px] text-fg focus:border-accent-500", FOCUS)}
+        className={cn("h-9 w-full min-w-0 rounded-lg border border-input bg-surface px-2.5 font-mono text-[12.5px] text-fg focus:border-accent-500 sm:w-auto sm:flex-1", FOCUS)}
       >
         {models.map((m) => <option key={m} value={m}>{m}</option>)}
       </select>
-      <Button type="button" onClick={run} disabled={running || !model} aria-busy={running}>
+      <Button type="button" className="w-full sm:w-auto" onClick={run} disabled={running || !model} aria-busy={running}>
         {running ? <RefreshCw className="animate-spin" aria-hidden="true" /> : <Play aria-hidden="true" />}
         {running ? "Running…" : "Run probe"}
       </Button>

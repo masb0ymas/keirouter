@@ -150,7 +150,7 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <img
-              src="/keirouter-logo.png"
+              src="/keirouter-favicon.png"
               alt="KeiRouter"
               style={{ width: 34, height: 34, objectFit: "contain" }}
               crossOrigin="anonymous"

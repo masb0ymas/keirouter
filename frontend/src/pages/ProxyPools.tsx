@@ -67,9 +67,18 @@ function DialogTitle({ icon: Icon, children }: { icon: LucideIcon; children: Rea
   );
 }
 
+// On phones the footer stacks full-width buttons (primary last, matching tab order); from sm up
+// they sit in a row on the right.
 function DialogFooter({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center justify-end gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3">{children}</div>;
+  return (
+    <div className="flex flex-col gap-2 rounded-b-2xl border-t border-line bg-subtle px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end [&>button]:w-full sm:[&>button]:w-auto">
+      {children}
+    </div>
+  );
 }
+
+// Dialog bodies scroll inside the dialog on phones so the footer stays visible.
+const dialogBody = "max-h-[calc(100dvh-15rem)] overflow-y-auto sm:max-h-none sm:overflow-visible";
 
 const checkboxClass = "h-4 w-4 rounded border-input accent-accent-500";
 
@@ -291,22 +300,23 @@ export function ProxyPoolsPage() {
                 </>
               )}
             </p>
-            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {/* Phones: bulk actions take their own full-width row and share it evenly. */}
+            <div className={cn("flex flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:gap-1.5", selected.size > 0 ? "w-full" : "ml-auto")}>
               {selected.size > 0 ? (
                 <>
-                  <Button variant="ghost" onClick={handleBulkTest} disabled={checking}>
+                  <Button variant="ghost" onClick={handleBulkTest} disabled={checking} className="grow sm:grow-0">
                     {checking ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw className="text-fg-faint" strokeWidth={1.75} aria-hidden="true" />}
                     {checking ? "Testing…" : `Test ${selected.size}`}
                   </Button>
-                  <Button variant="ghost" onClick={bulkActivate}>
+                  <Button variant="ghost" onClick={bulkActivate} className="grow sm:grow-0">
                     <Power className="text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
                     Enable
                   </Button>
-                  <Button variant="ghost" onClick={bulkDeactivate}>
+                  <Button variant="ghost" onClick={bulkDeactivate} className="grow sm:grow-0">
                     <PowerOff className="text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
                     Disable
                   </Button>
-                  <Button variant="danger" onClick={bulkDelete}>
+                  <Button variant="danger" onClick={bulkDelete} className="grow sm:grow-0">
                     <Trash2 aria-hidden="true" />
                     Delete {selected.size}
                   </Button>
@@ -328,7 +338,38 @@ export function ProxyPoolsPage() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Phones (below md): select-all bar and stacked pool cards. */}
+          <div className="flex items-center border-b border-line bg-subtle px-4 py-1.5 md:hidden">
+            <label className="-ml-2 inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-[12.5px] font-medium text-fg-muted">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                onChange={selectAll}
+                className={checkboxClass}
+              />
+              Select all
+            </label>
+          </div>
+          <ul className="divide-y divide-line md:hidden" aria-label="Proxy pools">
+            {list.map((pool) => (
+              <PoolCard
+                key={pool.id}
+                pool={pool}
+                accounts={usage.get(pool.id) ?? []}
+                selected={selected.has(pool.id)}
+                onSelect={() => toggleSelect(pool.id)}
+                onEdit={() => { setEditingId(pool.id); setShowCreate(false); }}
+                onDelete={() => deleteOne(pool)}
+                onTest={() => testPool.mutate(pool.id)}
+                onToggle={() => toggleActive.mutate({ id: pool.id, is_active: !pool.is_active })}
+                testing={testPool.isPending}
+                testingThis={testPool.isPending && testPool.variables === pool.id}
+              />
+            ))}
+          </ul>
+
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[860px] text-[13px]">
               <thead>
                 <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -396,7 +437,7 @@ function poolKind(pool: ProxyPool): string {
   return scheme ? scheme.toLowerCase() : "http";
 }
 
-function PoolRow({ pool, accounts, selected, onSelect, onEdit, onDelete, onTest, onToggle, testing, testingThis }: {
+type PoolItemProps = {
   pool: ProxyPool;
   accounts: Account[];
   selected: boolean;
@@ -407,7 +448,125 @@ function PoolRow({ pool, accounts, selected, onSelect, onEdit, onDelete, onTest,
   onToggle: () => void;
   testing: boolean;
   testingThis: boolean;
-}) {
+};
+
+// PoolMenu is the row menu shared by the table row and the phone card.
+function PoolMenu({ pool, onTest, onEdit, onDelete, testing }: Pick<PoolItemProps, "pool" | "onTest" | "onEdit" | "onDelete" | "testing">) {
+  const deploying = pool.test_status === "testing";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={`Actions for ${pool.name}`}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 md:h-8 md:w-8"
+      >
+        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onTest} disabled={testing || deploying}>
+          <Play />
+          Test connectivity
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onEdit}>
+          <Pencil />
+          Edit pool
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem tone="danger" onSelect={onDelete}>
+          <Trash2 />
+          Delete pool
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// PoolCard is a pool row stacked for phones (below md): checkbox, name and
+// status; kind and URL; usage; then the enable switch and the row menu.
+function PoolCard({ pool, accounts, selected, onSelect, onEdit, onDelete, onTest, onToggle, testing, testingThis }: PoolItemProps) {
+  const uid = useId();
+  const deploying = pool.test_status === "testing";
+  const providers = [...new Set(accounts.map((a) => a.provider))];
+  const KindIcon = poolKindIcon(pool);
+  const url = maskUrl(pool.proxy_url);
+  return (
+    <li className={cn("space-y-2 px-4 py-3", selected && "bg-accent-500/5")}>
+      <div className="flex items-start gap-1">
+        <label className="-my-1.5 -ml-2 flex h-9 w-9 shrink-0 items-center justify-center">
+          <input type="checkbox" checked={selected} onChange={onSelect} className={checkboxClass} aria-label={`Select ${pool.name}`} />
+        </label>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex items-start justify-between gap-3">
+            <button
+              type="button"
+              id={`${uid}-name`}
+              onClick={onEdit}
+              className={cn(
+                "min-w-0 truncate rounded-sm text-left text-[13px] font-medium hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                pool.is_active ? "text-fg" : "text-fg-muted",
+              )}
+              title={pool.name}
+            >
+              {pool.name}
+            </button>
+            <span className="shrink-0">
+              <PoolStatus status={testingThis ? "checking" : pool.test_status} />
+            </span>
+          </div>
+          <p className="flex min-w-0 items-center gap-1.5 text-[12px] text-fg-muted">
+            <KindIcon className="h-3.5 w-3.5 shrink-0 text-fg-faint" strokeWidth={1.75} aria-hidden="true" />
+            <span className="shrink-0">{poolKind(pool)}</span>
+            <span aria-hidden="true">·</span>
+            <span className="min-w-0 truncate font-mono" title={url}>{url}</span>
+          </p>
+          <p className="min-w-0 truncate text-[12px] text-fg-muted">
+            {accounts.length === 0 ? (
+              "No accounts"
+            ) : (
+              <>
+                <span className="tabular-nums" title={accounts.map((a) => `${a.provider} · ${a.label}`).join("\n")}>
+                  {accounts.length} account{accounts.length !== 1 ? "s" : ""}
+                </span>
+                {": "}
+                {providers.map((p, i) => (
+                  <span key={p}>
+                    {i > 0 && ", "}
+                    <Link to={`/providers/${p}`} className="text-link hover:underline">{p}</Link>
+                  </span>
+                ))}
+              </>
+            )}
+            {!testingThis && pool.last_tested && <span className="tabular-nums"> · tested {relTime(pool.last_tested)}</span>}
+            {pool.strict && " · Strict"}
+          </p>
+          {pool.no_proxy && (
+            <p className="min-w-0 truncate text-[12px] text-fg-muted" title={pool.no_proxy}>
+              Bypass: <span className="font-mono">{pool.no_proxy}</span>
+            </p>
+          )}
+          {pool.last_error && !testingThis && (
+            <p className={cn("line-clamp-2 break-words text-[12px]", deploying ? "text-warn" : "text-bad")} title={pool.last_error}>
+              {pool.last_error}
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-3 pl-8">
+        <span className="inline-flex items-center gap-2">
+          <Toggle
+            checked={pool.is_active}
+            onChange={() => { if (!deploying) onToggle(); }}
+            disabled={deploying}
+            aria-labelledby={`${uid}-enabled ${uid}-name`}
+          />
+          <span id={`${uid}-enabled`} className="text-[12.5px] text-fg">{deploying ? "Deploying" : "Enabled"}</span>
+        </span>
+        <PoolMenu pool={pool} onTest={onTest} onEdit={onEdit} onDelete={onDelete} testing={testing} />
+      </div>
+    </li>
+  );
+}
+
+function PoolRow({ pool, accounts, selected, onSelect, onEdit, onDelete, onTest, onToggle, testing, testingThis }: PoolItemProps) {
   const deploying = pool.test_status === "testing";
   const providers = [...new Set(accounts.map((a) => a.provider))];
   const KindIcon = poolKindIcon(pool);
@@ -504,29 +663,7 @@ function PoolRow({ pool, accounts, selected, onSelect, onEdit, onDelete, onTest,
         </span>
       </td>
       <td className="px-2 py-2 align-top">
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            aria-label={`Actions for ${pool.name}`}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-          >
-            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onTest} disabled={testing || deploying}>
-              <Play />
-              Test connectivity
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onEdit}>
-              <Pencil />
-              Edit pool
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem tone="danger" onSelect={onDelete}>
-              <Trash2 />
-              Delete pool
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <PoolMenu pool={pool} onTest={onTest} onEdit={onEdit} onDelete={onDelete} testing={testing} />
       </td>
     </tr>
   );
@@ -599,7 +736,7 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
           else create.mutate();
         }}
       >
-        <div className="space-y-4 px-5 py-4">
+        <div className={cn(dialogBody, "space-y-4 px-5 py-4")}>
           <FormField label="Name">
             {(ids) => <Input {...ids} required value={name} onChange={(e) => setName(e.target.value)} placeholder="us-east-residential" />}
           </FormField>
@@ -700,7 +837,7 @@ function CloudflareDeployModal({ open, onClose }: { open: boolean; onClose: () =
           if (canDeploy) deploy.mutate();
         }}
       >
-        <ol className="space-y-4 px-5 py-4">
+        <ol className={cn(dialogBody, "space-y-4 px-5 py-4")}>
           <Step n={1} title={<>Make sure the account has a <span className={code}>workers.dev</span> subdomain.</>} />
           <Step
             n={2}
@@ -841,12 +978,12 @@ function BatchImport({ onClose }: { onClose: () => void }) {
     >
       {results ? (
         <>
-          <div className="space-y-3 px-5 py-4">
+          <div className={cn(dialogBody, "space-y-3 px-5 py-4")}>
             <p role="status" className="flex flex-wrap items-center gap-4 text-[13px]">
               <Count n={createdCount} label="created" dot="bg-ok" />
               {failedCount > 0 && <Count n={failedCount} label="failed" dot="bg-bad" />}
             </p>
-            <div className="max-h-72 overflow-y-auto rounded-lg border border-line">
+            <div className="max-h-72 overflow-auto rounded-lg border border-line" tabIndex={0} role="region" aria-label="Import results">
               <table className="w-full text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
@@ -857,8 +994,8 @@ function BatchImport({ onClose }: { onClose: () => void }) {
                 <tbody className="divide-y divide-line">
                   {results.map((r) => (
                     <tr key={r.index}>
-                      <td className="max-w-[260px] truncate px-3 py-2 font-mono text-[12.5px] text-fg" title={r.label}>{r.label}</td>
-                      <td className="max-w-[320px] px-3 py-2">
+                      <td className="max-w-[140px] truncate px-3 py-2 font-mono text-[12.5px] text-fg sm:max-w-[260px]" title={r.label}>{r.label}</td>
+                      <td className="max-w-[160px] px-3 py-2 sm:max-w-[320px]">
                         <span className="inline-flex max-w-full items-center gap-2">
                           {r.status === "created" ? (
                             <Badge tone="success">Created</Badge>
@@ -887,7 +1024,7 @@ function BatchImport({ onClose }: { onClose: () => void }) {
         </>
       ) : (
         <>
-          <div className="space-y-4 px-5 py-4">
+          <div className={cn(dialogBody, "space-y-4 px-5 py-4")}>
             <FormField
               label="Proxy list"
               hint={<>One per line. Prefix <code className={code}>name,</code> to name a line; <code className={code}>#</code> lines are ignored.</>}
