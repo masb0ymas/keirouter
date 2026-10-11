@@ -134,7 +134,7 @@ func TestDeepSeekPricing(t *testing.T) {
 	if !ok {
 		t.Fatal("missing deepseek-v4-flash price")
 	}
-	if flash.InputPerM != 0.14 || flash.OutputPerM != 0.28 || flash.CachedInputPerM != 0.0028 || flash.ReasoningPerM != 0.28 {
+	if flash.InputPerM != 0.3 || flash.OutputPerM != 1.2 || flash.CachedInputPerM != 0.006 {
 		t.Fatalf("unexpected deepseek-v4-flash pricing: %+v", flash)
 	}
 
@@ -142,8 +142,55 @@ func TestDeepSeekPricing(t *testing.T) {
 	if !ok {
 		t.Fatal("missing deepseek-v4-pro price")
 	}
-	if pro.InputPerM != 0.435 || pro.OutputPerM != 0.87 || pro.CachedInputPerM != 0.003625 || pro.ReasoningPerM != 0.87 {
+	if pro.InputPerM != 1.32 || pro.OutputPerM != 3.96 || pro.CachedInputPerM != 0.044 {
 		t.Fatalf("unexpected deepseek-v4-pro pricing: %+v", pro)
+	}
+}
+
+func TestCatalogPricesLatestFamilies(t *testing.T) {
+	cases := []struct {
+		provider, model    string
+		wantInput, wantOut float64
+	}{
+		{"anthropic", "claude-opus-5-5", 4, 20},
+		{"anthropic", "claude-sonnet-4-6", 3, 15},
+		{"claude", "claude-haiku-5-5", 0.1, 0.5},
+		{"openai", "gpt-6-sol", 2, 10},
+		{"codex", "gpt-5.6-terra", 2, 12},
+		{"gemini", "gemini-3.1-pro-preview", 2, 12},
+		{"xai", "grok-4.5", 2, 6},
+		{"kimi", "kimi-k3", 3, 15},
+		{"glm", "glm-5.3", 1.4, 4.4},
+	}
+	for _, tc := range cases {
+		mp, ok := ModelPriceByProviderModel(tc.provider, tc.model)
+		if !ok {
+			t.Errorf("missing price for %s/%s", tc.provider, tc.model)
+			continue
+		}
+		if mp.InputPerM != tc.wantInput || mp.OutputPerM != tc.wantOut {
+			t.Errorf("%s/%s = %v/%v, want %v/%v", tc.provider, tc.model, mp.InputPerM, mp.OutputPerM, tc.wantInput, tc.wantOut)
+		}
+	}
+}
+
+func TestModelPriceCanonicalPrefersFirstPartyRate(t *testing.T) {
+	// Hosts resell DeepSeek V4 Pro at different rates; an unknown provider
+	// should fall back to the vendor's own list price.
+	mp, ok := ModelPriceByProviderModel("some-custom-endpoint", "deepseek-v4-pro")
+	if !ok {
+		t.Fatal("expected canonical match for deepseek-v4-pro")
+	}
+	if mp.Provider != "deepseek" || mp.InputPerM != 1.32 {
+		t.Fatalf("canonical match = %s/%s %v, want deepseek list price", mp.Provider, mp.Model, mp.InputPerM)
+	}
+}
+
+func TestModelPricingTableReturnsCopy(t *testing.T) {
+	table := ModelPricingTable()
+	table[0].InputPerM = -1
+	if ModelPricingTable()[0].InputPerM == -1 {
+		t.Fatal("ModelPricingTable must not expose the shared catalog slice")
 	}
 }
 

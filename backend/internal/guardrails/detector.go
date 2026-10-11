@@ -34,6 +34,40 @@ type InboundRequest struct {
 	// with delimiters, used by text-based detectors so they don't have to walk
 	// the message slice themselves.
 	FlatText string
+
+	views *inboundViews
+}
+
+func (in *InboundRequest) view() *inboundViews {
+	if in.views == nil {
+		if in.Source == nil {
+			in.views = &inboundViews{user: in.FlatText, recent: in.FlatText}
+		} else {
+			in.views = buildViews(in.Source)
+		}
+	}
+	return in.views
+}
+
+// UserText is the text of every user message. It is the untrusted surface
+// that classifiers (injection, toxicity, topics) evaluate: the operator's
+// system prompt and earlier model turns are excluded so instructions such as
+// "act as a support agent" in a system prompt never trip a detector.
+func (in *InboundRequest) UserText() string { return in.view().user }
+
+// RecentUserText is the text of the last few user messages.
+func (in *InboundRequest) RecentUserText() string { return in.view().recent }
+
+// ToolText is the content of tool results fed back to the model, the channel
+// used by indirect prompt injection (web pages, files, API responses).
+func (in *InboundRequest) ToolText() string { return in.view().tools }
+
+// Refresh rebuilds the cached views after the Source request was rewritten.
+func (in *InboundRequest) Refresh() {
+	in.views = nil
+	if in.Source != nil {
+		in.FlatText = flattenRequest(in.Source)
+	}
 }
 
 // OutboundResponse is the canonical view of an LLM completion handed to

@@ -8,8 +8,9 @@
 //
 // Detection is layered:
 //
-//   - Layer 1 (always on): keyword + ngram match. Cheap, deterministic,
-//     covers the majority of cases.
+//   - Layer 1 (always on): word-boundary keyword match over the folded word
+//     view, tolerant of inflections, small typos and obfuscation. Cheap,
+//     deterministic, covers the majority of cases.
 //   - Layer 2 (opt-in via engine="embedding"): cosine-similarity between the
 //     prompt embedding and a pre-computed topic embedding. Catches semantic
 //     paraphrases the keyword path misses. Requires an Embedder wired at
@@ -37,8 +38,7 @@ type Detector struct {
 	embedder Embedder
 	// vectorCache memoizes the embedding for each topic string so we don't
 	// re-embed the same topic on every request. Keyed by the *normalized*
-	// topic text. Phase 2: a per-policy cache keyed on topic-list hash would
-	// avoid the per-topic map lookup, but this is plenty fast in practice.
+	// topic text.
 	vectorCache *topicVectorCache
 }
 
@@ -66,16 +66,26 @@ func (d *Detector) Inbound(ctx context.Context, in *guardrails.InboundRequest, p
 	if cfg == nil || !cfg.Enabled || len(cfg.Topics) == 0 {
 		return nil, nil
 	}
-	if strings.TrimSpace(in.FlatText) == "" {
-		return nil, nil
-	}
 
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
 		mode = "block"
 	}
 
-	matches := d.matchTopics(ctx, in.FlatText, cfg)
+	// Block lists look at every user message, so a forbidden topic can't be
+	// slipped in through earlier turns. Allow lists look at the last few
+	// user messages, so a follow-up such as "tell me more" inherits the
+	// topic of the question before it. The system prompt is never matched:
+	// it would put every request on (or off) topic.
+	text := in.UserText()
+	if mode == "allow" {
+		text = in.RecentUserText()
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+
+	matches := d.matchTopics(ctx, text, cfg)
 	triggered := false
 	switch mode {
 	case "allow":
@@ -90,7 +100,7 @@ func (d *Detector) Inbound(ctx context.Context, in *guardrails.InboundRequest, p
 
 	action := cfg.Action
 	if action == "" {
-		action = guardrails.ActionWarn
+		action = guardrails.DefaultTopicsAction
 	}
 	return &guardrails.Decision{
 		Action:   action,
@@ -119,7 +129,7 @@ type match struct {
 // is wired and the policy opts in, Layer 2 (embedding similarity) for any
 // topic that did not already match.
 func (d *Detector) matchTopics(ctx context.Context, text string, cfg *guardrails.TopicsConfig) []match {
-	normalized := strings.ToLower(text)
+	index := newPromptIndex(text)
 	out := make([]match, 0, len(cfg.Topics))
 	embedRun := d.shouldUseEmbedding(cfg)
 
@@ -135,7 +145,7 @@ func (d *Detector) matchTopics(ctx context.Context, text string, cfg *guardrails
 			continue
 		}
 		// Layer 1: keyword/ngram.
-		if keywordHit(normalized, topic) {
+		if keywordHit(index, topic) {
 			out = append(out, match{Topic: topic, Layer: "keyword", Score: 1.0})
 			continue
 		}

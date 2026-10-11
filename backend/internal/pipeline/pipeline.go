@@ -581,9 +581,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 	}
 
 	// Guardrails inbound on streaming requests. Same semantics as Chat().
-	// Outbound scanning of streamed chunks is deferred — per-chunk scanning
-	// could fragment matches across boundaries; full-stream buffering would
-	// undermine the latency advantage of streaming.
+	// Streamed output is scanned in pumpStream.
 	if gres := p.guardrails.Inbound(ctx, req); gres.Action == guardrails.ActionBlock {
 		p.log.Debug("guardrails blocked inbound stream", "reason", gres.Reason)
 		release(0)
@@ -961,11 +959,10 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 // When StreamStallTimeout is configured, a timer resets on every chunk. If no
 // chunk arrives within the timeout, the stream is cancelled with ErrTimeout.
 //
-// pumpStream also runs Outbound guardrails on streaming text via a sliding
-// window: every chunkScanWindow characters, the accumulated tail is handed
-// to the engine. On a Mask decision the rewritten text replaces the buffered
-// tail before forwarding; on a Block decision the stream is cancelled and an
-// error chunk is delivered to the client.
+// pumpStream also runs Outbound guardrails on streaming text through a
+// guardrails.StreamGuard: text is released only after it has been scanned,
+// masked spans are rewritten before forwarding, and a Block decision cancels
+// the stream with an error chunk.
 func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-chan core.StreamChunk, out chan<- core.StreamChunk,
 	meta core.RequestMetadata, attempt dispatch.Attempt, attemptStarted, requestStarted time.Time,
 	ttft *time.Duration, save *saveState, scope budget.Scope, release limits.ReleaseFunc,
@@ -1040,15 +1037,64 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 		}
 	}
 
-	// Sliding window for outbound guardrails. We buffer the tail of the
-	// assistant's text output and ask the engine to scan it every
-	// chunkScanWindow characters. The window is small (256 chars) so the
-	// added per-chunk regex work is microseconds, but large enough that
-	// matches that span chunk boundaries (PII split across 2 frames) still
-	// fire. ChunkText.Delta is the only chunk type we feed the scanner;
-	// thinking, tool calls, and usage events are passed through untouched.
-	const chunkScanWindow = 256
-	var streamBuf strings.Builder
+	// Outbound guardrails for streamed text. The guard holds back a short
+	// tail of the output so a finding (PII, toxic phrase) is masked or
+	// blocked before any of it reaches the client, including matches split
+	// across chunks. It is nil when no outbound detector is enabled.
+	guard := p.guardrails.NewStreamGuard(ctx, req)
+
+	// blockStream ends the stream with a policy refusal and settles usage
+	// for the output generated so far.
+	blockStream := func(reason string) {
+		p.log.Debug("guardrails blocked streaming output", "reason", reason)
+		select {
+		case out <- core.StreamChunk{
+			Type: core.ChunkError,
+			Err: &core.ProviderError{
+				Kind:     core.ErrPolicyBlocked,
+				Provider: attempt.Target.Provider,
+				Model:    attempt.Target.Model,
+				Message:  reason,
+			},
+		}:
+		case <-ctx.Done():
+			settleClientCancellation()
+			return
+		}
+		cancelUpstream()
+		blockedUsage := partialStreamUsage(req, usage, completionChars)
+		upstreamLatency := time.Since(attemptStarted)
+		cost := p.recordOutcomeWithTTFT(context.WithoutCancel(ctx), meta, attempt, blockedUsage,
+			"blocked", string(core.ErrPolicyBlocked), false, upstreamLatency,
+			time.Since(requestStarted), *ttft, save)
+		p.dispatcher.NoteSuccess(context.WithoutCancel(ctx), attempt.Target.Provider, attempt.Account.ID, attempt.Target.Model)
+		p.recordSuccessTelemetry(meta, attempt, blockedUsage, upstreamLatency, *ttft, fellBack, cost)
+		p.budgetConfirm(scope, cost)
+	}
+
+	// flushGuard forwards the held-back text before a non-text event or the
+	// end of the stream. It returns false when the stream was terminated
+	// (blocked or cancelled) and the caller must return.
+	flushGuard := func() bool {
+		if guard == nil {
+			return true
+		}
+		text, gres := guard.Flush()
+		if gres.Action == guardrails.ActionBlock {
+			blockStream(gres.Reason)
+			return false
+		}
+		if text == "" {
+			return true
+		}
+		select {
+		case out <- core.StreamChunk{Type: core.ChunkText, Delta: text}:
+			return true
+		case <-ctx.Done():
+			settleClientCancellation()
+			return false
+		}
+	}
 
 	// sawUsage tracks whether the upstream ever emitted a usage event with real
 	// token counts. completionChars accumulates the assistant's streamed output
@@ -1063,6 +1109,9 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 					return
 				}
 				stopStall()
+				if !flushGuard() {
+					return
+				}
 				if !sawFinish {
 					if completionChars == 0 && !sawToolCall {
 						// The upstream closed the connection before producing
@@ -1158,44 +1207,19 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 				sawFinish = true
 			}
 
-			// Outbound guardrail scan for streamed text. We accumulate every
-			// text delta and rescan the tail at each window boundary. A Block
-			// short-circuits: we cancel the stream and surface an error chunk
-			// so the client sees a policy refusal mid-stream.
-			if chunk.Type == core.ChunkText && chunk.Delta != "" && p.guardrails != nil {
-				streamBuf.WriteString(chunk.Delta)
-				if streamBuf.Len() >= chunkScanWindow {
-					gres := p.guardrails.OutboundChunk(ctx, req, streamBuf.String())
+			if guard != nil {
+				if chunk.Type == core.ChunkText {
+					text, gres := guard.Push(chunk.Delta)
 					if gres.Action == guardrails.ActionBlock {
-						p.log.Debug("guardrails blocked streaming output", "reason", gres.Reason)
-						select {
-						case out <- core.StreamChunk{
-							Type: core.ChunkError,
-							Err: &core.ProviderError{
-								Kind:     core.ErrPolicyBlocked,
-								Provider: attempt.Target.Provider,
-								Model:    attempt.Target.Model,
-								Message:  gres.Reason,
-							},
-						}:
-						case <-ctx.Done():
-							settleClientCancellation()
-							return
-						}
-						cancelUpstream()
-						blockedUsage := partialStreamUsage(req, usage, completionChars)
-						upstreamLatency := time.Since(attemptStarted)
-						cost := p.recordOutcomeWithTTFT(context.WithoutCancel(ctx), meta, attempt, blockedUsage,
-							"blocked", string(core.ErrPolicyBlocked), false, upstreamLatency,
-							time.Since(requestStarted), *ttft, save)
-						p.dispatcher.NoteSuccess(context.WithoutCancel(ctx), attempt.Target.Provider, attempt.Account.ID, attempt.Target.Model)
-						p.recordSuccessTelemetry(meta, attempt, blockedUsage, upstreamLatency, *ttft, fellBack, cost)
-						p.budgetConfirm(scope, cost)
+						blockStream(gres.Reason)
 						return
 					}
-					// Reset the buffer once it has been scanned; we only need
-					// rolling lookback within one window, not the whole stream.
-					streamBuf.Reset()
+					if text == "" {
+						continue
+					}
+					chunk.Delta = text
+				} else if !flushGuard() {
+					return
 				}
 			}
 

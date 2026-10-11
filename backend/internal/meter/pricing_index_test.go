@@ -30,6 +30,32 @@ func TestResolvePriceCanonicalConflictStaysMissing(t *testing.T) {
 	}
 }
 
+func TestResolvePriceCanonicalConflictPrefersOfficialTier(t *testing.T) {
+	m := New(nil, nil, map[string]Price{
+		"vendor/model-x":  {InputPerM: 1, OutputPerM: 2, Source: "official"},
+		"host-a/model.x":  {InputPerM: 3, OutputPerM: 4, Source: "catalog"},
+		"host-b/model_x":  {InputPerM: 5, OutputPerM: 6, Source: "catalog"},
+		"reseller/modelx": {InputPerM: 7, OutputPerM: 8, Source: "retail_equivalent"},
+	})
+
+	got := m.ResolvePrice("other", "Model-X")
+	if got.Key != "vendor/model-x" || got.MatchKind != "canonical_model" || got.Status != "estimated" {
+		t.Fatalf("ResolvePrice() = %+v, want estimated canonical match on vendor/model-x", got)
+	}
+}
+
+func TestResolvePriceCanonicalConflictWithinOfficialTierStaysMissing(t *testing.T) {
+	m := New(nil, nil, map[string]Price{
+		"vendor-a/model-x": {InputPerM: 1, OutputPerM: 2, Source: "official"},
+		"vendor-b/model.x": {InputPerM: 3, OutputPerM: 4, Source: "official"},
+		"host/model_x":     {InputPerM: 5, OutputPerM: 6, Source: "catalog"},
+	})
+
+	if got := m.ResolvePrice("other", "modelx"); got.Status != "missing" {
+		t.Fatalf("ResolvePrice() status = %q, want missing when official entries disagree", got.Status)
+	}
+}
+
 func TestReplacePricesRebuildsFingerprintIndex(t *testing.T) {
 	m := New(nil, nil, nil)
 	if got := m.ResolvePrice("other", "claude-sonnet-4.5"); got.Status != "missing" {

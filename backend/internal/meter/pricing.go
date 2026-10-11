@@ -209,24 +209,36 @@ func (m *Meter) ResolvePrice(provider, model string) PricingMatch {
 	for _, candidate := range candidates {
 		fingerprints[modelFingerprint(candidate)] = struct{}{}
 	}
-	var found Price
-	foundKey := ""
+	var keys []string
 	for fp := range fingerprints {
-		for _, key := range m.modelFingerprints[fp] {
-			price := m.modelPrices[key]
-			if foundKey == "" {
-				found, foundKey = price, key
-				continue
+		keys = append(keys, m.modelFingerprints[fp]...)
+	}
+	if len(keys) > 0 {
+		// Hosts often resell a vendor model at their own rate. When matches
+		// disagree, fall back to the most authoritative source tier and price
+		// only if that tier is unanimous.
+		if !m.allSamePrice(keys) {
+			top := canonicalSourcePriority(m.modelPrices[keys[0]].Source)
+			for _, key := range keys[1:] {
+				top = min(top, canonicalSourcePriority(m.modelPrices[key].Source))
 			}
-			if !samePrice(found, price) {
+			preferred := keys[:0:0]
+			for _, key := range keys {
+				if canonicalSourcePriority(m.modelPrices[key].Source) == top {
+					preferred = append(preferred, key)
+				}
+			}
+			if !m.allSamePrice(preferred) {
 				return PricingMatch{Status: "missing", MatchKind: "none"}
 			}
-			if preferCanonicalPrice(key, price, foundKey, found) {
+			keys = preferred
+		}
+		foundKey, found := keys[0], m.modelPrices[keys[0]]
+		for _, key := range keys[1:] {
+			if price := m.modelPrices[key]; preferCanonicalPrice(key, price, foundKey, found) {
 				found, foundKey = price, key
 			}
 		}
-	}
-	if foundKey != "" {
 		return pricingMatch(foundKey, found, "canonical_model", true)
 	}
 
@@ -237,6 +249,15 @@ func (m *Meter) ResolvePrice(provider, model string) PricingMatch {
 		return pricingMatch(canonicalProvider, price, "provider_alias", true)
 	}
 	return PricingMatch{Status: "missing", MatchKind: "none"}
+}
+
+func (m *Meter) allSamePrice(keys []string) bool {
+	for _, key := range keys[1:] {
+		if !samePrice(m.modelPrices[keys[0]], m.modelPrices[key]) {
+			return false
+		}
+	}
+	return true
 }
 
 func pricingMatch(key string, price Price, kind string, estimated bool) PricingMatch {

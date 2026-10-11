@@ -37,7 +37,7 @@ const (
 	PIIStrategyReplace   PIIStrategy = "replace"   // replace with <EMAIL_ADDRESS>
 	PIIStrategyMask      PIIStrategy = "mask"      // keep first/last N chars
 	PIIStrategyHash      PIIStrategy = "hash"      // sha256 short tag
-	PIIStrategyBlock     PIIStrategy = "block"    // refuse the request
+	PIIStrategyBlock     PIIStrategy = "block"     // refuse the request
 	PIIStrategyAnonymize PIIStrategy = "anonymize" // alias of replace, Presidio naming
 )
 
@@ -51,18 +51,50 @@ type PIIConfig struct {
 	// ScanOutput also inspects the LLM response for leaked PII.
 	ScanOutput bool `json:"scan_output,omitempty"`
 	// Engine selects the implementation: "native" (default) or "presidio".
-	// Phase 1 only ships "native"; Phase 2 will add Presidio HTTP sidecar.
 	Engine string `json:"engine,omitempty"`
+	// BlockTypes lists entities that refuse the request outright whatever the
+	// strategy, e.g. mask emails but block credit cards and API keys.
+	BlockTypes []string `json:"block_types,omitempty"`
+	// AllowList holds exact values that are never treated as PII, such as a
+	// public support address. Matching is case-insensitive.
+	AllowList []string `json:"allow_list,omitempty"`
+	// Scope picks which parts of the conversation are scanned: "all"
+	// (default: system prompt, every message, tool calls and tool results),
+	// "user" (user messages and tool results) or "last_user" (only the most
+	// recent user message).
+	Scope string `json:"scope,omitempty"`
 }
+
+// PII scan scopes.
+const (
+	PIIScopeAll      = "all"
+	PIIScopeUser     = "user"
+	PIIScopeLastUser = "last_user"
+)
 
 // InjectionConfig parametrizes the prompt-injection detector.
 type InjectionConfig struct {
 	Enabled bool `json:"enabled"`
 	// SeverityThreshold drops findings below this level (low | medium | high).
 	SeverityThreshold Severity `json:"severity_threshold,omitempty"`
-	// Action chosen when a finding meets the threshold.
+	// Action chosen when a finding meets the threshold. Defaults to block.
 	Action Action `json:"action,omitempty"`
+	// ScanToolResults also inspects tool results (fetched pages, files, API
+	// responses) for indirect prompt injection.
+	ScanToolResults bool `json:"scan_tool_results,omitempty"`
 }
+
+// Detector defaults. The dashboard shows these values for unset fields, so
+// the detectors must apply the same ones.
+const (
+	DefaultInjectionSeverity Severity = SeverityMedium
+	DefaultInjectionAction   Action   = ActionBlock
+	DefaultTopicsAction      Action   = ActionWarn
+	DefaultToxicityThreshold          = 60
+	DefaultToxicityAction    Action   = ActionWarn
+	DefaultBiasThreshold              = 60
+	DefaultBiasAction        Action   = ActionLogOnly
+)
 
 // TopicsConfig parametrizes the topic boundary detector.
 type TopicsConfig struct {
@@ -84,7 +116,7 @@ type TopicsConfig struct {
 // ToxicityConfig parametrizes the toxicity detector.
 type ToxicityConfig struct {
 	Enabled    bool     `json:"enabled"`
-	Categories []string `json:"categories,omitempty"` // profanity, hate, harassment, ...
+	Categories []string `json:"categories,omitempty"` // profanity, hate, harassment, violence, sexual, self_harm
 	Threshold  int      `json:"threshold,omitempty"`  // 0–100
 	Action     Action   `json:"action,omitempty"`
 	// Engine selects the implementation: "native" (default, keyword catalog)
@@ -95,8 +127,7 @@ type ToxicityConfig struct {
 }
 
 // BiasConfig parametrizes the bias detector. Outbound-only — runs on the
-// model response. Phase 2 ships a lexicon-based scorer; LLM-eval and provider
-// moderation passthrough are tracked for a later iteration.
+// model response.
 type BiasConfig struct {
 	Enabled    bool     `json:"enabled"`
 	Categories []string `json:"categories,omitempty"` // political, gender, ethnic, religious

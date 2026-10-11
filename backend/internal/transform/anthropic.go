@@ -389,6 +389,10 @@ func (AnthropicCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	if modelRejectsTemperature(req.Model) {
 		out.Temp = nil
 	}
+	// Claude 5.x rejects every sampling override.
+	if modelRejectsSampling(req.Model) {
+		out.TopP = nil
+	}
 
 	// Forward extended-thinking configuration to Anthropic-compatible upstreams.
 	// Claude Code sends thinking: {type: "enabled", budget_tokens: N} and expects

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ComponentProps, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Check,
@@ -20,6 +20,7 @@ import {
   type GuardrailSeverity,
   type PIIStrategy,
   type GuardrailTestResult,
+  type PIIConfig,
 } from "../lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Input, Select, Badge, Toggle, Skeleton, IconTile, SectionTitle } from "./ui";
@@ -71,7 +72,28 @@ const STRATEGIES: { value: PIIStrategy; label: string; hint: string }[] = [
   { value: "block", label: "Block request", hint: "Refuse the request" },
 ];
 
-const TOXICITY_CATEGORIES = ["profanity", "hate_speech", "harassment", "violence", "sexual"];
+const TOXICITY_CATEGORIES = ["profanity", "hate_speech", "harassment", "violence", "sexual", "self_harm"];
+
+const PII_SCOPES: { value: NonNullable<PIIConfig["scope"]>; label: string }[] = [
+  { value: "all", label: "Whole conversation (default)" },
+  { value: "user", label: "User messages and tool results" },
+  { value: "last_user", label: "Latest user message only" },
+];
+
+// Values the backend applies to unset fields. Writing them when a detector is
+// switched on keeps the stored policy identical to what the form shows.
+const DEFAULTS = {
+  pii: { strategy: "redact" as PIIStrategy, min_score: 0.5, engine: "native", scope: "all" as const },
+  injection: { severity_threshold: "medium" as GuardrailSeverity, action: "block" as GuardrailAction },
+  topics: { mode: "block" as const, action: "warn" as GuardrailAction, engine: "keyword" as const },
+  toxicity: { threshold: 60, action: "warn" as GuardrailAction, engine: "native" as const },
+  bias: { threshold: 60, action: "log_only" as GuardrailAction },
+};
+
+// enable switches a detector on or off, filling unset fields with defaults.
+function enable<T extends { enabled: boolean }>(c: T, on: boolean, defaults: Partial<T>): T {
+  return on ? { ...defaults, ...c, enabled: true } : { ...c, enabled: false };
+}
 const BIAS_CATEGORIES = ["political", "gender", "ethnic", "religious"];
 
 export interface GuardrailEditorProps {
@@ -348,6 +370,39 @@ function toggleIn(list: string[] | undefined, t: string): string[] {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+const parseList = (raw: string) =>
+  raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+// ListInput edits a comma-separated list. It keeps the raw text locally so a
+// trailing comma or space survives while typing, and only re-syncs when the
+// list changes from outside (a template, a reset).
+function ListInput({
+  value,
+  onChange,
+  ...rest
+}: { value: string[]; onChange: (next: string[]) => void } & Omit<
+  ComponentProps<typeof Input>,
+  "value" | "onChange"
+>) {
+  const [raw, setRaw] = useState(value.join(", "));
+  useEffect(() => {
+    if (JSON.stringify(parseList(raw)) !== JSON.stringify(value)) setRaw(value.join(", "));
+  }, [value]);
+  return (
+    <Input
+      {...rest}
+      value={raw}
+      onChange={(e) => {
+        setRaw(e.target.value);
+        onChange(parseList(e.target.value));
+      }}
+    />
+  );
+}
+
 // ── Detectors ────────────────────────────────────────────────────────────────
 
 function PIISection({
@@ -361,10 +416,12 @@ function PIISection({
 }) {
   const c = config ?? { enabled: false };
   const selected = new Set(c.types ?? []);
+  const blocking = new Set(c.block_types ?? []);
   const strategy = STRATEGIES.find((s) => s.value === (c.strategy ?? "redact"));
   const summary = [
     selected.size === 0 ? "All entities" : `${selected.size} ${selected.size === 1 ? "entity" : "entities"}`,
     c.strategy === "block" ? null : strategy?.label ?? c.strategy,
+    c.strategy !== "block" && blocking.size > 0 ? `blocks ${blocking.size}` : null,
     c.engine === "presidio" ? "Presidio" : null,
     c.scan_output ? "Scans output" : null,
   ]
@@ -377,9 +434,9 @@ function PIISection({
       title="PII"
       action={c.strategy === "block" ? "block" : "mask"}
       summary={summary}
-      offSummary="Emails, phone numbers, NIK, NPWP…"
+      offSummary="Emails, phone numbers, NIK, NPWP, API keys…"
       enabled={c.enabled}
-      onToggle={(v) => onChange({ ...c, enabled: v })}
+      onToggle={(v) => onChange(enable(c, v, DEFAULTS.pii))}
     >
       <ChipGroup
         label="Entities"
@@ -401,6 +458,17 @@ function PIISection({
           ) : undefined
         }
       />
+      {c.strategy !== "block" && (
+        <ChipGroup
+          label="Always block"
+          hint="Refuse the request when found, instead of masking"
+          options={entities}
+          selected={blocking}
+          onToggle={(t) => onChange({ ...c, block_types: toggleIn(c.block_types, t) })}
+          loading={entities.length === 0}
+          mono
+        />
+      )}
       <Field label="Masking strategy">
         {(ids) => (
           <Select {...ids} value={c.strategy ?? "redact"} onChange={(e) => onChange({ ...c, strategy: e.target.value as PIIStrategy })}>
@@ -428,13 +496,37 @@ function PIISection({
       </Field>
       <Field
         label="Engine"
-        info="Native covers Indonesian recognisers (NIK, NPWP, passport, +62 phone) and the Presidio-compatible catalog. Presidio adds PERSON, LOCATION and multilingual detection; it needs the analyzer sidecar (compose.presidio.yaml) and falls back to native when unreachable."
+        info="Native covers Indonesian identifiers (NIK, KK, NPWP, BPJS, passport, +62 phone), credentials (API keys, private keys, passwords) and the Presidio-compatible catalog, with checksum validation and resistance to zero-width or fullwidth tricks. Presidio adds PERSON, LOCATION and multilingual detection; it needs the analyzer sidecar (compose.presidio.yaml) and falls back to native when unreachable."
       >
         {(ids) => (
           <Select {...ids} value={c.engine ?? "native"} onChange={(e) => onChange({ ...c, engine: e.target.value as "native" | "presidio" })}>
             <option value="native">Native (default)</option>
             <option value="presidio">Presidio sidecar</option>
           </Select>
+        )}
+      </Field>
+      <Field
+        label="Scan scope"
+        info="The whole conversation covers the system prompt, earlier turns, tool call arguments and tool results, so nothing slips through history. Narrow it if masking operator content gets in the way."
+      >
+        {(ids) => (
+          <Select {...ids} value={c.scope ?? "all"} onChange={(e) => onChange({ ...c, scope: e.target.value as PIIConfig["scope"] })}>
+            {PII_SCOPES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      <Field label="Allow list" hint="Comma separated values that are never masked, e.g. a public support address">
+        {(ids) => (
+          <ListInput
+            {...ids}
+            value={c.allow_list ?? []}
+            onChange={(allow_list) => onChange({ ...c, allow_list })}
+            placeholder="support@example.com"
+          />
         )}
       </Field>
       <SwitchField label="Also scan model output" checked={c.scan_output ?? false} onChange={(v) => onChange({ ...c, scan_output: v })} />
@@ -451,17 +543,21 @@ function InjectionSection({
 }) {
   const c = config ?? { enabled: false };
   const severity = SEVERITIES.find((s) => s.value === (c.severity_threshold ?? "medium"))?.label ?? c.severity_threshold;
+  const summary = [`${severity} severity and up`, c.scan_tool_results ? "Tool results" : null].filter(Boolean).join(" · ");
   return (
     <DetectorRow
       icon={DETECTOR_ICONS.injection}
       title="Prompt injection"
       action={c.action ?? "block"}
-      summary={`${severity} severity and up`}
+      summary={summary}
       offSummary="Jailbreaks, role overrides, prompt leaks"
       enabled={c.enabled}
-      onToggle={(v) => onChange({ ...c, enabled: v })}
+      onToggle={(v) => onChange(enable(c, v, DEFAULTS.injection))}
     >
-      <Field label="Minimum severity" info="Matches below this severity are ignored.">
+      <Field
+        label="Minimum severity"
+        info="High: explicit overrides, jailbreak personas, smuggled chat-template tokens. Medium (default) adds prompt-leak requests and combined weak signals. Low also acts on persona requests such as “act as a translator”. Matches below the threshold are only logged."
+      >
         {(ids) => (
           <Select
             {...ids}
@@ -487,6 +583,11 @@ function InjectionSection({
           </Select>
         )}
       </Field>
+      <SwitchField
+        label="Also scan tool results (indirect injection)"
+        checked={c.scan_tool_results ?? false}
+        onChange={(v) => onChange({ ...c, scan_tool_results: v })}
+      />
     </DetectorRow>
   );
 }
@@ -515,7 +616,7 @@ function TopicsSection({
       summary={summary}
       offSummary="Keep chats on or off listed topics"
       enabled={c.enabled}
-      onToggle={(v) => onChange({ ...c, enabled: v })}
+      onToggle={(v) => onChange(enable(c, v, DEFAULTS.topics))}
     >
       <Field label="Mode">
         {(ids) => (
@@ -527,25 +628,17 @@ function TopicsSection({
       </Field>
       <Field label="Topics" hint="Comma separated">
         {(ids) => (
-          <Input
+          <ListInput
             {...ids}
-            value={topics.join(", ")}
-            onChange={(e) =>
-              onChange({
-                ...c,
-                topics: e.target.value
-                  .split(",")
-                  .map((t) => t.trim())
-                  .filter(Boolean),
-              })
-            }
+            value={topics}
+            onChange={(next) => onChange({ ...c, topics: next })}
             placeholder="programming, devops, cyber security"
           />
         )}
       </Field>
       <Field
         label="Matching engine"
-        info="Keyword is a fast substring and token match. Embedding catches paraphrases keyword matching misses; it needs an embeddings provider (cache.embedding_provider=api)."
+        info="Keyword matches whole words and their inflections (program ↔ programming), tolerates small typos and obfuscation, and checks user messages only. Embedding also catches paraphrases; it needs an embeddings provider (cache.embedding_provider=api)."
       >
         {(ids) => (
           <Select {...ids} value={c.engine ?? "keyword"} onChange={(e) => onChange({ ...c, engine: e.target.value as "keyword" | "embedding" })}>
@@ -607,9 +700,9 @@ function ToxicitySection({
       title="Toxicity"
       action={c.action ?? "warn"}
       summary={summary}
-      offSummary="Profanity, hate, harassment, violence"
+      offSummary="Profanity, hate, harassment, violence, self-harm"
       enabled={c.enabled}
-      onToggle={(v) => onChange({ ...c, enabled: v })}
+      onToggle={(v) => onChange(enable(c, v, DEFAULTS.toxicity))}
     >
       <ChipGroup
         label="Categories"
@@ -633,7 +726,7 @@ function ToxicitySection({
       </Field>
       <Field
         label="Scoring engine"
-        info="Native is an offline keyword catalog (Indonesian and English). OpenAI Moderation is multi-language and needs KEIROUTER_GUARDRAILS__TOXICITY__OPENAI_API_KEY on the server; it falls back to native when missing."
+        info="Native is an offline weighted lexicon (Indonesian and English) that sees through leetspeak, censoring (f*ck), stretched or spaced letters and look-alike characters, and scores insults aimed at someone higher. OpenAI Moderation is multi-language and needs KEIROUTER_GUARDRAILS__TOXICITY__OPENAI_API_KEY on the server; it falls back to native when missing or failing."
       >
         {(ids) => (
           <Select {...ids} value={c.engine ?? "native"} onChange={(e) => onChange({ ...c, engine: e.target.value as "native" | "openai" })}>
@@ -679,7 +772,7 @@ function BiasSection({
       summary={summary}
       offSummary="Political, gender, ethnic, religious"
       enabled={c.enabled}
-      onToggle={(v) => onChange({ ...c, enabled: v })}
+      onToggle={(v) => onChange(enable(c, v, DEFAULTS.bias))}
     >
       <ChipGroup
         label="Categories"
@@ -803,6 +896,12 @@ function TestPanel({ config }: { config: GuardrailPolicyConfig }) {
                 <Badge tone={actionTone(result.action)}>{ACTION_LABEL[result.action] ?? result.action}</Badge>
                 {result.reason && <span className="min-w-0 text-[12px] text-fg-muted">{result.reason}</span>}
               </div>
+              {result.masked_text && (
+                <div className="border-t border-line px-3 py-2.5">
+                  <p className="text-[12px] font-medium text-fg">Sent to the provider as</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[11.5px] text-fg-muted">{result.masked_text}</p>
+                </div>
+              )}
               {decisions.length === 0 ? (
                 <p className="border-t border-line px-3 py-2.5 text-[12px] text-fg-muted">No detector fired.</p>
               ) : (

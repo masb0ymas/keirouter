@@ -6,9 +6,9 @@ import "github.com/mydisha/keirouter/backend/internal/guardrails"
 // template" picker. The config is a full guardrails.Policy so the frontend
 // can drop it into the editor without further massaging.
 type guardrailTemplate struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
 	Config      guardrails.Policy `json:"config"`
 }
 
@@ -20,15 +20,22 @@ func guardrailTemplates() []guardrailTemplate {
 
 	piiID := &guardrails.PIIConfig{
 		Enabled:  true,
-		Types:    []string{"EMAIL_ADDRESS", "PHONE_NUMBER", "ID_NIK", "ID_NPWP", "ID_PASSPORT", "CREDIT_CARD"},
+		Types:    []string{"EMAIL_ADDRESS", "PHONE_NUMBER", "ID_NIK", "ID_KK", "ID_NPWP", "ID_PASSPORT", "ID_BPJS", "CREDIT_CARD"},
 		Strategy: guardrails.PIIStrategyReplace,
-		MinScore: 0.7,
+		MinScore: 0.6,
 	}
 	piiRedact := &guardrails.PIIConfig{
 		Enabled:    true,
 		Strategy:   guardrails.PIIStrategyRedact,
 		MinScore:   0.6,
 		ScanOutput: true,
+		BlockTypes: []string{"API_KEY", "PRIVATE_KEY"},
+	}
+	piiSecrets := &guardrails.PIIConfig{
+		Enabled:  true,
+		Types:    []string{"API_KEY", "PRIVATE_KEY", "PASSWORD", "CREDIT_CARD", "ID_NIK", "ID_NPWP"},
+		Strategy: guardrails.PIIStrategyReplace,
+		MinScore: 0.6,
 	}
 	piiBlock := &guardrails.PIIConfig{
 		Enabled:  true,
@@ -51,6 +58,12 @@ func guardrailTemplates() []guardrailTemplate {
 		Topics:  []string{"programming", "software", "devops", "general help"},
 		Action:  guardrails.ActionBlock,
 	}
+	injectionIndirect := &guardrails.InjectionConfig{
+		Enabled:           true,
+		SeverityThreshold: guardrails.SeverityHigh,
+		Action:            guardrails.ActionWarn,
+		ScanToolResults:   true,
+	}
 	toxicityWarn := &guardrails.ToxicityConfig{
 		Enabled:   true,
 		Threshold: 60,
@@ -61,7 +74,7 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "indonesia-pii",
 			Name:        "Indonesia PII",
-			Description: "Mask Indonesian identifiers (NIK, NPWP, passport) plus generic PII (email, phone, card) using replace strategy at min_score 0.7.",
+			Description: "Mask Indonesian identifiers (NIK, KK, NPWP, passport, BPJS) plus email, phone and card numbers with typed placeholders, across the whole conversation.",
 			Config: guardrails.Policy{
 				Enabled: &enabled,
 				PII:     piiID,
@@ -97,7 +110,7 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "public-chatbot",
 			Name:        "Public chatbot",
-			Description: "Redact PII (both directions), block prompt injection, scope topics to programming/general help.",
+			Description: "Redact PII in both directions and refuse leaked API or private keys, block prompt injection and toxic prompts, keep topics to programming and general help.",
 			Config: guardrails.Policy{
 				Enabled:   &enabled,
 				PII:       piiRedact,
@@ -106,6 +119,16 @@ func guardrailTemplates() []guardrailTemplate {
 				Toxicity: &guardrails.ToxicityConfig{
 					Enabled: true, Threshold: 70, Action: guardrails.ActionBlock,
 				},
+			},
+		},
+		{
+			ID:          "coding-agent",
+			Name:        "Coding agent",
+			Description: "Replace credentials, card numbers and Indonesian tax/ID numbers before they reach the provider, and flag high-severity injection hidden in tool results (fetched pages, files) without breaking the agent loop.",
+			Config: guardrails.Policy{
+				Enabled:   &enabled,
+				PII:       piiSecrets,
+				Injection: injectionIndirect,
 			},
 		},
 		{

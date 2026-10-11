@@ -928,12 +928,20 @@ export interface PIIConfig {
   min_score?: number;
   scan_output?: boolean;
   engine?: string;
+  /** Entities that refuse the request whatever the strategy. */
+  block_types?: string[];
+  /** Exact values never treated as PII (case-insensitive). */
+  allow_list?: string[];
+  /** Which parts of the conversation are scanned. Defaults to "all". */
+  scope?: "all" | "user" | "last_user";
 }
 
 export interface InjectionConfig {
   enabled: boolean;
   severity_threshold?: GuardrailSeverity;
   action?: GuardrailAction;
+  /** Also inspect tool results for indirect prompt injection. */
+  scan_tool_results?: boolean;
 }
 
 export interface TopicsConfig {
@@ -1002,6 +1010,8 @@ export interface GuardrailTestResult {
   action: GuardrailAction;
   reason: string;
   decisions: GuardrailDecision[];
+  /** The sample as it would reach the provider after masking, when changed. */
+  masked_text?: string | null;
 }
 
 export interface GuardrailLogEntry {

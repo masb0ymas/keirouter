@@ -48,14 +48,14 @@ func (s *Server) mountGuardrails(r chi.Router) {
 
 // guardrailDTO is the JSON shape exchanged with the dashboard.
 type guardrailDTO struct {
-	ID        string             `json:"id"`
-	Name      string             `json:"name"`
-	Scope     string             `json:"scope"`
-	ScopeID   string             `json:"scope_id"`
-	Enabled   bool               `json:"enabled"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Scope     string            `json:"scope"`
+	ScopeID   string            `json:"scope_id"`
+	Enabled   bool              `json:"enabled"`
 	Config    guardrails.Policy `json:"config"`
-	CreatedAt string             `json:"created_at"`
-	UpdatedAt string             `json:"updated_at"`
+	CreatedAt string            `json:"created_at"`
+	UpdatedAt string            `json:"updated_at"`
 }
 
 func toDTO(p store.GuardrailPolicy) guardrailDTO {
@@ -333,39 +333,55 @@ func (s *Server) adminTestGuardrail(w http.ResponseWriter, r *http.Request) {
 	}
 	// If the caller supplied an inline policy, run a one-off engine to avoid
 	// touching the stored ones. Otherwise use the live engine + tenant defaults.
+	engine := s.guardrails
 	if in.Config != nil {
-		s.runOneOffGuardrails(w, r.Context(), req, *in.Config)
-		return
+		// Reuse the live audit writer so test-panel runs show up in the
+		// dashboard's Audit Logs tab alongside real traffic.
+		engine = guardrails.NewEngine(guardrails.EngineConfig{
+			Resolver:  guardrails.NewResolver(&staticResolver{pol: *in.Config}, 0),
+			Audit:     s.guardrails.Audit(),
+			Detectors: s.guardrails.Detectors(),
+			Logger:    s.log,
+		})
 	}
-	res := s.guardrails.Inbound(r.Context(), req)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"action":    res.Action,
-		"reason":    res.Reason,
-		"decisions": res.Decisions,
-	})
-}
-
-func (s *Server) runOneOffGuardrails(w http.ResponseWriter, ctx context.Context, req *core.ChatRequest, pol guardrails.Policy) {
-	// Build a temporary engine that resolves to `pol` regardless of stored
-	// policies, but reuses the live audit writer so test-panel runs show up
-	// in the dashboard's Audit Logs tab alongside real traffic.
-	tmp := guardrails.NewEngine(guardrails.EngineConfig{
-		Resolver:  guardrails.NewResolver(&staticResolver{pol: pol}, 0),
-		Audit:     s.guardrails.Audit(),
-		Detectors: s.guardrails.Detectors(),
-		Logger:    s.log,
-	})
-	res := tmp.Inbound(ctx, req)
+	writeJSON(w, http.StatusOK, dryRunGuardrails(r.Context(), engine, req, in.Text))
 	// Flush the audit writer so the row from this test run appears in the
 	// dashboard immediately (the ticker would otherwise hold it ~1s).
 	if a := s.guardrails.Audit(); a != nil {
 		a.FlushNow()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"action":    res.Action,
-		"reason":    res.Reason,
-		"decisions": res.Decisions,
-	})
+}
+
+// dryRunGuardrails evaluates the sample as a prompt, then as a model
+// response for detectors that only inspect output (bias, or PII output
+// scanning when the prompt pass didn't fire), and reports the merged result
+// plus the prompt as it would reach the provider.
+func dryRunGuardrails(ctx context.Context, engine *guardrails.Engine, req *core.ChatRequest, text string) map[string]any {
+	res := engine.Inbound(ctx, req)
+	out := map[string]any{
+		"action":      res.Action,
+		"reason":      res.Reason,
+		"decisions":   res.Decisions,
+		"masked_text": nil,
+	}
+	if res.Action == guardrails.ActionBlock {
+		return out
+	}
+	if masked := req.Messages[0].TextContent(); masked != text {
+		out["masked_text"] = masked
+	}
+	fired := map[string]bool{}
+	for _, d := range res.Decisions {
+		fired[d.Detector] = true
+	}
+	for _, d := range engine.OutboundText(ctx, req, text, fired).Decisions {
+		res.Decisions = append(res.Decisions, d)
+		if guardrails.StrictestAction(res.Action, d.Action) != res.Action {
+			res.Action, res.Reason = d.Action, d.Reason
+		}
+	}
+	out["action"], out["reason"], out["decisions"] = res.Action, res.Reason, res.Decisions
+	return out
 }
 
 // staticResolver returns the same policy regardless of the scope tuple. Used
