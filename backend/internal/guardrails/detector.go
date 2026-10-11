@@ -22,6 +22,13 @@ type Detector interface {
 	Outbound(ctx context.Context, out *OutboundResponse, policy Policy) (*Decision, error)
 }
 
+// CapabilityReporter is implemented by detectors whose optional engines
+// depend on server configuration (an ML sidecar, an embedder, an LLM judge),
+// so the dashboard can tell which policy options will take effect.
+type CapabilityReporter interface {
+	Capabilities() map[string]bool
+}
+
 // InboundRequest is the canonical view of a prompt that detectors inspect.
 // It is built once by the engine and shared across all detectors so each one
 // avoids re-scanning the underlying ChatRequest.
@@ -41,7 +48,7 @@ type InboundRequest struct {
 func (in *InboundRequest) view() *inboundViews {
 	if in.views == nil {
 		if in.Source == nil {
-			in.views = &inboundViews{user: in.FlatText, recent: in.FlatText}
+			in.views = &inboundViews{user: in.FlatText, recent: in.FlatText, lastUser: in.FlatText}
 		} else {
 			in.views = buildViews(in.Source)
 		}
@@ -62,6 +69,13 @@ func (in *InboundRequest) RecentUserText() string { return in.view().recent }
 // used by indirect prompt injection (web pages, files, API responses).
 func (in *InboundRequest) ToolText() string { return in.view().tools }
 
+// RecentToolText is the content of tool results in the current turn (after
+// the last user message), which the model is about to act on.
+func (in *InboundRequest) RecentToolText() string { return in.view().recentTools }
+
+// LastUserText is the text of the most recent user message.
+func (in *InboundRequest) LastUserText() string { return in.view().lastUser }
+
 // Refresh rebuilds the cached views after the Source request was rewritten.
 func (in *InboundRequest) Refresh() {
 	in.views = nil
@@ -75,6 +89,10 @@ func (in *InboundRequest) Refresh() {
 // chunks arrive — see Engine.ScanChunk.
 type OutboundResponse struct {
 	Source *core.ChatResponse
+
+	// Request is the request that produced this response, for detectors
+	// that act on state set during the inbound pass.
+	Request *core.ChatRequest
 
 	// Text is the model's textual output (concatenated content parts).
 	Text string

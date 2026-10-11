@@ -82,7 +82,44 @@ type InjectionConfig struct {
 	// ScanToolResults also inspects tool results (fetched pages, files, API
 	// responses) for indirect prompt injection.
 	ScanToolResults bool `json:"scan_tool_results,omitempty"`
+
+	// Classifier adds the ML classifier (Llama Prompt Guard 2 or a DeBERTa
+	// injection model served by a sidecar). Ignored when the server has no
+	// classifier configured.
+	Classifier bool `json:"classifier,omitempty"`
+	// ClassifierThreshold is the injection probability (0–1) treated as an
+	// attack. Default 0.9; scores within 0.2 below it count as suspicious.
+	ClassifierThreshold float64 `json:"classifier_threshold,omitempty"`
+	// Semantic compares the prompt with a corpus of known attacks through the
+	// configured embeddings provider, catching paraphrases with no keyword in
+	// common. Ignored without an embeddings API.
+	Semantic bool `json:"semantic,omitempty"`
+	// SemanticThreshold is the cosine similarity treated as a match. Default 0.85.
+	SemanticThreshold float64 `json:"semantic_threshold,omitempty"`
+	// Judge asks an LLM to classify the prompt: "" or "off", "suspicious"
+	// (only when another layer saw something below high severity, so it can
+	// confirm or clear it) or "always".
+	Judge string `json:"judge,omitempty"`
+	// JudgeModel is the model (or alias / chain) the judge runs on.
+	JudgeModel string `json:"judge_model,omitempty"`
+	// Spotlight wraps tool results in secret delimiters and tells the model
+	// that text inside them is data, never instructions.
+	Spotlight bool `json:"spotlight,omitempty"`
+	// Canary plants a secret marker in the system prompt and blocks any
+	// response that repeats it, i.e. a leaked system prompt.
+	Canary bool `json:"canary,omitempty"`
+	// GuardToolCalls refuses tool calls the model makes in a turn whose tool
+	// results look like a prompt injection, so injected instructions can't
+	// trigger actions.
+	GuardToolCalls bool `json:"guard_tool_calls,omitempty"`
 }
+
+// Injection judge modes.
+const (
+	JudgeOff        = "off"
+	JudgeSuspicious = "suspicious"
+	JudgeAlways     = "always"
+)
 
 // Detector defaults. The dashboard shows these values for unset fields, so
 // the detectors must apply the same ones.

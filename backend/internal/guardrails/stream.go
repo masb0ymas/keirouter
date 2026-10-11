@@ -40,13 +40,16 @@ type StreamGuard struct {
 	pending string
 	tail    string
 	once    map[string]bool
+
+	toolChecked bool
+	toolResult  Result
 }
 
 // NewStreamGuard returns a guard for one streamed response, or nil when the
 // effective policy has no outbound detector enabled (callers then forward
 // chunks untouched).
 func (e *Engine) NewStreamGuard(ctx context.Context, req *core.ChatRequest) *StreamGuard {
-	if e == nil || req == nil {
+	if e == nil || req == nil || bypassed(ctx) {
 		return nil
 	}
 	policy := e.policyFor(ctx, req)
@@ -60,7 +63,8 @@ func (e *Engine) NewStreamGuard(ctx context.Context, req *core.ChatRequest) *Str
 func (p Policy) scansOutput() bool {
 	return (p.PII != nil && p.PII.Enabled && p.PII.ScanOutput) ||
 		(p.Toxicity != nil && p.Toxicity.Enabled) ||
-		(p.Bias != nil && p.Bias.Enabled)
+		(p.Bias != nil && p.Bias.Enabled) ||
+		(p.Injection != nil && p.Injection.Enabled && (p.Injection.Canary || p.Injection.GuardToolCalls))
 }
 
 // Push adds a text delta. It returns the text that is now safe to forward
@@ -77,6 +81,40 @@ func (g *StreamGuard) Push(delta string) (string, Result) {
 	return g.release(false)
 }
 
+// ToolCall vets a streamed tool call. It refuses the call when the policy
+// guards tool calls and the inbound pass found that this turn's tool results
+// look like a prompt injection: injected text must not be able to trigger
+// actions. The verdict is reported once per stream.
+func (g *StreamGuard) ToolCall() Result {
+	if g == nil {
+		return Result{Action: ActionAllow}
+	}
+	inj := g.policy.Injection
+	if inj == nil || !inj.Enabled || !inj.GuardToolCalls || !g.req.Metadata.UntrustedToolInput {
+		return Result{Action: ActionAllow}
+	}
+	if g.toolChecked {
+		return g.toolResult
+	}
+	g.toolChecked = true
+	action := inj.Action
+	if action == "" {
+		action = DefaultInjectionAction
+	}
+	dec := Decision{
+		Detector:  "injection",
+		Direction: DirectionOutbound,
+		Action:    action,
+		Severity:  SeverityHigh,
+		Reason:    "injection: tool call refused after tool results that look like a prompt injection",
+		Findings:  []Finding{{Entity: "PROMPT_INJECTION:tainted_tool_call", Score: 1, Start: -1, End: -1}},
+	}
+	g.e.report(g.req, &dec)
+	g.toolResult = Result{Action: ActionAllow}
+	g.toolResult.add(dec)
+	return g.toolResult
+}
+
 // Flush releases everything still held back. Call it before forwarding any
 // non-text event (so ordering is preserved) and when the upstream ends.
 func (g *StreamGuard) Flush() (string, Result) {
@@ -89,7 +127,7 @@ func (g *StreamGuard) Flush() (string, Result) {
 func (g *StreamGuard) release(final bool) (string, Result) {
 	scan := g.tail + g.pending
 	off := len(g.tail)
-	res := g.e.evalOutbound(g.ctx, g.policy, &OutboundResponse{Text: scan, Streaming: true}, false)
+	res := g.e.evalOutbound(g.ctx, g.policy, &OutboundResponse{Request: g.req, Text: scan, Streaming: true}, false)
 
 	cut := len(g.pending)
 	if !final {
@@ -164,7 +202,7 @@ func (g *StreamGuard) release(final bool) (string, Result) {
 	emit := g.pending[:cut]
 	raw := emit
 	if masked {
-		emit = g.e.evalOutbound(g.ctx, g.policy, &OutboundResponse{Text: emit, Streaming: true}, false).Text
+		emit = g.e.evalOutbound(g.ctx, g.policy, &OutboundResponse{Request: g.req, Text: emit, Streaming: true}, false).Text
 	}
 	g.pending = g.pending[cut:]
 	g.tail = lastBytes(g.tail+raw, streamContext)

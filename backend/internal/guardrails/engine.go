@@ -101,7 +101,7 @@ func (e *Engine) policyFor(ctx context.Context, req *core.ChatRequest) Policy {
 // (further detectors don't run; the request will be refused). Masking
 // detectors rewrite the request fields in place.
 func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
-	if e == nil || req == nil {
+	if e == nil || req == nil || bypassed(ctx) {
 		return Result{Action: ActionAllow}
 	}
 	policy := e.policyFor(ctx, req)
@@ -146,14 +146,14 @@ func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
 // Outbound runs detectors against a finalized (non-streaming) response.
 // Streaming output goes through a StreamGuard instead.
 func (e *Engine) Outbound(ctx context.Context, req *core.ChatRequest, resp *core.ChatResponse) Result {
-	if e == nil || req == nil || resp == nil {
+	if e == nil || req == nil || resp == nil || bypassed(ctx) {
 		return Result{Action: ActionAllow}
 	}
 	policy := e.policyFor(ctx, req)
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow}
 	}
-	out := &OutboundResponse{Source: resp, Text: flattenResponse(resp), Streaming: false}
+	out := &OutboundResponse{Source: resp, Request: req, Text: flattenResponse(resp), Streaming: false}
 	res := e.evalOutbound(ctx, policy, out, true)
 	for i := range res.Decisions {
 		e.report(req, &res.Decisions[i])
@@ -166,14 +166,14 @@ func (e *Engine) Outbound(ctx context.Context, req *core.ChatRequest, resp *core
 // must stop the stream. Prefer NewStreamGuard, which also handles matches that
 // straddle chunk boundaries.
 func (e *Engine) OutboundChunk(ctx context.Context, req *core.ChatRequest, text string) Result {
-	if e == nil || req == nil || text == "" {
+	if e == nil || req == nil || text == "" || bypassed(ctx) {
 		return Result{Action: ActionAllow, Text: text}
 	}
 	policy := e.policyFor(ctx, req)
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow, Text: text}
 	}
-	res := e.evalOutbound(ctx, policy, &OutboundResponse{Text: text, Streaming: true}, false)
+	res := e.evalOutbound(ctx, policy, &OutboundResponse{Request: req, Text: text, Streaming: true}, false)
 	for i := range res.Decisions {
 		e.report(req, &res.Decisions[i])
 	}
@@ -184,14 +184,14 @@ func (e *Engine) OutboundChunk(ctx context.Context, req *core.ChatRequest, text 
 // listed in skip. Only the kept decisions are audited. The dashboard's test
 // panel uses it to exercise output-only detectors on a sample prompt.
 func (e *Engine) OutboundText(ctx context.Context, req *core.ChatRequest, text string, skip map[string]bool) Result {
-	if e == nil || req == nil || text == "" {
+	if e == nil || req == nil || text == "" || bypassed(ctx) {
 		return Result{Action: ActionAllow, Text: text}
 	}
 	policy := e.policyFor(ctx, req)
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow, Text: text}
 	}
-	all := e.evalOutbound(ctx, policy, &OutboundResponse{Text: text, Streaming: true}, false)
+	all := e.evalOutbound(ctx, policy, &OutboundResponse{Request: req, Text: text, Streaming: true}, false)
 	res := Result{Action: ActionAllow, Text: all.Text}
 	for _, d := range all.Decisions {
 		if skip[d.Detector] {

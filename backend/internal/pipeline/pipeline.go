@@ -173,6 +173,10 @@ func (p *Pipeline) resolvedStallTimeout() time.Duration {
 type Options struct {
 	// Targets is the ordered fallback chain (provider+model candidates).
 	Targets []dispatch.Target
+	// SkipCache bypasses the semantic response cache in both directions, for
+	// internal calls whose answer must never be reused (the guardrails judge
+	// embeds a per-call verification code).
+	SkipCache bool
 	// PlanOpts carries strategy metadata (round-robin, chain ID, sticky limit).
 	PlanOpts dispatch.PlanOptions
 	// Slimmer / Terse / Caveman control token-saving transforms. Slimmer (RTK)
@@ -241,7 +245,10 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	// Semantic cache lookup before any token-saving transform mutates the
 	// request, so cache keys are stable across slimmer/terse settings. Cached
 	// hits cost nothing and skip the upstream entirely.
-	vec := p.embedPrompt(ctx, req)
+	var vec []float32
+	if !opts.SkipCache {
+		vec = p.embedPrompt(ctx, req)
+	}
 	if hit, ok := p.cacheLookup(ctx, vec); ok {
 		p.log.Debug("cache hit, skipping upstream")
 		scope := budget.Scope{TenantID: req.Metadata.TenantID, ProjectID: req.Metadata.ProjectID, APIKeyID: req.Metadata.APIKeyID}
@@ -1208,6 +1215,12 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 			}
 
 			if guard != nil {
+				if chunk.Type == core.ChunkToolCall {
+					if gres := guard.ToolCall(); gres.Action == guardrails.ActionBlock {
+						blockStream(gres.Reason)
+						return
+					}
+				}
 				if chunk.Type == core.ChunkText {
 					text, gres := guard.Push(chunk.Delta)
 					if gres.Action == guardrails.ActionBlock {

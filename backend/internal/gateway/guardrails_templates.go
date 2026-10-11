@@ -46,6 +46,7 @@ func guardrailTemplates() []guardrailTemplate {
 		Enabled:           true,
 		SeverityThreshold: guardrails.SeverityMedium,
 		Action:            guardrails.ActionBlock,
+		Canary:            true,
 	}
 	injectionWarn := &guardrails.InjectionConfig{
 		Enabled:           true,
@@ -63,6 +64,7 @@ func guardrailTemplates() []guardrailTemplate {
 		SeverityThreshold: guardrails.SeverityHigh,
 		Action:            guardrails.ActionWarn,
 		ScanToolResults:   true,
+		Spotlight:         true,
 	}
 	toxicityWarn := &guardrails.ToxicityConfig{
 		Enabled:   true,
@@ -83,7 +85,7 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "strict-safety",
 			Name:        "Strict safety",
-			Description: "Block on any PII match, block prompt injection at medium severity, and allow only programming/general-help topics.",
+			Description: "Block on any PII match, block prompt injection at medium severity with a system-prompt leak canary, and allow only programming/general-help topics.",
 			Config: guardrails.Policy{
 				Enabled:   &enabled,
 				PII:       piiBlock,
@@ -124,7 +126,7 @@ func guardrailTemplates() []guardrailTemplate {
 		{
 			ID:          "coding-agent",
 			Name:        "Coding agent",
-			Description: "Replace credentials, card numbers and Indonesian tax/ID numbers before they reach the provider, and flag high-severity injection hidden in tool results (fetched pages, files) without breaking the agent loop.",
+			Description: "Replace credentials, card numbers and Indonesian tax/ID numbers before they reach the provider, mark tool output as untrusted data, and flag high-severity injection hidden in tool results (fetched pages, files) without breaking the agent loop.",
 			Config: guardrails.Policy{
 				Enabled:   &enabled,
 				PII:       piiSecrets,

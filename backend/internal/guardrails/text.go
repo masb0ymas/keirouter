@@ -160,9 +160,11 @@ func appendPartSurfaces(out []TextSurface, role core.Role, msg int, parts []core
 
 // inboundViews caches the role-scoped text views of a request.
 type inboundViews struct {
-	user   string
-	recent string
-	tools  string
+	user        string
+	recent      string
+	tools       string
+	recentTools string
+	lastUser    string
 }
 
 // recentUserTurns is how many trailing user messages RecentUserText covers.
@@ -171,8 +173,23 @@ type inboundViews struct {
 const recentUserTurns = 3
 
 func buildViews(req *core.ChatRequest) *inboundViews {
-	var user, tools []string
-	for _, m := range req.Messages {
+	// The current turn starts after the last user message that carries text;
+	// tool results after it are what the model is about to act on.
+	turnStart := 0
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == core.RoleUser && strings.TrimSpace(req.Messages[i].TextContent()) != "" {
+			turnStart = i
+			break
+		}
+	}
+	var user, tools, recentTools []string
+	for i, m := range req.Messages {
+		addTool := func(t string) {
+			tools = append(tools, t)
+			if i >= turnStart {
+				recentTools = append(recentTools, t)
+			}
+		}
 		for _, p := range m.Content {
 			switch p.Type {
 			case core.PartText:
@@ -180,16 +197,16 @@ func buildViews(req *core.ChatRequest) *inboundViews {
 				case core.RoleUser:
 					user = append(user, p.Text)
 				case core.RoleTool:
-					tools = append(tools, p.Text)
+					addTool(p.Text)
 				}
 			case core.PartToolResult:
 				if p.ToolResult == nil {
 					continue
 				}
-				tools = append(tools, p.ToolResult.Content)
+				addTool(p.ToolResult.Content)
 				for _, q := range p.ToolResult.Parts {
 					if q.Type == core.PartText {
-						tools = append(tools, q.Text)
+						addTool(q.Text)
 					}
 				}
 			}
@@ -204,9 +221,14 @@ func buildViews(req *core.ChatRequest) *inboundViews {
 			recent = append([]string{t}, recent...)
 		}
 	}
-	return &inboundViews{
-		user:   strings.Join(user, "\n\n"),
-		recent: strings.Join(recent, "\n\n"),
-		tools:  strings.Join(tools, "\n\n"),
+	v := &inboundViews{
+		user:        strings.Join(user, "\n\n"),
+		recent:      strings.Join(recent, "\n\n"),
+		tools:       strings.Join(tools, "\n\n"),
+		recentTools: strings.Join(recentTools, "\n\n"),
 	}
+	if len(recent) > 0 {
+		v.lastUser = recent[len(recent)-1]
+	}
+	return v
 }

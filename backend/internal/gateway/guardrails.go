@@ -33,6 +33,7 @@ func (s *Server) mountGuardrails(r chi.Router) {
 	r.Post("/guardrails", s.adminCreateGuardrail)
 	r.Get("/guardrails/effective", s.adminEffectiveGuardrail)
 	r.Get("/guardrails/entities", s.adminListGuardrailEntities)
+	r.Get("/guardrails/capabilities", s.adminGuardrailCapabilities)
 	r.Get("/guardrails/templates", s.adminListGuardrailTemplates)
 	r.Get("/guardrails/export", s.adminExportGuardrails)
 	r.Post("/guardrails/import", s.adminImportGuardrails)

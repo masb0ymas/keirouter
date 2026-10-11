@@ -327,19 +327,21 @@ A built-in content-safety layer runs detectors against every request and respons
 
 | Detector | Catches | Default engine | Optional engine |
 |---|---|---|---|
-| **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / NPWP / Indonesian passport** | Native Go (Presidio-compatible) | Microsoft Presidio HTTP sidecar |
-| **Prompt Injection** | Ignore-previous, role override, DAN, prompt-leak, safety bypass | Native regex catalog | — |
-| **Topics** | Allow-list / block-list of topics | Keyword + n-gram | Embedding similarity |
-| **Toxicity** | Profanity, hate, harassment, violence, sexual (id + en) | Native catalog | OpenAI Moderation API |
-| **Bias** (outbound) | Political, gender, ethnic, religious bias in responses | Native bilingual lexicon | — |
+| **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / KK / NPWP / BPJS / Indonesian passport**, US SSN, API keys, passwords, private keys | Native Go (Presidio-compatible, checksum-validated) | Microsoft Presidio HTTP sidecar |
+| **Prompt Injection** | Instruction overrides, jailbreak personas, smuggled chat-template tokens, prompt leaks, encoded payloads, indirect injection in tool results (id + en) | Signatures + typo-tolerant intent rules | Prompt Guard 2 classifier · embedding match · LLM judge |
+| **Topics** | Allow-list / block-list of topics | Whole-word keyword match with inflections | Embedding similarity |
+| **Toxicity** | Profanity, hate, harassment, violence, sexual, self-harm (id + en) | Native weighted lexicon | OpenAI Moderation API |
+| **Bias** (outbound) | Political, gender, ethnic, religious stereotyping in responses | Native bilingual lexicon | — |
 
 - **Actions:** `log_only`, `warn`, `mask` (rewrite it), or `block` (refuse it). Strictest action across detectors wins.
 - **PII strategies:** `redact`, `replace`, `mask`, `hash`, `anonymize`, or `block`.
-- **Streaming-safe:** a sliding 256-char buffer scans assistant output as it streams and pulls the plug mid-sentence if something leaks.
+- **Obfuscation-resistant:** every detector reads a normalized copy of the text, so zero-width characters, fullwidth or look-alike letters, leetspeak (`1gn0r3`), censoring (`f*ck`) and spaced-out letters don't slip through.
+- **Streaming-safe:** a short hold-back buffer scans assistant output before it is forwarded, so leaked PII is masked and blocked text never reaches the client, even when it is split across chunks.
+- **Prompt-injection hardening** (per policy): spotlighting marks tool results as untrusted data, a canary marker in the system prompt blocks responses that leak it, and tool calls are refused in a turn whose tool results look injected.
 - **Observability:** every decision shows up in **Audit Logs** (live via SSE); Prometheus serves `keirouter_guardrail_decisions_total` and `keirouter_guardrail_eval_seconds` at `/metrics`.
 - **Compliance:** a per-tenant `allow_external_engines` flag forces every detector offline; `KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS` controls retention; the test endpoint is capped at 10 req/min.
 
-Starter templates ship in the dashboard's "From template" picker (Indonesia PII · Strict safety · Compliance audit · Public chatbot · Alerts-only), and you can export/import policies as a JSON bundle.
+Starter templates ship in the dashboard's "From template" picker (Indonesia PII · Strict safety · Compliance audit · Public chatbot · Coding agent · Alerts-only), and you can export/import policies as a JSON bundle.
 
 Want NER-based PII detection (`PERSON`, `LOCATION`, full multilingual)? Spin up the optional **Presidio sidecar**:
 
@@ -348,6 +350,14 @@ docker compose -f compose.yaml -f compose.postgres.yaml -f compose.presidio.yaml
 ```
 
 Then flip any PII policy's engine to `presidio` in the dashboard.
+
+Want a trained classifier on top of the injection signatures? Run the **Prompt Guard sidecar** (Llama Prompt Guard 2, multilingual; the model is gated, so set `HF_TOKEN` after accepting its license, or set `PROMPTGUARD_MODEL=protectai/deberta-v3-base-prompt-injection-v2`):
+
+```bash
+docker compose -f compose.yaml -f compose.promptguard.yaml up -d
+```
+
+Then turn on **ML classifier** in a prompt-injection policy. Any server speaking the Hugging Face text-classification contract works too: point `KEIROUTER_GUARDRAILS__INJECTION__CLASSIFIER_URL` at it. The **LLM judge** layer needs no setup: pick any model, alias or chain KeiRouter routes to.
 
 ---
 

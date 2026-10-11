@@ -2,73 +2,336 @@ package injection
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/guardrails"
 )
 
-// Detector implements guardrails.Detector for prompt injection.
-type Detector struct{}
+// Detector implements guardrails.Detector for prompt injection. The
+// pattern layers always run; the classifier, semantic and judge layers run
+// when both the server wires them and the policy turns them on.
+type Detector struct {
+	classifier *Classifier
+	semantic   *semanticIndex
+	completer  atomic.Pointer[completerBox]
+	judgeCache *resultCache[judgeVerdict]
+	secret     [32]byte
+	log        *slog.Logger
+}
 
-// New returns the prompt-injection detector.
-func New() *Detector { return &Detector{} }
+type completerBox struct{ c Completer }
+
+// Config wires the optional model-backed layers.
+type Config struct {
+	// Classifier enables the ML classifier layer.
+	Classifier *Classifier
+	// Embedder enables the semantic layer. Pass only a real embeddings
+	// model; a hashing embedder can't measure meaning.
+	Embedder Embedder
+	Logger   *slog.Logger
+}
+
+// New returns the prompt-injection detector with only the pattern layers.
+func New() *Detector { return NewWithConfig(Config{}) }
+
+// NewWithConfig builds a detector with optional model-backed layers.
+func NewWithConfig(cfg Config) *Detector {
+	d := &Detector{
+		classifier: cfg.Classifier,
+		semantic:   newSemanticIndex(cfg.Embedder),
+		judgeCache: newResultCache[judgeVerdict](2048, 30*time.Minute),
+		log:        cfg.Logger,
+	}
+	if d.log == nil {
+		d.log = slog.Default()
+	}
+	_, _ = rand.Read(d.secret[:])
+	return d
+}
+
+// SetCompleter enables the LLM judge layer. The gateway calls it once its
+// routing is ready, since the judge runs through KeiRouter's own providers.
+func (d *Detector) SetCompleter(c Completer) {
+	if c != nil {
+		d.completer.Store(&completerBox{c: c})
+	}
+}
+
+// Capabilities reports which optional layers the server can run.
+func (d *Detector) Capabilities() map[string]bool {
+	return map[string]bool{
+		"classifier": d.classifier != nil,
+		"semantic":   d.semantic != nil,
+		"judge":      d.completer.Load() != nil,
+	}
+}
 
 // Name identifies this detector in policy config and audit logs.
-func (Detector) Name() string { return "injection" }
+func (*Detector) Name() string { return "injection" }
 
 // Inbound scans the user messages (and, when enabled, tool results) for
-// injection. The operator's system prompt and earlier assistant turns are
+// injection, then hardens the request (spotlighting, canary) when allowed
+// through. The operator's system prompt and earlier assistant turns are
 // trusted and never scanned. Hits below the severity threshold produce a
 // log-only decision so tuning stays visible in the audit log.
-func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guardrails.Policy) (*guardrails.Decision, error) {
+func (d *Detector) Inbound(ctx context.Context, in *guardrails.InboundRequest, p guardrails.Policy) (*guardrails.Decision, error) {
 	cfg := p.Injection
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
 	}
-	hits := Scan(in.UserText())
+	userText := in.UserText()
+	hits := d.layers(ctx, cfg, userText, in.LastUserText(), "")
 	if cfg.ScanToolResults {
-		for _, h := range Scan(in.ToolText()) {
+		for _, h := range d.layers(ctx, cfg, in.ToolText(), "", "tool") {
 			h.Pattern = "indirect_" + h.Pattern
 			hits = append(hits, h)
 		}
 	}
+	hits = d.judgeLayer(ctx, cfg, in, hits)
+
+	if in.Source != nil && cfg.GuardToolCalls {
+		recent := in.RecentToolText()
+		taint := Aggregate(d.layers(ctx, cfg, recent, "", "tool"))
+		in.Source.Metadata.UntrustedToolInput = taint == SeverityMedium || taint == SeverityHigh
+	}
+
+	dec := decide(cfg, hits)
+	if in.Source != nil && (dec == nil || dec.Action != guardrails.ActionBlock) && (cfg.Spotlight || cfg.Canary) {
+		if cfg.Spotlight {
+			d.spotlight(in.Source)
+		}
+		if cfg.Canary {
+			d.plantCanary(in.Source)
+		}
+		in.Refresh()
+	}
+	return dec, nil
+}
+
+func decide(cfg *guardrails.InjectionConfig, hits []Hit) *guardrails.Decision {
 	if len(hits) == 0 {
-		return nil, nil
+		return nil
 	}
 	threshold := cfg.SeverityThreshold
 	if threshold == "" {
 		threshold = guardrails.DefaultInjectionSeverity
 	}
 	severity := mapSeverity(Aggregate(hits))
-	if !guardrails.MeetsThreshold(severity, threshold) {
-		return &guardrails.Decision{
-			Action:   guardrails.ActionLogOnly,
-			Severity: severity,
-			Reason:   reasonFor(hits),
-			Findings: toFindings(hits),
-		}, nil
-	}
 	action := cfg.Action
 	if action == "" {
 		action = guardrails.DefaultInjectionAction
+	}
+	if !guardrails.MeetsThreshold(severity, threshold) {
+		action = guardrails.ActionLogOnly
 	}
 	return &guardrails.Decision{
 		Action:   action,
 		Severity: severity,
 		Reason:   reasonFor(hits),
 		Findings: toFindings(hits),
-	}, nil
+	}
 }
 
-// Outbound: injection detection runs only on the prompt side. Returning nil
-// is correct: the engine treats nil as ActionAllow with no findings.
-func (Detector) Outbound(_ context.Context, _ *guardrails.OutboundResponse, _ guardrails.Policy) (*guardrails.Decision, error) {
+// layers runs the pattern layers plus the classifier and semantic layers
+// the policy enables. semanticText narrows the (paid) embedding calls to the
+// newest message; source labels tool output for the classifier cache.
+func (d *Detector) layers(ctx context.Context, cfg *guardrails.InjectionConfig, text, semanticText, source string) []Hit {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	hits := Scan(text)
+	if cfg.Classifier && d.classifier != nil {
+		hits = append(hits, d.classify(ctx, cfg, text)...)
+	}
+	if cfg.Semantic && d.semantic != nil && d.semantic.ready() {
+		st := semanticText
+		if st == "" {
+			st = text
+		}
+		thr := cfg.SemanticThreshold
+		if thr <= 0 {
+			thr = 0.85
+		}
+		sim, s, e := d.semantic.best(ctx, st)
+		off := strings.LastIndex(text, st)
+		if sim >= thr-0.05 && off >= 0 {
+			sev := SeverityMedium
+			if sim >= thr {
+				sev = SeverityHigh
+			}
+			hits = append(hits, Hit{Pattern: "semantic_match", Severity: sev, Start: off + s, End: off + e,
+				Text: fmt.Sprintf("%s (similarity %.2f)", truncate(st[s:e], 60), sim)})
+		}
+	}
+	return hits
+}
+
+func (d *Detector) classify(ctx context.Context, cfg *guardrails.InjectionConfig, text string) []Hit {
+	thr := cfg.ClassifierThreshold
+	if thr <= 0 {
+		thr = 0.9
+	}
+	scores, err := d.classifier.Score(ctx, text)
+	if err != nil {
+		d.log.Warn("guardrails: injection classifier failed; pattern layers still apply", "err", err)
+		return nil
+	}
+	var out []Hit
+	for _, c := range scores {
+		if c.score < thr-0.2 {
+			continue
+		}
+		sev := SeverityMedium
+		if c.score >= thr {
+			sev = SeverityHigh
+		}
+		out = append(out, Hit{Pattern: "ml_classifier", Severity: sev, Start: c.start, End: c.end,
+			Text: fmt.Sprintf("%s (score %.2f)", truncate(text[c.start:c.end], 60), c.score)})
+	}
+	return out
+}
+
+// judgeLayer asks the LLM judge when the policy says so. In "suspicious"
+// mode it only runs when another layer saw something short of high
+// severity: a positive verdict confirms it, a confident negative one clears
+// it to log-only. Explicit high-severity signatures are never overruled.
+func (d *Detector) judgeLayer(ctx context.Context, cfg *guardrails.InjectionConfig, in *guardrails.InboundRequest, hits []Hit) []Hit {
+	box := d.completer.Load()
+	mode := strings.ToLower(strings.TrimSpace(cfg.Judge))
+	if box == nil || cfg.JudgeModel == "" || mode == "" || mode == guardrails.JudgeOff {
+		return hits
+	}
+	sev := Aggregate(hits)
+	if mode == guardrails.JudgeSuspicious && (sev == "" || sev == SeverityHigh) {
+		return hits
+	}
+	user := in.LastUserText()
+	tool := ""
+	if cfg.ScanToolResults {
+		tool = in.RecentToolText()
+	}
+	if strings.TrimSpace(user+tool) == "" {
+		return hits
+	}
+	key := cacheKey("judge", cfg.JudgeModel, user, tool)
+	v, ok := d.judgeCache.get(key)
+	if !ok {
+		var err error
+		var meta core.RequestMetadata
+		if in.Source != nil {
+			meta = in.Source.Metadata
+		}
+		v, err = judge(ctx, box.c, cfg.JudgeModel, meta, user, tool)
+		if err != nil {
+			d.log.Warn("guardrails: injection judge failed; other layers still apply", "model", cfg.JudgeModel, "err", err)
+			return hits
+		}
+		d.judgeCache.put(key, v)
+	}
+	off := strings.LastIndex(in.UserText(), user)
+	span := func(h Hit) Hit {
+		if off >= 0 {
+			h.Start, h.End = off, off+len(user)
+		} else {
+			h.Start, h.End = -1, -1
+		}
+		return h
+	}
+	switch {
+	case v.Hijacked:
+		return append(hits, span(Hit{Pattern: "llm_judge_hijacked", Severity: SeverityHigh, Text: "input took over the judge"}))
+	case v.Injection && v.Confidence >= 0.5:
+		s := SeverityHigh
+		if v.Confidence < 0.75 {
+			s = SeverityMedium
+		}
+		return append(hits, span(Hit{Pattern: "llm_judge", Severity: s, Text: fmt.Sprintf("%s (confidence %.2f)", v.Technique, v.Confidence)}))
+	case !v.Injection && v.Confidence >= 0.75 && sev != SeverityHigh:
+		// Cleared: keep the evidence for the audit log, but as low severity.
+		for i := range hits {
+			hits[i].Severity = SeverityLow
+		}
+		return append(hits, span(Hit{Pattern: "llm_judge_cleared", Severity: SeverityLow, Text: fmt.Sprintf("judged benign (confidence %.2f)", v.Confidence)}))
+	}
+	return hits
+}
+
+// Outbound enforces the output-side defenses: a response that repeats the
+// canary has leaked the system prompt, and tool calls made after tool
+// results that look injected are refused.
+func (d *Detector) Outbound(_ context.Context, out *guardrails.OutboundResponse, p guardrails.Policy) (*guardrails.Decision, error) {
+	cfg := p.Injection
+	if cfg == nil || !cfg.Enabled || out.Request == nil {
+		return nil, nil
+	}
+	action := cfg.Action
+	if action == "" {
+		action = guardrails.DefaultInjectionAction
+	}
+	if cfg.Canary {
+		token := d.canaryToken(out.Request.Metadata.TenantID)
+		texts := []string{out.Text}
+		if out.Source != nil {
+			for _, s := range guardrails.ResponseSurfaces(out.Source) {
+				if s.Kind == guardrails.SurfaceToolArgs {
+					texts = append(texts, s.Get())
+				}
+			}
+		}
+		for i, t := range texts {
+			if s, e, ok := leakSpan(t, token); ok {
+				f := guardrails.Finding{Entity: "PROMPT_INJECTION:system_prompt_leak", Score: 1, Start: s, End: e, Original: "canary marker"}
+				if i > 0 {
+					f.Start, f.End = -1, -1
+				}
+				return &guardrails.Decision{
+					Action:   action,
+					Severity: guardrails.SeverityHigh,
+					Reason:   "injection: response leaked the system prompt (canary)",
+					Findings: []guardrails.Finding{f},
+				}, nil
+			}
+		}
+	}
+	if cfg.GuardToolCalls && out.Request.Metadata.UntrustedToolInput && out.Source != nil && hasToolCalls(out.Source) {
+		return ToolCallDecision(cfg), nil
+	}
 	return nil, nil
+}
+
+// ToolCallDecision is the refusal for a tool call made after tool results
+// that look like a prompt injection.
+func ToolCallDecision(cfg *guardrails.InjectionConfig) *guardrails.Decision {
+	action := cfg.Action
+	if action == "" {
+		action = guardrails.DefaultInjectionAction
+	}
+	return &guardrails.Decision{
+		Action:   action,
+		Severity: guardrails.SeverityHigh,
+		Reason:   "injection: tool call refused after tool results that look like a prompt injection",
+		Findings: []guardrails.Finding{{Entity: "PROMPT_INJECTION:tainted_tool_call", Score: 1, Start: -1, End: -1}},
+	}
+}
+
+func hasToolCalls(r *core.ChatResponse) bool {
+	for _, p := range r.Message.Content {
+		if p.Type == core.PartToolCall {
+			return true
+		}
+	}
+	return false
 }
 
 // Aggregate turns individual hits into one severity. Independent weak

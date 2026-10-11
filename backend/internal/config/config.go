@@ -248,8 +248,9 @@ type DataConfig struct {
 // Detectors run with their built-in native engines by default; populate the
 // sub-configs to enable an external engine on a per-detector basis.
 type GuardrailsConfig struct {
-	Toxicity ToxicityEngineConfig `koanf:"toxicity"`
-	PII      PIIEngineConfig      `koanf:"pii"`
+	Toxicity  ToxicityEngineConfig  `koanf:"toxicity"`
+	PII       PIIEngineConfig       `koanf:"pii"`
+	Injection InjectionEngineConfig `koanf:"injection"`
 	// AuditRetentionDays drops guardrail_logs older than N days via a
 	// background sweeper. Zero / negative disables retention sweeping (the
 	// table grows unbounded). 90 is a sensible operational default.
@@ -263,6 +264,20 @@ type PIIEngineConfig struct {
 	PresidioAnalyzerURL string        `koanf:"presidio_analyzer_url"`
 	PresidioTimeout     time.Duration `koanf:"presidio_timeout"`
 	PresidioLanguage    string        `koanf:"presidio_language"`
+}
+
+// InjectionEngineConfig configures the optional ML prompt-injection
+// classifier (Llama Prompt Guard 2 or a DeBERTa model) served over HTTP with
+// the Hugging Face text-classification contract — see compose.promptguard.yaml.
+// When ClassifierURL is empty, policies that enable the classifier layer
+// keep running the pattern layers only.
+type InjectionEngineConfig struct {
+	ClassifierURL     string        `koanf:"classifier_url"`
+	ClassifierTimeout time.Duration `koanf:"classifier_timeout"`
+	// ClassifierLabels lists the labels that mean "injection"; the default
+	// covers Prompt Guard 2 (LABEL_1) and the common DeBERTa models.
+	ClassifierLabels []string `koanf:"classifier_labels"`
+	ClassifierAPIKey string   `koanf:"classifier_api_key"`
 }
 
 // ToxicityEngineConfig configures the optional OpenAI Moderation engine. When

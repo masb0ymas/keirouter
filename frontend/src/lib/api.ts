@@ -942,6 +942,24 @@ export interface InjectionConfig {
   action?: GuardrailAction;
   /** Also inspect tool results for indirect prompt injection. */
   scan_tool_results?: boolean;
+  /** ML classifier layer (Prompt Guard 2 sidecar). */
+  classifier?: boolean;
+  /** Injection probability treated as an attack (0–1, default 0.9). */
+  classifier_threshold?: number;
+  /** Embedding match against known attacks. */
+  semantic?: boolean;
+  /** Cosine similarity treated as a match (0–1, default 0.85). */
+  semantic_threshold?: number;
+  /** LLM judge mode. */
+  judge?: "off" | "suspicious" | "always";
+  /** Model, alias or chain the judge runs on. */
+  judge_model?: string;
+  /** Wrap tool results in secret delimiters marked as data. */
+  spotlight?: boolean;
+  /** Plant a canary in the system prompt and block responses that leak it. */
+  canary?: boolean;
+  /** Refuse tool calls after tool results that look injected. */
+  guard_tool_calls?: boolean;
 }
 
 export interface TopicsConfig {
@@ -1681,6 +1699,9 @@ export const api = {
   },
   listGuardrailEntities: () =>
     request<{ entities: string[] }>("GET", "/guardrails/entities"),
+  /** Optional engines this server can run, per detector (e.g. injection.classifier). */
+  getGuardrailCapabilities: () =>
+    request<{ capabilities: Record<string, Record<string, boolean>> }>("GET", "/guardrails/capabilities"),
   listGuardrailLogs: (filter?: {
     api_key_id?: string;
     detector?: string;

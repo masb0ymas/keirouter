@@ -152,4 +152,8 @@ type RequestMetadata struct {
 	ContextAffinityKey string
 	// RequiredCapabilities the chosen model must satisfy (anti-downgrade guard).
 	RequiredCapabilities CapabilitySet
+	// UntrustedToolInput is set by the inbound guardrails when tool results
+	// of the current turn look like a prompt injection, so the outbound pass
+	// can refuse tool calls the model makes under that influence.
+	UntrustedToolInput bool
 }

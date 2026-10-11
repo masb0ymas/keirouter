@@ -40,6 +40,11 @@ func New(cfg Config) *Detector {
 // Name identifies this detector in policy config and audit logs.
 func (Detector) Name() string { return "toxicity" }
 
+// Capabilities reports whether the OpenAI Moderation engine is wired.
+func (d *Detector) Capabilities() map[string]bool {
+	return map[string]bool{"openai": d.openai != nil}
+}
+
 // Inbound scans the user messages and returns a decision when the configured
 // threshold is exceeded for any allowed category. The operator's system
 // prompt is not scored (it may legitimately quote words it forbids).

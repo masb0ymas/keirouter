@@ -42,6 +42,11 @@ const maxFindings = 50
 // Name identifies this detector in audit logs and policy config.
 func (*Detector) Name() string { return "pii" }
 
+// Capabilities reports whether the Presidio engine is wired.
+func (d *Detector) Capabilities() map[string]bool {
+	return map[string]bool{"presidio": d.presidio != nil}
+}
+
 // settings is a PIIConfig with defaults applied.
 type settings struct {
 	cfg      *guardrails.PIIConfig

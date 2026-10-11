@@ -113,6 +113,11 @@ export function GuardrailEditor({ value, onChange, showStubs = true, compact = f
     queryFn: () => api.listGuardrailEntities(),
     staleTime: Infinity,
   });
+  const capabilities = useQuery({
+    queryKey: ["guardrail-capabilities"],
+    queryFn: () => api.getGuardrailCapabilities(),
+    staleTime: 60_000,
+  });
 
   const patch = (p: Partial<GuardrailPolicyConfig>) => onChange({ ...value, ...p });
 
@@ -124,7 +129,11 @@ export function GuardrailEditor({ value, onChange, showStubs = true, compact = f
           className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]"
         >
           <PIISection config={value.pii} entities={entities.data?.entities ?? []} onChange={(pii) => patch({ pii })} />
-          <InjectionSection config={value.injection} onChange={(injection) => patch({ injection })} />
+          <InjectionSection
+            config={value.injection}
+            caps={capabilities.data?.capabilities.injection}
+            onChange={(injection) => patch({ injection })}
+          />
           {showStubs && (
             <>
               <TopicsSection config={value.topics} onChange={(topics) => patch({ topics })} />
@@ -272,16 +281,46 @@ function Field({
   );
 }
 
-function SwitchField({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function SwitchField({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  hint?: ReactNode;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
   const id = useId();
   return (
     <div className="flex items-center justify-between gap-4 md:col-span-2">
-      <span id={id} className="text-[12.5px] font-medium text-fg">
-        {label}
+      <span className="min-w-0">
+        <span id={id} className={cn("block text-[12.5px] font-medium", disabled ? "text-fg-faint" : "text-fg")}>
+          {label}
+        </span>
+        {hint && (
+          <span id={`${id}-hint`} className="mt-0.5 block text-[12px] text-fg-muted">
+            {hint}
+          </span>
+        )}
       </span>
-      <Toggle checked={checked} onChange={onChange} aria-labelledby={id} />
+      <Toggle
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+        aria-labelledby={id}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+      />
     </div>
   );
+}
+
+// Subheading groups related settings inside a detector panel.
+function Subheading({ children }: { children: ReactNode }) {
+  return <p className="pt-1 text-[12.5px] font-semibold text-fg md:col-span-2">{children}</p>;
 }
 
 // ChipGroup is a multi-select of toggle buttons (aria-pressed), named by the
@@ -534,16 +573,40 @@ function PIISection({
   );
 }
 
+const JUDGE_MODES: { value: NonNullable<GuardrailPolicyConfig["injection"]>["judge"] & string; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "suspicious", label: "Only when another layer is unsure" },
+  { value: "always", label: "Every request" },
+];
+
 function InjectionSection({
   config,
+  caps,
   onChange,
 }: {
   config?: GuardrailPolicyConfig["injection"];
+  caps?: Record<string, boolean>;
   onChange: (next: GuardrailPolicyConfig["injection"]) => void;
 }) {
   const c = config ?? { enabled: false };
   const severity = SEVERITIES.find((s) => s.value === (c.severity_threshold ?? "medium"))?.label ?? c.severity_threshold;
-  const summary = [`${severity} severity and up`, c.scan_tool_results ? "Tool results" : null].filter(Boolean).join(" · ");
+  const judge = c.judge ?? "off";
+  // Capabilities load asynchronously; treat unknown as available so the form
+  // never flickers to disabled.
+  const can = (k: string) => caps?.[k] ?? true;
+  const layers = [
+    c.classifier && can("classifier") ? "Classifier" : null,
+    c.semantic && can("semantic") ? "Semantic" : null,
+    judge !== "off" && c.judge_model ? "LLM judge" : null,
+  ].filter(Boolean);
+  const summary = [
+    `${severity} severity and up`,
+    layers.length > 0 ? layers.join(" + ") : null,
+    c.scan_tool_results ? "Tool results" : null,
+    c.spotlight || c.canary || c.guard_tool_calls ? "Hardened" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <DetectorRow
       icon={DETECTOR_ICONS.injection}
@@ -556,7 +619,7 @@ function InjectionSection({
     >
       <Field
         label="Minimum severity"
-        info="High: explicit overrides, jailbreak personas, smuggled chat-template tokens. Medium (default) adds prompt-leak requests and combined weak signals. Low also acts on persona requests such as “act as a translator”. Matches below the threshold are only logged."
+        info="High: explicit overrides, jailbreak personas, smuggled chat-template tokens, confident classifier or judge verdicts. Medium (default) adds prompt-leak requests and combined weak signals. Low also acts on persona requests such as “act as a translator”. Matches below the threshold are only logged."
       >
         {(ids) => (
           <Select
@@ -587,6 +650,116 @@ function InjectionSection({
         label="Also scan tool results (indirect injection)"
         checked={c.scan_tool_results ?? false}
         onChange={(v) => onChange({ ...c, scan_tool_results: v })}
+      />
+
+      <Subheading>Detection layers</Subheading>
+      <p className="-mt-2 text-[12px] text-fg-muted md:col-span-2">
+        Signatures and typo-tolerant intent rules always run. Model-backed layers catch paraphrases the rules miss.
+      </p>
+      <SwitchField
+        label="ML classifier (Prompt Guard 2)"
+        hint={
+          can("classifier")
+            ? "A trained model scores every message. Adds a few milliseconds per request."
+            : "Not configured on this server: run compose.promptguard.yaml or set KEIROUTER_GUARDRAILS__INJECTION__CLASSIFIER_URL."
+        }
+        checked={c.classifier ?? false}
+        disabled={!can("classifier") && !c.classifier}
+        onChange={(v) => onChange({ ...c, classifier: v })}
+      />
+      {c.classifier && (
+        <Field label="Classifier threshold (0–1)" info="Injection probability treated as an attack. Scores up to 0.2 below it count as suspicious (medium).">
+          {(ids) => (
+            <Input
+              {...ids}
+              type="number"
+              min={0.5}
+              max={1}
+              step={0.01}
+              value={c.classifier_threshold ?? 0.9}
+              onChange={(e) => onChange({ ...c, classifier_threshold: Number(e.target.value) })}
+              className="tabular-nums"
+            />
+          )}
+        </Field>
+      )}
+      <SwitchField
+        label="Semantic match against known attacks"
+        hint={
+          can("semantic")
+            ? "Compares the newest message with a corpus of attacks by meaning (English and Indonesian)."
+            : "Needs an embeddings API (cache.embedding_provider=api)."
+        }
+        checked={c.semantic ?? false}
+        disabled={!can("semantic") && !c.semantic}
+        onChange={(v) => onChange({ ...c, semantic: v })}
+      />
+      {c.semantic && (
+        <Field label="Similarity threshold (0–1)" info="Cosine similarity treated as a match. Up to 0.05 below it counts as suspicious.">
+          {(ids) => (
+            <Input
+              {...ids}
+              type="number"
+              min={0.5}
+              max={1}
+              step={0.01}
+              value={c.semantic_threshold ?? 0.85}
+              onChange={(e) => onChange({ ...c, semantic_threshold: Number(e.target.value) })}
+              className="tabular-nums"
+            />
+          )}
+        </Field>
+      )}
+      <Field
+        label="LLM judge"
+        info="An LLM classifies the newest message (and tool output when scanned). The text travels as data next to a random verification code; if it hijacks the judge, the missing code itself flags the attack. “Only when unsure” confirms or clears what other layers flagged below high severity, so most requests cost nothing. Judge calls are metered against the requesting key."
+      >
+        {(ids) => (
+          <Select
+            {...ids}
+            value={judge}
+            disabled={!can("judge") && judge === "off"}
+            onChange={(e) => onChange({ ...c, judge: e.target.value as typeof judge })}
+          >
+            {JUDGE_MODES.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      {judge !== "off" && (
+        <Field label="Judge model" hint="Any model, alias or chain KeiRouter routes. A small fast model is enough.">
+          {(ids) => (
+            <Input
+              {...ids}
+              value={c.judge_model ?? ""}
+              onChange={(e) => onChange({ ...c, judge_model: e.target.value.trim() })}
+              placeholder="gpt-4o-mini"
+            />
+          )}
+        </Field>
+      )}
+
+      <Subheading>Hardening</Subheading>
+      <SwitchField
+        label="Mark tool results as untrusted (spotlighting)"
+        hint="Wraps tool output in secret delimiters and tells the model to treat it as data, never instructions."
+        checked={c.spotlight ?? false}
+        onChange={(v) => onChange({ ...c, spotlight: v })}
+      />
+      <SwitchField
+        label="Canary: block responses that leak the system prompt"
+        hint="Plants a secret marker in the system prompt; a response that repeats it is stopped, also while streaming."
+        checked={c.canary ?? false}
+        onChange={(v) => onChange({ ...c, canary: v })}
+      />
+      <SwitchField
+        label="Refuse tool calls after injected tool results"
+        hint="When this turn’s tool output looks like an injection, tool calls the model makes are refused, so injected text can’t trigger actions."
+        checked={c.guard_tool_calls ?? false}
+        onChange={(v) => onChange({ ...c, guard_tool_calls: v })}
       />
     </DetectorRow>
   );

@@ -290,6 +290,24 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		})
 		log.Info("guardrails: PII Presidio engine enabled", "analyzer", cfg.Guardrails.PII.PresidioAnalyzerURL)
 	}
+	// Prompt injection: pattern layers always run. The ML classifier needs a
+	// sidecar URL, the semantic layer a real embeddings API (the hashing
+	// fallback can't measure meaning), and the LLM judge is attached once the
+	// gateway exists because it routes through KeiRouter's own providers.
+	injCfg := injection.Config{Logger: log}
+	if cfg.Guardrails.Injection.ClassifierURL != "" {
+		injCfg.Classifier = injection.NewClassifier(injection.ClassifierConfig{
+			URL:     cfg.Guardrails.Injection.ClassifierURL,
+			Timeout: cfg.Guardrails.Injection.ClassifierTimeout,
+			Labels:  cfg.Guardrails.Injection.ClassifierLabels,
+			APIKey:  cfg.Guardrails.Injection.ClassifierAPIKey,
+		})
+		log.Info("guardrails: injection classifier enabled", "url", cfg.Guardrails.Injection.ClassifierURL)
+	}
+	if cfg.Cache.EmbeddingProvider == "api" && cfg.Cache.EmbeddingAPIKey != "" {
+		injCfg.Embedder = embedder
+	}
+	injectionDetector := injection.NewWithConfig(injCfg)
 	// Per-tenant guardrails settings (currently just allow_external_engines).
 	guardrailTenantPolicy := guardrails.NewSettingsTenantPolicy(db.Settings(), 30*time.Second)
 	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
@@ -297,7 +315,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Audit:    guardrailAudit,
 		Detectors: []guardrails.Detector{
 			pii.NewWithConfig(piiCfg),
-			injection.New(),
+			injectionDetector,
 			topics.New(topics.Config{Embedder: embedder}),
 			toxicity.New(toxCfg),
 			bias.New(),
@@ -444,6 +462,10 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
+
+	// The prompt-injection LLM judge routes through the gateway's own
+	// model resolution, so it can only be attached now.
+	injectionDetector.SetCompleter(gw)
 
 	// Auto-seed accounts for free, no-auth providers so they are immediately
 	// usable without a manual "connect" step in the dashboard.
