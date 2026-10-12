@@ -190,7 +190,7 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 			"hidden":        p.Hidden,
 			"pinned":        p.Pinned,
 			"notice":        p.Notice,
-			"drivable":      connectors.DrivableDialect(p.Dialect) || webProvider(p.ID),
+			"drivable":      connectors.Drivable(p),
 			"input_per_m":   p.InputPerM,
 			"output_per_m":  p.OutputPerM,
 		}
@@ -267,17 +267,6 @@ var sharedProviderIcons = map[string]string{
 	"github-models":      "github",
 	"huggingface-router": "huggingface",
 	"triton":             "nvidia",
-}
-
-// webProvider reports whether a provider is served by the web search/fetch
-// connector (so it is routable even though its dialect is the generic openai).
-func webProvider(id string) bool {
-	switch id {
-	case "tavily", "exa", "serper", "brave-search", "searxng", "firecrawl", "jina-reader":
-		return true
-	default:
-		return false
-	}
 }
 
 // adminProviderModels returns the model list for a specific provider. It

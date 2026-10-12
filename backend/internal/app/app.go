@@ -172,6 +172,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	})
 	uh := usagehub.New()
 	mtr.SetHub(uh)
+	if auditRec.ExportsRequests() {
+		mtr.AddRecordObserver(auditRec.ObserveUsage)
+	}
 	bud := budget.New(db.Budgets(), db.Usage())
 	disp := dispatch.New(connRegistry, db.Accounts(), v)
 	// Refresh expiring OAuth access tokens just-in-time before each upstream
@@ -559,7 +562,7 @@ func buildLimiter(ctx context.Context, cfg config.Config, bud *budget.Engine, mt
 		Logger:   log,
 	})
 	bud.EnableSharedCounter(budget.NewRedisCounter(client, cfg.Limits.RedisTimeout, log), cfg.Limits.BudgetCounterTTL, log)
-	mtr.SetRecordObserver(bud.ObserveUsage)
+	mtr.AddRecordObserver(bud.ObserveUsage)
 	log.Info("limits: shared redis backend (rate limits, concurrency, budgets)",
 		"addr", ropts.Addr, "fail_mode", cfg.Limits.FailMode)
 	return rl, func() {
@@ -586,11 +589,19 @@ func buildAudit(cfg config.Config, db *store.DB, masterKey []byte, version strin
 		exp = audit.NewOTLPExporter(otlpCfg)
 		log.Info("audit: exporting events as OTLP logs", "endpoint", otlpCfg.URL)
 	}
+	var requests audit.UsageExporter
+	if exp != nil && cfg.Audit.OTLP.IncludeRequests {
+		requests = audit.NewOTLPExporter(audit.RequestExporterConfig(otlpCfg))
+		log.Info("audit: exporting every gateway request as OTLP logs", "endpoint", otlpCfg.URL)
+	} else if cfg.Audit.OTLP.IncludeRequests {
+		log.Warn("audit: include_requests is set but no OTLP endpoint is configured; requests are not exported")
+	}
 	rec := audit.New(db.Audit(), exp, audit.Config{
 		BufferSize:      cfg.Audit.BufferSize,
 		Key:             audit.DeriveKey(masterKey),
 		InstanceID:      instanceID,
 		DefaultTenantID: store.DefaultTenantID,
+		Requests:        requests,
 		Logger:          log,
 	})
 	rec.Record(audit.Event{

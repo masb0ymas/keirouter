@@ -786,8 +786,12 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		// omits one. Raw byte piping can't inject a synthetic event, so we trade
 		// the zero-copy throughput for correct usage accounting on these opt-in
 		// requests.
+		//
+		// Outbound guardrails force it too: raw bytes never reach the
+		// StreamGuard, so output PII masking, toxicity, bias and canary checks
+		// would silently be skipped.
 		if len(attemptReq.Tools) == 0 && !req.IncludeUsage && req.Metadata.SourceDialect == attempt.Conn.Dialect() &&
-			!requiresParsedStreamAdmission(attempt.Target.Provider) {
+			!requiresParsedStreamAdmission(attempt.Target.Provider) && !p.guardrails.ScansStreamOutput(ctx, req) {
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
 				if rawErr != nil && isUnsupportedCloudflareImageError(rawErr, attempt.Target.Provider, attempt.Target.Model, attemptReq) {

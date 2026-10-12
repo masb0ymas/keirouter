@@ -114,7 +114,8 @@ limits:
 audit:
   # Records every dashboard sign-in and configuration change (who, what,
   # from where, outcome) in the audit_log table. Rows are HMAC hash-chained:
-  # GET /api/audit/verify detects an edited, inserted or deleted row.
+  # GET /api/audit/verify detects an edited or inserted row, or one deleted
+  # from the middle of a chain.
   enabled: true
   # Rows older than this are deleted hourly. 0 keeps them forever.
   retention_days: 365
@@ -136,6 +137,11 @@ audit:
     # "keirouter"; extra attributes merge over OTEL_RESOURCE_ATTRIBUTES.
     service_name: ""
     resource_attributes: {} # e.g. { deployment.environment: prod }
+    # Also export one record per gateway request (event keirouter.request,
+    # scope .../requests): API key, provider, model, tokens, cost, latency,
+    # status, fallbacks and guardrail outcome. Never prompt or response text.
+    # Off by default because the volume follows your traffic.
+    include_requests: false
 
 health:
   # Background account/model health checks. Unhealthy account/model pairs are

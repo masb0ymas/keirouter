@@ -63,7 +63,7 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 - [Branding & White-Label](#-make-it-yours-branding)
 - [CLI Tools Auto-Config](#-cli-tools-auto-config)
 - [Usage Portal](#-usage-portal)
-- [Supported Providers](#-supported-providers-160)
+- [Supported Providers](#-supported-providers-130-llms)
 - [Configuration](#-configuration)
 - [Architecture](#-architecture)
 - [Security](#-security)
@@ -85,12 +85,12 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 - 💸 **Five token savers** — Two on the way in, three on the way out, all on a live savings dashboard. Details in [Token Savings](#-token-savings-where-the-money-hides).
 - 💰 **Budget engine** — Per-key USD and token hard limits, with an auto-cutoff so surprise bills stay fictional.
 - 🚦 **Rate limiting** — Per-key RPM, TPM, and concurrency caps via global defaults or reusable plans, with TPM settled against the real usage the provider reports.
-- 🧩 **HA-ready** — Run several replicas behind a load balancer: rate limits, concurrency and budgets are shared through Redis at one round trip per request.
+- 🧩 **HA-ready** — Run several replicas behind a load balancer on Postgres + Redis: rate limits, concurrency and budget counters are shared at one round trip per request.
 - 📈 **Quota tracker** — Upstream limits and local usage for every provider account in one place.
 
 **Safety & governance**
-- 🛡️ **Guardrails** — PII, prompt-injection, toxicity, topics, and bias detectors layered global → provider → model → chain → key, with mid-stream output scanning, an ML classifier, an LLM judge, a fully-offline mode, and a monitor that shows what got blocked and what it cost.
-- 📜 **Audit log** — Every sign-in and config change, hash-chained so tampering shows, exported as OpenTelemetry logs and JSONL for your SIEM.
+- 🛡️ **Guardrails** — PII, prompt-injection, toxicity, topics, and bias detectors layered global → provider → model → chain → key, with mid-stream output scanning, an ML classifier, an LLM judge, native engines that need no outside service, and a monitor that shows what got blocked and what it cost.
+- 📜 **Audit log** — Every sign-in and config change, hash-chained so tampering shows, exported as OpenTelemetry logs and JSONL for your SIEM. Optionally ship every gateway request too (who, which model, tokens, cost, outcome; never the prompt).
 - 🔐 **Locked down by default** — AES-256-GCM envelope encryption for credentials, a loopback-only admin API, a password-gated dashboard, HMAC sessions, and SSRF protection on outbound calls.
 
 **Operations & UX**
@@ -493,7 +493,7 @@ Separately, per-IP abuse guards (`auth_failures_per_minute`, `login_attempts_per
 
 ### High availability (multiple replicas)
 
-Running several KeiRouter replicas behind a load balancer? Point them at the same Postgres and Redis and set `backend: redis`. Every replica then enforces **one** RPM/TPM window, **one** concurrency pool per key and **one** budget, instead of each replica handing out its own allowance.
+Running several KeiRouter replicas behind a load balancer? Point them at the same Postgres and Redis and set `backend: redis`. Every replica then enforces **one** RPM/TPM window, **one** concurrency pool per key and **one** budget counter, instead of each replica handing out its own allowance. SQLite is single-instance only, so HA needs Postgres.
 
 ```yaml
 database:
@@ -516,6 +516,13 @@ How it stays fast:
 
 Budget edits are broadcast over Redis pub/sub, so every replica drops its cached definitions immediately. `GET /api/settings/limits/status` shows the backend, its health, live leases and fallback counts.
 
+Not shared across replicas yet:
+
+- **In-flight budget reservations** live on the replica that took the request, so concurrent requests on different replicas can overshoot a budget slightly before the shared counter catches up.
+- **Per-IP login and auth-failure limits** are counted per replica.
+- **Limit settings changed in the dashboard** apply to the replica that saved them; restart the others to pick them up.
+- **OAuth token refreshes** are deduplicated per replica only. Keep sign-in-with-a-plan accounts on one replica so two replicas never spend the same single-use refresh token.
+
 ---
 
 ## 🛡️ Guardrails
@@ -524,7 +531,7 @@ A built-in content-safety layer runs detectors against every request and respons
 
 | Detector | Catches | Default engine | Optional engine |
 |---|---|---|---|
-| **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / KK / NPWP / BPJS / Indonesian passport**, US SSN, API keys, passwords, private keys | Native Go (Presidio-compatible, checksum-validated) | Microsoft Presidio HTTP sidecar |
+| **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / NPWP / Indonesian passport**, plus **KK / BPJS** when a context word such as *kartu keluarga* is nearby, US SSN, API keys, passwords, private keys | Native Go (Presidio-compatible, checksum-validated) | Microsoft Presidio HTTP sidecar |
 | **Prompt Injection** | Instruction overrides, jailbreak personas, smuggled chat-template tokens, prompt leaks, encoded payloads, indirect injection in tool results (id + en) | Signatures + typo-tolerant intent rules | Prompt Guard 2 classifier · embedding match · LLM judge |
 | **Topics** | Allow-list / block-list of topics | Whole-word keyword match with inflections | LLM (context-aware, lets small talk through) · Embedding similarity |
 | **Toxicity** | Profanity, hate, harassment, violence, sexual, self-harm (id + en) | Native weighted lexicon | OpenAI Moderation API |
@@ -533,12 +540,12 @@ A built-in content-safety layer runs detectors against every request and respons
 - **Actions:** `log_only`, `warn`, `mask` (rewrite it), or `block` (refuse it). Strictest action across detectors wins.
 - **PII strategies:** `redact`, `replace`, `mask`, `hash`, `anonymize`, or `block`.
 - **Obfuscation-resistant:** every detector reads a normalized copy of the text, so zero-width characters, fullwidth or look-alike letters, leetspeak (`1gn0r3`), censoring (`f*ck`) and spaced-out letters don't slip through.
-- **Streaming-safe:** a short hold-back buffer scans assistant output before it is forwarded, so leaked PII is masked and blocked text never reaches the client, even when it is split across chunks.
+- **Streaming-safe:** a short hold-back buffer scans assistant output before it is forwarded, so leaked PII is masked and blocked text never reaches the client, even when it is split across chunks. Whenever an output detector is active, KeiRouter skips its zero-copy passthrough so every streamed byte goes through the guard.
 - **Prompt-injection hardening** (per policy): spotlighting marks tool results as untrusted data, a canary marker in the system prompt blocks responses that leak it, and tool calls are refused in a turn whose tool results look injected.
 - **Test before you ship:** every policy has a dry-run tester — nothing reaches a provider.
 - **Monitoring:** the **Overview** tab of the Guardrails page shows how often requests were blocked, masked or warned (inbound, outbound and mid-stream), which detectors and reasons fired, the top PII entities, keys and models involved, the latency guardrails added, and what the LLM judge cost. Drill down by API key or model. The Overview page tells you when guardrails acted in the selected period, and each API key shows its own 7-day numbers.
 - **Observability:** every decision also shows up in the **Audit log** tab of the Guardrails page (live via SSE); Prometheus serves `keirouter_guardrail_decisions_total` and `keirouter_guardrail_eval_seconds` at `/metrics`.
-- **Compliance:** a per-tenant **Allow external detector engines** switch forces every detector offline; `KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS` controls retention; the test endpoint is capped at 10 req/min.
+- **Compliance:** turning off the per-tenant **Allow external detector engines** switch keeps PII, toxicity and topics on their native engines and disables the embedding and LLM-judge layers (the ML injection classifier still runs if you configured its URL, so point it at a local sidecar); `KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS` controls retention; the test endpoint is capped at 10 req/min.
 
 Starter templates ship in the **Start from template** picker (Indonesia PII · Strict safety · Compliance audit · Public chatbot · Coding agent · Alerts-only), and you can export/import policies as a JSON bundle.
 
@@ -578,7 +585,7 @@ Prometheus metrics live at `/metrics` (loopback-only by default): requests, late
 
 Every dashboard sign-in and configuration change is recorded on the **Audit log** page: who did it (a stable per-session id), the action (`keys.create`, `settings.endpoint`, `auth.login`, ...), the resource, the outcome, client IP, request id and W3C trace id. Request bodies are never stored, only the names of the fields that were sent. Reading a full config export or a database backup is audited too.
 
-- **Tamper-evident:** each replica writes an HMAC hash chain keyed from the master key. **Verify integrity** (or `GET /api/audit/verify`) reports any row that was edited, inserted or deleted.
+- **Tamper-evident:** each replica writes an HMAC hash chain keyed from the master key. **Verify integrity** (or `GET /api/audit/verify`) reports rows that were edited, inserted or deleted from the middle of a chain. Rows cut off the newest end of a chain leave no trace in the chain itself, so ship events to an OTLP collector as well if you need that covered.
 - **OpenTelemetry-native:** set `audit.otlp.endpoint` (or the standard `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`; OTLP over HTTP) and each event is also shipped as an OTLP log record, using semantic-convention attributes such as `user.id`, `client.address`, `http.route` and `event.name=keirouter.audit.<action>`. Any OTel Collector, Grafana Loki, Datadog, Elastic or Splunk pipeline can ingest it.
 - **SIEM export:** **Export JSONL** (or `GET /api/audit/export`) downloads the filtered log as JSON Lines.
 - **Never in the way:** events are queued and batch-written off the request path, and a slow collector has its own queue. `audit.retention_days` (default 365) prunes old rows.
@@ -588,7 +595,22 @@ audit:
   otlp:
     endpoint: http://otel-collector:4318
     headers: { Authorization: "Bearer <token>" }
+    include_requests: true   # also ship every gateway request (see below)
 ```
+
+#### Gateway requests in your SIEM
+
+Admin events cover who changed the gateway. To also see who **used** it, set `audit.otlp.include_requests: true` (or `KEIROUTER_AUDIT__OTLP__INCLUDE_REQUESTS=true`). Every request is then shipped to the same collector as a `keirouter.request` log record, using the OpenTelemetry GenAI conventions where they exist:
+
+| Attribute | Example |
+|---|---|
+| `keirouter.api_key.id`, `keirouter.client`, `keirouter.tenant.id` | which key and tool made the call |
+| `gen_ai.provider.name`, `gen_ai.response.model`, `keirouter.chain.id`, `keirouter.fallback.count` | where it was routed |
+| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `keirouter.cost.usd` | what it cost |
+| `keirouter.request.status`, `error.type`, `keirouter.latency.ms`, `keirouter.ttft.ms` | how it went |
+| `keirouter.guardrail.action`, `keirouter.guardrail.detector` | what guardrails did |
+
+Prompts and responses are never exported. Records use their own scope (`github.com/mydisha/keirouter/requests`) and their own queue, so a traffic spike can't crowd admin events out; `GET /api/audit/status` reports both exporters. The same data stays queryable on the **Usage** page.
 
 ---
 
@@ -640,7 +662,7 @@ A dedicated, no-admin-required view at `/portal` where teammates keep an eye on 
 
 ---
 
-## 🌐 Supported Providers (160+)
+## 🌐 Supported Providers (130+ LLMs)
 
 **🧠 LLM / Chat**
 
@@ -680,13 +702,15 @@ Exchanged tokens are cached and refreshed automatically, and every secret field 
 
 | Type | Providers |
 |------|-----------|
-| **Image Generation** | OpenAI, OpenAI Codex, Gemini, xAI, Cloudflare, Fal.ai, Stability AI, Black Forest Labs, Recraft, Topaz, Runway ML, NanoBanana, Venice AI, MiniMax, HuggingFace, SD WebUI, ComfyUI |
+| **Image Generation** | OpenAI, xAI, Venice AI, Recraft |
 | **Video Generation** | xAI |
-| **Text-to-Speech** | OpenAI, Gemini, NVIDIA NIM, ElevenLabs, Deepgram, MiniMax, Hyperbolic, AWS Polly, Google TTS, Edge TTS, Inworld, Local Device |
-| **Speech-to-Text** | OpenAI Whisper, Groq Whisper, Deepgram, AssemblyAI, Gemini, HuggingFace |
-| **Embeddings** | OpenAI, Gemini, Mistral, Cohere, AWS Bedrock, Azure AI Foundry, Databricks, Together AI, Fireworks AI, Nebius, NVIDIA NIM, GitHub Copilot, GitHub Models, GigaChat, vLLM, Venice AI, Voyage AI, Jina AI, OpenRouter |
-| **Web Search** | Tavily, Exa, Serper, Brave Search, Perplexity, xAI, Gemini, Kimi, MiniMax, Google PSE, OpenAI |
-| **Web Fetch** | Tavily, Exa, Firecrawl, Jina |
+| **Text-to-Speech** | OpenAI |
+| **Speech-to-Text** | OpenAI Whisper, Groq Whisper |
+| **Embeddings** | OpenAI, Mistral, Cohere, AWS Bedrock, Azure AI Foundry, Databricks, GigaChat, GitHub Models, Cloudflare Workers AI, Together AI, Fireworks AI, Nebius, NVIDIA NIM, OpenRouter, Voyage AI, Jina AI, Venice AI, vLLM |
+| **Web Search** | Tavily, Exa, Serper, Brave Search |
+| **Web Fetch** | Tavily, Exa, Firecrawl |
+
+Image, speech, transcription, video and embedding requests use the OpenAI wire format (`/images/generations`, `/audio/speech`, `/audio/transcriptions`, …), so any upstream or self-hosted server that speaks it works as a custom provider. The dashboard also lists media services with their own APIs (ElevenLabs, Deepgram, AssemblyAI, Stability AI, Fal.ai, Black Forest Labs, Google PSE, …) marked **Coming soon**: native adapters for those are on the way, and until then they only work behind an OpenAI-compatible proxy added as a custom provider.
 
 Browse the full catalog (and filter by capability) under **Connect provider** in the dashboard.
 

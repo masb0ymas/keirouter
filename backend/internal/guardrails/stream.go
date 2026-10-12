@@ -62,6 +62,18 @@ func (e *Engine) NewStreamGuard(ctx context.Context, req *core.ChatRequest) *Str
 	return &StreamGuard{e: e, ctx: ctx, req: req, policy: policy, once: map[string]bool{}}
 }
 
+// ScansStreamOutput reports whether a streamed response to req must pass
+// through a StreamGuard. Callers that could pipe raw upstream bytes straight
+// to the client use it to keep such responses on the parsed path, where the
+// guard can mask or block output before it is forwarded.
+func (e *Engine) ScansStreamOutput(ctx context.Context, req *core.ChatRequest) bool {
+	if e == nil || req == nil || bypassed(ctx) {
+		return false
+	}
+	policy := e.policyFor(ctx, req)
+	return policy.IsActive() && policy.scansOutput()
+}
+
 // scansOutput reports whether any detector inspects model output.
 func (p Policy) scansOutput() bool {
 	return (p.PII != nil && p.PII.Enabled && p.PII.ScanOutput) ||

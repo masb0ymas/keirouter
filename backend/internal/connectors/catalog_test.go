@@ -53,11 +53,12 @@ func TestSpecByAliasPrefersCustomOverNewBuiltin(t *testing.T) {
 
 func TestSpecsByKind(t *testing.T) {
 	cases := map[core.ServiceKind][]string{
-		core.ServiceImage:  {"nanobanana", "fal-ai", "stability-ai"},
-		core.ServiceSTT:    {"deepgram", "assemblyai", "groq"},
-		core.ServiceTTS:    {"elevenlabs", "inworld"},
-		core.ServiceSearch: {"tavily", "brave-search", "serper", "exa"},
-		core.ServiceFetch:  {"firecrawl", "exa", "tavily"},
+		core.ServiceImage:     {"openai", "xai", "venice", "recraft"},
+		core.ServiceSTT:       {"openai", "groq"},
+		core.ServiceTTS:       {"openai"},
+		core.ServiceEmbedding: {"openai", "cloudflare-ai", "bedrock", "voyage-ai"},
+		core.ServiceSearch:    {"tavily", "brave-search", "serper", "exa"},
+		core.ServiceFetch:     {"firecrawl", "exa", "tavily"},
 	}
 	for kind, wantProviders := range cases {
 		specs := SpecsByKind(kind)

@@ -1058,7 +1058,7 @@ function FirstRun() {
             current={current}
             done={steps[0]}
             title="Connect a provider"
-            body={steps[0] ? `${accountCount} account${accountCount === 1 ? "" : "s"} connected.` : "An API key or OAuth sign-in, any of 160+ providers."}
+            body={steps[0] ? `${accountCount} account${accountCount === 1 ? "" : "s"} connected.` : "An API key or OAuth sign-in, any of 130+ LLM providers."}
             action={<SetupAction to="/providers" primary={current === 0}>{steps[0] ? "Manage providers" : "Connect provider"}</SetupAction>}
           />
           <SetupStep

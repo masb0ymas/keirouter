@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -138,4 +140,46 @@ func TestStreamGuardrailCleanRequestRecordsAllow(t *testing.T) {
 	require.Equal(t, "success", rec.Status)
 	require.Equal(t, "allow", rec.GuardrailAction, "guardrails ran and nothing fired")
 	require.Empty(t, rec.GuardrailDetector)
+}
+
+// rawForbiddenConnector also offers the zero-copy raw stream, so a same-dialect
+// request without tools is eligible for the passthrough fast path.
+type rawForbiddenConnector struct{ forbiddenConnector }
+
+func (rawForbiddenConnector) StreamRaw(context.Context, *core.ChatRequest, core.Credentials, core.StreamConfig) (io.ReadCloser, http.Header, error) {
+	body := `data: {"choices":[{"index":0,"delta":{"content":"FORBIDDEN"}}]}` + "\n\n" + "data: [DONE]\n\n"
+	return io.NopCloser(strings.NewReader(body)), http.Header{"Content-Type": {"text/event-stream"}}, nil
+}
+
+func TestStreamGuardrailOutputPolicyDisablesZeroCopy(t *testing.T) {
+	p, _ := newGuardrailPipeline(t, rawForbiddenConnector{})
+	result, err := p.Stream(context.Background(), guardrailStreamRequest("hello"), Options{
+		Targets: []dispatch.Target{{Provider: "openai", Model: "gpt-4o"}},
+	})
+	require.NoError(t, err)
+	require.Nil(t, result.DirectBody, "raw passthrough would skip the output guardrails")
+	var sawBlock bool
+	for chunk := range result.Chunks {
+		if chunk.Type == core.ChunkText {
+			require.NotContains(t, chunk.Delta, "FORBIDDEN")
+		}
+		if chunk.Type == core.ChunkError {
+			sawBlock = core.AsProviderError(chunk.Err).Kind == core.ErrPolicyBlocked
+		}
+	}
+	require.True(t, sawBlock)
+}
+
+func TestStreamWithoutOutputGuardrailsKeepsZeroCopy(t *testing.T) {
+	m := meter.New(newPipelineTestDB(t).Usage(), nil, nil)
+	d := newPlannerDispatcherWithConnector(t, rawForbiddenConnector{}, "acc-1")
+	p := New(Deps{Dispatcher: d, Meter: m})
+	result, err := p.Stream(context.Background(), guardrailStreamRequest("hello"), Options{
+		Targets: []dispatch.Target{{Provider: "openai", Model: "gpt-4o"}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.DirectBody, "no output detector is enabled, so the fast path stays on")
+	_, _ = io.Copy(io.Discard, result.DirectBody)
+	_ = result.DirectBody.Close()
+	result.DirectCompleteFunc(nil)
 }

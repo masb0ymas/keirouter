@@ -506,12 +506,12 @@ type ProviderModel struct {
 	Model    ModelSpec
 }
 
-// ModelsByKind collects every model of the given kind across all non-hidden
-// providers in the catalog.
+// ModelsByKind collects every model of the given kind across all non-hidden,
+// drivable providers in the catalog.
 func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 	var out []ProviderModel
 	for _, spec := range Catalog() {
-		if spec.Hidden {
+		if spec.Hidden || !Drivable(spec) {
 			continue
 		}
 		if !core.HasServiceKind(spec.ServiceKinds, kind) {

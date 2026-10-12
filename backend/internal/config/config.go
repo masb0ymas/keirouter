@@ -255,6 +255,11 @@ type AuditOTLPConfig struct {
 	// ResourceAttributes are extra resource attributes (deployment.environment,
 	// service.instance.id, ...). Merged over OTEL_RESOURCE_ATTRIBUTES.
 	ResourceAttributes map[string]string `koanf:"resource_attributes"`
+	// IncludeRequests also exports one record per gateway request (event
+	// keirouter.request): key, model, provider, tokens, cost, latency, status
+	// and guardrail outcome, never prompt or response content. Off by default
+	// because it scales with traffic.
+	IncludeRequests bool `koanf:"include_requests"`
 }
 
 // HealthConfig controls background account/model health probes.

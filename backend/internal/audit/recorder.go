@@ -42,7 +42,10 @@ type Config struct {
 	InstanceID string
 	// DefaultTenantID fills events recorded without a tenant.
 	DefaultTenantID string
-	Logger          *slog.Logger
+	// Requests, when set, also ships one record per gateway request (see
+	// ObserveUsage). Nil exports admin events only.
+	Requests UsageExporter
+	Logger   *slog.Logger
 }
 
 // Recorder queues audit events and writes them in batches from one goroutine.
@@ -52,6 +55,7 @@ type Config struct {
 type Recorder struct {
 	store    entryStore
 	exporter Exporter
+	requests UsageExporter
 	log      *slog.Logger
 	key      []byte
 	chainID  string
@@ -96,6 +100,7 @@ func New(s entryStore, exp Exporter, cfg Config) *Recorder {
 	r := &Recorder{
 		store:         s,
 		exporter:      exp,
+		requests:      cfg.Requests,
 		log:           cfg.Logger,
 		key:           cfg.Key,
 		chainID:       cfg.InstanceID,
@@ -212,6 +217,21 @@ func (r *Recorder) Stop(deadline time.Duration) {
 	if r.exporter != nil {
 		r.exporter.Stop(deadline)
 	}
+	if r.requests != nil {
+		r.requests.Stop(deadline)
+	}
+}
+
+// ExportsRequests reports whether ObserveUsage ships anything.
+func (r *Recorder) ExportsRequests() bool { return r != nil && r.requests != nil }
+
+// ObserveUsage queues one gateway request for OTLP export. It never blocks,
+// so it can run on the request path as a meter record observer.
+func (r *Recorder) ObserveUsage(rec store.UsageRecord) {
+	if r == nil || r.requests == nil {
+		return
+	}
+	r.requests.EnqueueUsage(rec)
 }
 
 // ChainID is this writer's hash chain id.
@@ -239,6 +259,8 @@ type Stats struct {
 	Failed  int64          `json:"failed"`
 	Dropped int64          `json:"dropped"`
 	OTLP    *ExporterStats `json:"otlp,omitempty"`
+	// RequestsOTLP covers the per-request export, when enabled.
+	RequestsOTLP *ExporterStats `json:"requests_otlp,omitempty"`
 }
 
 // Stats returns a snapshot of the recorder's counters.
@@ -257,6 +279,10 @@ func (r *Recorder) Stats() Stats {
 	if r.exporter != nil {
 		es := r.exporter.Stats()
 		st.OTLP = &es
+	}
+	if r.requests != nil {
+		rs := r.requests.Stats()
+		st.RequestsOTLP = &rs
 	}
 	return st
 }

@@ -35,3 +35,16 @@ func TestRecordPersistsChainRouting(t *testing.T) {
 		t.Fatalf("chain routing not persisted: chain=%q fallbacks=%d", got.ChainID, got.FallbackCount)
 	}
 }
+
+func TestRecordNotifiesEveryObserver(t *testing.T) {
+	m := New(&captureStore{}, nil, nil)
+	var budgetSeen, exportSeen []string
+	m.AddRecordObserver(func(r store.UsageRecord) { budgetSeen = append(budgetSeen, r.Model) })
+	m.AddRecordObserver(func(r store.UsageRecord) { exportSeen = append(exportSeen, r.Model) })
+	if _, err := m.Record(context.Background(), Event{TenantID: "default", Provider: "openai", Model: "gpt-4o", Status: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(budgetSeen) != 1 || len(exportSeen) != 1 || exportSeen[0] != "gpt-4o" {
+		t.Fatalf("observers saw budget=%v export=%v, want one row each", budgetSeen, exportSeen)
+	}
+}

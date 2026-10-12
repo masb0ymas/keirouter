@@ -42,6 +42,8 @@ type OTLPConfig struct {
 	QueueSize     int
 	// Resource holds the resource attributes (service.name, ...).
 	Resource map[string]string
+	// Scope is the instrumentation scope name. Empty means the audit scope.
+	Scope string
 	// ScopeVersion is reported as the instrumentation scope version.
 	ScopeVersion string
 	Client       *http.Client
@@ -162,9 +164,10 @@ type ExporterStats struct {
 	LastOK    time.Time `json:"last_ok,omitempty"`
 }
 
-// OTLPExporter ships audit rows to an OTLP/HTTP logs endpoint as JSON. It has
-// its own queue, so a slow or unreachable collector never delays database
-// writes; when the queue is full, records are dropped and counted.
+// OTLPExporter ships records to an OTLP/HTTP logs endpoint as JSON: audit rows
+// (Enqueue) or per-request usage rows (EnqueueUsage). It has its own queue, so
+// a slow or unreachable collector never delays database writes or requests;
+// when the queue is full, records are dropped and counted.
 type OTLPExporter struct {
 	cfg      OTLPConfig
 	log      *slog.Logger
@@ -172,7 +175,7 @@ type OTLPExporter struct {
 	resource otlpResource
 	scope    otlpScope
 
-	queue chan store.AuditEntry
+	queue chan otlpItem
 
 	exported atomic.Int64
 	failed   atomic.Int64
@@ -205,6 +208,9 @@ func NewOTLPExporter(cfg OTLPConfig) *OTLPExporter {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.Scope == "" {
+		cfg.Scope = scopeName
+	}
 	client := cfg.Client
 	if client == nil {
 		client = &http.Client{Timeout: cfg.Timeout}
@@ -214,8 +220,8 @@ func NewOTLPExporter(cfg OTLPConfig) *OTLPExporter {
 		log:      cfg.Logger,
 		client:   client,
 		resource: otlpResource{Attributes: stringAttrs(cfg.Resource)},
-		scope:    otlpScope{Name: scopeName, Version: cfg.ScopeVersion},
-		queue:    make(chan store.AuditEntry, cfg.QueueSize),
+		scope:    otlpScope{Name: cfg.Scope, Version: cfg.ScopeVersion},
+		queue:    make(chan otlpItem, cfg.QueueSize),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 		sleep:    sleepCtx,
@@ -227,14 +233,30 @@ func NewOTLPExporter(cfg OTLPConfig) *OTLPExporter {
 // Endpoint is the logs URL records are sent to.
 func (e *OTLPExporter) Endpoint() string { return e.cfg.URL }
 
+// otlpItem is a queued record, mapped to its log record on the export
+// goroutine so callers only pay for a channel send.
+type otlpItem interface {
+	logRecord(observedUnixNano string) otlpLogRecord
+}
+
+type auditItem struct{ store.AuditEntry }
+
+func (it auditItem) logRecord(observed string) otlpLogRecord {
+	return logRecord(it.AuditEntry, observed)
+}
+
 // Enqueue queues committed rows for export without blocking.
 func (e *OTLPExporter) Enqueue(entries []store.AuditEntry) {
 	for _, en := range entries {
-		select {
-		case e.queue <- en:
-		default:
-			e.dropped.Add(1)
-		}
+		e.enqueue(auditItem{en})
+	}
+}
+
+func (e *OTLPExporter) enqueue(it otlpItem) {
+	select {
+	case e.queue <- it:
+	default:
+		e.dropped.Add(1)
 	}
 }
 
@@ -244,7 +266,7 @@ func (e *OTLPExporter) Stop(deadline time.Duration) {
 	select {
 	case <-e.doneCh:
 	case <-time.After(deadline):
-		e.log.Warn("audit OTLP exporter drain timed out", "pending", len(e.queue))
+		e.log.Warn("OTLP exporter drain timed out", "scope", e.scope.Name, "pending", len(e.queue))
 	}
 }
 
@@ -267,7 +289,7 @@ func (e *OTLPExporter) run() {
 	defer close(e.doneCh)
 	ticker := time.NewTicker(e.cfg.FlushInterval)
 	defer ticker.Stop()
-	batch := make([]store.AuditEntry, 0, e.cfg.BatchSize)
+	batch := make([]otlpItem, 0, e.cfg.BatchSize)
 	// ctx is cancelled on stop so a retry backoff does not hold shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -313,7 +335,7 @@ func (e *OTLPExporter) run() {
 
 // export sends one batch, retrying transient failures with exponential
 // backoff (honouring Retry-After) while ctx is live.
-func (e *OTLPExporter) export(ctx context.Context, batch []store.AuditEntry) {
+func (e *OTLPExporter) export(ctx context.Context, batch []otlpItem) {
 	body, err := e.encode(batch)
 	if err != nil {
 		e.fail(len(batch), err)
@@ -351,7 +373,7 @@ func (e *OTLPExporter) fail(n int, err error) {
 	e.mu.Lock()
 	e.lastErr = err.Error()
 	e.mu.Unlock()
-	e.log.Warn("audit OTLP export failed", "records", n, "err", err)
+	e.log.Warn("OTLP export failed", "scope", e.scope.Name, "records", n, "err", err)
 }
 
 type permanentError struct{ error }
@@ -470,11 +492,17 @@ type otlpKeyValue struct {
 }
 
 type otlpAnyValue struct {
-	StringValue *string `json:"stringValue,omitempty"`
-	IntValue    *string `json:"intValue,omitempty"`
+	StringValue *string  `json:"stringValue,omitempty"`
+	IntValue    *string  `json:"intValue,omitempty"`
+	BoolValue   *bool    `json:"boolValue,omitempty"`
+	DoubleValue *float64 `json:"doubleValue,omitempty"`
 }
 
 func strVal(s string) otlpAnyValue { return otlpAnyValue{StringValue: &s} }
+
+func boolVal(b bool) otlpAnyValue { return otlpAnyValue{BoolValue: &b} }
+
+func doubleVal(f float64) otlpAnyValue { return otlpAnyValue{DoubleValue: &f} }
 
 func intVal(n int64) otlpAnyValue {
 	s := strconv.FormatInt(n, 10)
@@ -505,11 +533,11 @@ func severityNumber(text string) int {
 	}
 }
 
-func (e *OTLPExporter) encode(batch []store.AuditEntry) ([]byte, error) {
+func (e *OTLPExporter) encode(batch []otlpItem) ([]byte, error) {
 	observed := strconv.FormatInt(time.Now().UnixNano(), 10)
 	records := make([]otlpLogRecord, 0, len(batch))
-	for _, en := range batch {
-		records = append(records, logRecord(en, observed))
+	for _, it := range batch {
+		records = append(records, it.logRecord(observed))
 	}
 	return json.Marshal(otlpLogsData{ResourceLogs: []otlpResourceLogs{{
 		Resource:  e.resource,

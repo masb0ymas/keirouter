@@ -35,11 +35,11 @@ const REFERENCE_SKILLS = [
   { id: "keirouter", name: "KeiRouter (entry)", endpoint: null as string | null, description: "Setup guide and index of all capabilities.", group: "entry" },
   { id: "keirouter-chat", name: "Chat", endpoint: "/v1/chat/completions", description: "Chat and code generation via OpenAI or Anthropic format with streaming.", group: "Text" },
   { id: "keirouter-embeddings", name: "Embeddings", endpoint: "/v1/embeddings", description: "Vectors for RAG and semantic search.", group: "Text" },
-  { id: "keirouter-image", name: "Image generation", endpoint: "/v1/images/generations", description: "Text-to-image via DALL-E, Imagen, FLUX, and more.", group: "Media" },
-  { id: "keirouter-tts", name: "Text-to-speech", endpoint: "/v1/audio/speech", description: "OpenAI, ElevenLabs, Edge, Google, Deepgram voices.", group: "Media" },
-  { id: "keirouter-stt", name: "Speech-to-text", endpoint: "/v1/audio/transcriptions", description: "Transcribe via Whisper, Groq, Gemini, Deepgram, AssemblyAI.", group: "Media" },
-  { id: "keirouter-web-search", name: "Web search", endpoint: "/v1/search", description: "Tavily, Exa, Brave, Serper, SearXNG, Google PSE, You.com.", group: "Web" },
-  { id: "keirouter-web-fetch", name: "Web fetch", endpoint: "/v1/web/fetch", description: "URL to markdown/text/HTML via Firecrawl, Jina, Tavily, Exa.", group: "Web" },
+  { id: "keirouter-image", name: "Image generation", endpoint: "/v1/images/generations", description: "Text-to-image via OpenAI, xAI, Venice and Recraft.", group: "Media" },
+  { id: "keirouter-tts", name: "Text-to-speech", endpoint: "/v1/audio/speech", description: "OpenAI voices, or any OpenAI-compatible speech server.", group: "Media" },
+  { id: "keirouter-stt", name: "Speech-to-text", endpoint: "/v1/audio/transcriptions", description: "Transcribe via OpenAI Whisper or Groq.", group: "Media" },
+  { id: "keirouter-web-search", name: "Web search", endpoint: "/v1/search", description: "Tavily, Exa, Brave Search and Serper.", group: "Web" },
+  { id: "keirouter-web-fetch", name: "Web fetch", endpoint: "/v1/web/fetch", description: "URL to markdown/text/HTML via Firecrawl, Tavily and Exa.", group: "Web" },
 ];
 
 type ReferenceSkill = (typeof REFERENCE_SKILLS)[number];
