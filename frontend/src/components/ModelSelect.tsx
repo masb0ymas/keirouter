@@ -1,9 +1,10 @@
 // Shared model multi-select and token formatting components used in
 // both Keys.tsx and Endpoints.tsx API key creation flows.
 
-import { useState, useEffect, useId, useRef, useMemo, useCallback, type InputHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useState, useEffect, useDeferredValue, useId, useRef, useMemo, useCallback, type InputHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery, useQueries, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { X, Search, ChevronDown, Check, Eye, Brain, Plus } from "lucide-react";
 import { api, type ModelCapabilities } from "../lib/api";
 import { ProviderLogo } from "./ProviderLogo";
@@ -58,40 +59,74 @@ export interface ModelCatalogOption {
 	capabilities?: ModelCapabilities;
 }
 
+type ProviderModelsResult = Awaited<ReturnType<typeof api.providerModels>>;
+
+// Module-level so useQueries memoizes it: the combined result (and the catalog
+// built from it) only changes when a provider's query does, not every render.
+function combineProviderModels(results: UseQueryResult<ProviderModelsResult>[]) {
+  return {
+    data: results.map((result) => result.data),
+    pending: results.filter((result) => result.isLoading).length,
+    error: results.some((result) => result.isError),
+  };
+}
+
 export function useModelCatalog() {
+  const queryClient = useQueryClient();
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers(), staleTime: 300_000 });
+  // One request for every provider's models; per-provider requests would
+  // queue behind the browser's per-host connection limit.
+  const batch = useQuery({
+    queryKey: ["providerModels", "all"],
+    queryFn: async () => {
+      const res = await api.allProviderModels();
+      // Seed the per-provider entries other screens read.
+      for (const [id, models] of Object.entries(res.providers)) {
+        if (!res.pending.includes(id)) queryClient.setQueryData(["providerModels", id], { models });
+      }
+      return res;
+    },
+    staleTime: 300_000,
+  });
   const visibleProviders = useMemo(
     () => (providers.data?.providers ?? []).filter((provider) => !provider.hidden),
     [providers.data],
   );
-  const modelQueries = useQueries({
-    queries: visibleProviders.map((provider) => ({
-      queryKey: ["providerModels", provider.id],
-      queryFn: () => api.providerModels(provider.id),
+  // Providers whose live discovery outlasted the batch are fetched on their own.
+  const pendingIds = batch.data?.pending;
+  const pendingQueries = useQueries({
+    queries: (pendingIds ?? []).map((id) => ({
+      queryKey: ["providerModels", id],
+      queryFn: () => api.providerModels(id),
       staleTime: 300_000,
     })),
+    combine: combineProviderModels,
   });
   const models = useMemo<ModelCatalogOption[]>(() => {
     const result: ModelCatalogOption[] = [];
-    visibleProviders.forEach((provider, index) => {
-      for (const model of modelQueries[index]?.data?.models ?? []) {
+    const pendingData = new Map((pendingIds ?? []).map((id, index) => [id, pendingQueries.data[index]]));
+    for (const provider of visibleProviders) {
+      const list = pendingData.get(provider.id)?.models ?? batch.data?.providers[provider.id] ?? [];
+      for (const model of list) {
         result.push({
           id: model.id,
           name: model.name || model.id,
           providerId: provider.id,
           providerName: provider.display_name,
           icon: provider.icon || `/providers/${provider.id}.png`,
-			capabilities: model.capabilities,
+          capabilities: model.capabilities,
         });
       }
-    });
+    }
     return result;
-  }, [visibleProviders, modelQueries]);
+  }, [visibleProviders, batch.data, pendingIds, pendingQueries.data]);
 
   return {
     models,
-    loading: providers.isLoading || modelQueries.some((query) => query.isLoading),
-    error: providers.isError || modelQueries.some((query) => query.isError),
+    loading: providers.isLoading || batch.isLoading || pendingQueries.pending > 0,
+    /** Provider model lists still in flight; the catalog fills in as they land. */
+    pendingProviders: batch.isLoading ? visibleProviders.length || 1 : pendingQueries.pending,
+    error: providers.isError || batch.isError || pendingQueries.error,
   };
 }
 
@@ -126,6 +161,205 @@ function CapabilityGlyphs({ capabilities }: { capabilities?: ModelCapabilities }
     </span>
   );
 }
+
+// Rows have fixed heights so the virtualizer never has to measure the DOM
+// (measuring forces a layout per newly mounted row while scrolling).
+const ROW_HEIGHT = { header: 34, single: 36, double: 50, touch: 44 } as const;
+
+function rowHeight(row: PickerRow, coarsePointer: boolean): number {
+  if (row.kind === "header") return ROW_HEIGHT.header;
+  if (row.model.id !== row.model.name) return ROW_HEIGHT.double;
+  return coarsePointer ? ROW_HEIGHT.touch : ROW_HEIGHT.single;
+}
+
+type PickerRow =
+  | { kind: "header"; key: string; providerId: string; model: ModelCatalogOption; count: number }
+  | { kind: "option"; key: string; providerId: string; model: ModelCatalogOption; index: number };
+
+function ModelGroupHeader({ model, count }: { model: ModelCatalogOption; count: number }) {
+  return (
+    <div className="flex h-full items-end gap-2 bg-surface px-2.5 pb-1">
+      <ProviderIcon option={model} size={16} />
+      <span className="text-[12px] font-medium text-fg-muted">{model.providerName}</span>
+      <span className="text-[12px] tabular-nums text-fg-faint" aria-hidden="true">{count}</span>
+    </div>
+  );
+}
+
+// Memoized so moving the active option or toggling one re-renders only the
+// rows whose state changed.
+const ModelOptionRow = memo(function ModelOptionRow({
+  model,
+  index,
+  domId,
+  selected,
+  active,
+  onSelect,
+  onHover,
+}: {
+  model: ModelCatalogOption;
+  index: number;
+  domId: string;
+  selected: boolean;
+  active: boolean;
+  onSelect: (index: number, id: string) => void;
+  onHover: (index: number) => void;
+}) {
+  return (
+    <div
+      id={domId}
+      role="option"
+      aria-selected={selected}
+      aria-label={`${model.name}, ${model.providerName}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => onSelect(index, model.id)}
+      onMouseMove={active ? undefined : () => onHover(index)}
+      className={`flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] ${
+        active ? "bg-hover ring-1 ring-inset ring-accent-500" : selected ? "bg-accent-500/10 hover:bg-accent-500/15" : "hover:bg-hover"
+      }`}
+    >
+      {/* Selected state is a check mark, not just a tint. */}
+      <span
+        aria-hidden="true"
+        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border ${
+          selected ? "border-accent-500 bg-accent-500 text-white" : "border-input bg-surface"
+        }`}
+      >
+        {selected && <Check className="h-3 w-3" strokeWidth={2.5} />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="block truncate font-medium text-fg">{model.name}</span>
+          <CapabilityGlyphs capabilities={model.capabilities} />
+        </span>
+        {model.id !== model.name && <span className="block truncate font-mono text-[12px] text-fg-muted">{model.id}</span>}
+      </span>
+    </div>
+  );
+});
+
+// VirtualModelList is the picker's listbox. It mounts only the rows in view
+// (the catalog can hold thousands) and keeps the active group's header pinned
+// to the top. It is its own memoized component so scrolling re-renders just the
+// list, not the picker and its catalog queries; it also owns the scroll element
+// so the virtualizer sees it on the first layout pass.
+const VirtualModelList = memo(function VirtualModelList({
+  listboxId,
+  loading,
+  compact,
+  maxHeight,
+  rows,
+  headerRows,
+  scrollRef,
+  scrollToRowRef,
+  uid,
+  selectedSet,
+  activeIndex,
+  onSelect,
+  onHover,
+}: {
+  listboxId: string;
+  loading: boolean;
+  compact: boolean;
+  maxHeight?: number;
+  rows: PickerRow[];
+  headerRows: number[];
+  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollToRowRef: MutableRefObject<((row: number) => void) | null>;
+  uid: string;
+  selectedSet: Set<string>;
+  activeIndex: number;
+  onSelect: (index: number, id: string) => void;
+  onHover: (index: number) => void;
+}) {
+  const activeHeaderRef = useRef(0);
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      let active = headerRows[0] ?? 0;
+      for (const row of headerRows) {
+        if (row > range.startIndex) break;
+        active = row;
+      }
+      activeHeaderRef.current = active;
+      const indexes = defaultRangeExtractor(range);
+      return indexes.includes(active) ? indexes : [active, ...indexes];
+    },
+    [headerRows],
+  );
+  const coarsePointer = useMemo(() => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches, []);
+  // Stable per row list: the virtualizer rebuilds every row offset whenever
+  // these identities change.
+  const estimateSize = useCallback((i: number) => rowHeight(rows[i], coarsePointer), [rows, coarsePointer]);
+  const getItemKey = useCallback((i: number) => rows[i].key, [rows]);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize,
+    getItemKey,
+    rangeExtractor,
+    overscan: 8,
+    paddingStart: 4,
+    paddingEnd: 4,
+  });
+
+  useEffect(() => {
+    scrollToRowRef.current = (row) => virtualizer.scrollToIndex(row, { align: "auto" });
+    return () => {
+      scrollToRowRef.current = null;
+    };
+  }, [virtualizer, scrollToRowRef]);
+
+  return (
+    <div
+      ref={scrollRef}
+      id={listboxId}
+      role="listbox"
+      aria-multiselectable="true"
+      aria-label="Models"
+      aria-busy={loading || undefined}
+      className={`overflow-y-auto overscroll-contain ${compact ? "min-h-0 flex-1" : ""}`}
+      style={maxHeight === undefined ? undefined : { maxHeight }}
+    >
+      {loading && rows.length === 0 ? (
+        <div className="flex items-center justify-center py-6" role="presentation">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-line-strong border-t-fg-muted" aria-hidden="true" />
+          <span className="sr-only">Loading models</span>
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="px-3 py-6 text-center text-[13px] text-fg-muted" role="presentation">No models match this search.</p>
+      ) : (
+        <div className="relative mx-1" style={{ height: virtualizer.getTotalSize() }} role="presentation">
+          {virtualizer.getVirtualItems().map((item) => {
+            const row = rows[item.index];
+            const pinned = row.kind === "header" && item.index === activeHeaderRef.current;
+            return (
+              <div
+                key={item.key}
+                role="presentation"
+                className={pinned ? "sticky top-0 z-10" : "absolute inset-x-0 top-0"}
+                style={pinned ? { height: item.size } : { height: item.size, transform: `translateY(${item.start}px)` }}
+              >
+                {row.kind === "header" ? (
+                  <ModelGroupHeader model={row.model} count={row.count} />
+                ) : (
+                  <ModelOptionRow
+                    model={row.model}
+                    index={row.index}
+                    domId={`${uid}-opt-${row.index}`}
+                    selected={selectedSet.has(row.model.id)}
+                    active={row.index === activeIndex}
+                    onSelect={onSelect}
+                    onHover={onHover}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+});
 
 export function ModelAccessList({ value, limit = 12 }: { value: string[]; limit?: number }) {
   const catalog = useModelCatalog();
@@ -198,6 +432,7 @@ export function ModelMultiSelect({
   const triggerButtonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   // The visual viewport shrinks when a phone's on-screen keyboard opens; the
   // compact (phone) popup sizes itself to it.
@@ -223,36 +458,56 @@ export function ModelMultiSelect({
     return map;
   }, [allModels]);
 
-  const filtered = useMemo(() => {
-    const providerModels = providerFilter === "all"
-      ? allModels
-      : allModels.filter((model) => model.providerId === providerFilter);
-    if (!query.trim()) return providerModels;
-    const q = query.toLowerCase();
-    return providerModels.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) ||
-        m.name.toLowerCase().includes(q) ||
-        m.providerId.toLowerCase().includes(q) ||
-		m.providerName.toLowerCase().includes(q) ||
-		(m.capabilities?.vision ? "vision" : "").includes(q) ||
-		(m.capabilities?.reasoning ? "reasoning" : "").includes(q),
-    );
-  }, [allModels, providerFilter, query]);
+  // Lower-cased search text per model, built once per catalog rather than on
+  // every keystroke (the catalog runs to thousands of models).
+  const searchIndex = useMemo(
+    () =>
+      allModels.map((m) =>
+        [m.id, m.name, m.providerId, m.providerName, m.capabilities?.vision ? "vision" : "", m.capabilities?.reasoning ? "reasoning" : ""]
+          .join("\n")
+          .toLowerCase(),
+      ),
+    [allModels],
+  );
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, { provider: string; providerName: string; models: ModelCatalogOption[] }>();
-    filtered.forEach((m) => {
-      if (!map.has(m.providerId)) {
-        map.set(m.providerId, { provider: m.providerId, providerName: m.providerName, models: [] });
+  // Typing stays responsive: filtering a large catalog runs at low priority.
+  const deferredQuery = useDeferredValue(query);
+
+  const filtered = useMemo(() => {
+    const q = deferredQuery.trim().toLowerCase();
+    if (!q && providerFilter === "all") return allModels;
+    return allModels.filter(
+      (m, i) => (providerFilter === "all" || m.providerId === providerFilter) && (!q || searchIndex[i].includes(q)),
+    );
+  }, [allModels, searchIndex, providerFilter, deferredQuery]);
+
+  // One flat row list (group headers + options) for the virtualizer. `flat`
+  // holds the options in visual order, so arrow keys follow what is on screen;
+  // `optionRow` maps an option index to its row.
+  const { rows, flat, optionRow, headerRows } = useMemo(() => {
+    const groups = new Map<string, ModelCatalogOption[]>();
+    for (const m of filtered) {
+      const list = groups.get(m.providerId);
+      if (list) list.push(m);
+      else groups.set(m.providerId, [m]);
+    }
+    const rows: PickerRow[] = [];
+    const flat: ModelCatalogOption[] = [];
+    const optionRow: number[] = [];
+    const headerRows: number[] = [];
+    for (const [providerId, models] of groups) {
+      headerRows.push(rows.length);
+      rows.push({ kind: "header", key: `h:${providerId}`, providerId, model: models[0], count: models.length });
+      for (const model of models) {
+        optionRow.push(rows.length);
+        rows.push({ kind: "option", key: `o:${providerId}:${model.id}`, providerId, model, index: flat.length });
+        flat.push(model);
       }
-      map.get(m.providerId)!.models.push(m);
-    });
-    return Array.from(map.values());
+    }
+    return { rows, flat, optionRow, headerRows };
   }, [filtered]);
 
-  // Options in visual (grouped) order, so arrow keys follow what is on screen.
-  const flat = useMemo(() => grouped.flatMap((g) => g.models), [grouped]);
+  const selectedSet = useMemo(() => new Set(value), [value]);
 
   const providerOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -260,9 +515,23 @@ export function ModelMultiSelect({
     return Array.from(map, ([id, name]) => ({ id, name }));
   }, [allModels]);
 
+  // Only commit a new position when it actually moved: an unchanged rect must
+  // not re-render the whole picker.
   const updateRect = useCallback(() => {
-    if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
-    setViewport(readViewport());
+    if (triggerRef.current) {
+      const next = triggerRef.current.getBoundingClientRect();
+      setRect((prev) =>
+        prev && prev.top === next.top && prev.left === next.left && prev.width === next.width && prev.height === next.height
+          ? prev
+          : next,
+      );
+    }
+    const nextViewport = readViewport();
+    setViewport((prev) =>
+      prev.width === nextViewport.width && prev.height === nextViewport.height && prev.top === nextViewport.top && prev.left === nextViewport.left
+        ? prev
+        : nextViewport,
+    );
   }, []);
 
   const close = useCallback((returnFocus: boolean) => {
@@ -275,14 +544,28 @@ export function ModelMultiSelect({
   useEffect(() => {
     if (!open) return;
     updateRect();
-    const onScroll = () => updateRect();
-    const onResize = () => updateRect();
+    // Coalesce to one measurement per frame, and ignore scrolling inside the
+    // popup itself (the model list) — it cannot move the trigger.
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateRect();
+      });
+    };
+    const onScroll = (e: Event) => {
+      if (e.target instanceof globalThis.Node && dropdownRef.current?.contains(e.target)) return;
+      schedule();
+    };
+    const onResize = schedule;
     const vv = window.visualViewport;
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
     vv?.addEventListener("resize", onResize);
     vv?.addEventListener("scroll", onResize);
     return () => {
+      cancelAnimationFrame(frame);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
       vv?.removeEventListener("resize", onResize);
@@ -317,20 +600,41 @@ export function ModelMultiSelect({
     }
   }, [open, rect]);
 
-  // Reset the active option when the visible list changes.
+  // Set by VirtualModelRows so keyboard navigation can scroll a row into view.
+  const scrollToRowRef = useRef<((row: number) => void) | null>(null);
+
+  // Reset the active option and scroll position when the visible list changes.
   useEffect(() => {
     setActiveIndex(-1);
-  }, [query, providerFilter]);
+    listRef.current?.scrollTo({ top: 0 });
+  }, [deferredQuery, providerFilter]);
 
-  // Keep the active option scrolled into view.
-  useEffect(() => {
-    if (activeIndex < 0) return;
-    document.getElementById(`${uid}-opt-${activeIndex}`)?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex, uid]);
-
-  const toggle = (id: string) => {
-    onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  // Keep the keyboard-active option scrolled into view (hover never scrolls).
+  const moveActive = (index: number) => {
+    setActiveIndex(index);
+    const row = optionRow[index];
+    if (row !== undefined) scrollToRowRef.current?.(row);
   };
+
+  // Stable handlers for the memoized rows; they read the latest value.
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    valueRef.current = value;
+    onChangeRef.current = onChange;
+  });
+  const toggle = useCallback((id: string) => {
+    const current = valueRef.current;
+    onChangeRef.current(current.includes(id) ? current.filter((v) => v !== id) : [...current, id]);
+  }, []);
+  const onOptionClick = useCallback(
+    (index: number, id: string) => {
+      setActiveIndex(index);
+      toggle(id);
+    },
+    [toggle],
+  );
+  const onOptionHover = useCallback((index: number) => setActiveIndex(index), []);
 
   const removeChip = (id: string) => {
     onChange(value.filter((v) => v !== id));
@@ -378,16 +682,14 @@ export function ModelMultiSelect({
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (flat.length === 0) return;
-      setActiveIndex((i) => {
-        if (e.key === "ArrowDown") return i < 0 ? 0 : Math.min(flat.length - 1, i + 1);
-        return i <= 0 ? 0 : i - 1;
-      });
+      const i = activeIndex;
+      moveActive(e.key === "ArrowDown" ? (i < 0 ? 0 : Math.min(flat.length - 1, i + 1)) : i <= 0 ? 0 : i - 1);
     } else if (e.key === "Home" && activeIndex >= 0) {
       e.preventDefault();
-      setActiveIndex(0);
+      moveActive(0);
     } else if (e.key === "End" && activeIndex >= 0) {
       e.preventDefault();
-      setActiveIndex(flat.length - 1);
+      moveActive(flat.length - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
       const target = flat[activeIndex] ?? (flat.length === 1 ? flat[0] : undefined);
@@ -418,7 +720,6 @@ export function ModelMultiSelect({
     : { top: dropdownTop, left: dropdownLeft, width: dropdownWidth, maxHeight: dropdownHeight };
   const activeId = activeIndex >= 0 && activeIndex < flat.length ? optionId(activeIndex) : undefined;
 
-  let optionCounter = -1;
   const dropdown = open && rect
     ? createPortal(
         <div
@@ -462,7 +763,12 @@ export function ModelMultiSelect({
             </div>
             <div className="flex items-center gap-2">
               <div className="flex flex-1 items-center justify-between px-1 text-[12px] text-fg-faint" role="status" aria-live="polite">
-                <span className="tabular-nums">{filtered.length} model{filtered.length === 1 ? "" : "s"}</span>
+                <span className="tabular-nums">
+                  {filtered.length.toLocaleString()} model{filtered.length === 1 ? "" : "s"}
+                  {catalog.pendingProviders > 0 && rows.length > 0 && (
+                    <span className="text-fg-faint"> · loading {catalog.pendingProviders} more provider{catalog.pendingProviders === 1 ? "" : "s"}…</span>
+                  )}
+                </span>
                 <span className="tabular-nums">{value.length} selected</span>
               </div>
               {compact && (
@@ -478,79 +784,22 @@ export function ModelMultiSelect({
             </div>
           </div>
 
-          {/* Model list grouped by provider */}
-          <div
-            id={listboxId}
-            role="listbox"
-            aria-multiselectable="true"
-            aria-label="Models"
-            aria-busy={anyLoading || undefined}
-            className={`overflow-y-auto overscroll-contain p-1 ${compact ? "min-h-0 flex-1" : ""}`}
-            style={compact ? undefined : { maxHeight: listHeight }}
-          >
-            {anyLoading ? (
-              <div className="flex items-center justify-center py-6" role="presentation">
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-line-strong border-t-fg-muted" aria-hidden="true" />
-                <span className="sr-only">Loading models</span>
-              </div>
-            ) : grouped.length === 0 ? (
-              <p className="px-3 py-6 text-center text-[13px] text-fg-muted" role="presentation">No models match this search.</p>
-            ) : (
-              grouped.map((g) => (
-                <div key={g.provider} role="group" aria-labelledby={`${uid}-grp-${g.provider}`}>
-                  <div className="sticky top-0 z-10 flex items-center gap-2 bg-surface px-2.5 pb-1 pt-2.5" role="presentation">
-                    <ProviderIcon option={g.models[0]} size={16} />
-                    <span id={`${uid}-grp-${g.provider}`} className="text-[12px] font-medium text-fg-muted">
-                      {g.providerName}
-                    </span>
-                    <span className="text-[12px] tabular-nums text-fg-faint" aria-hidden="true">{g.models.length}</span>
-                  </div>
-                  {g.models.map((m) => {
-                    optionCounter += 1;
-                    const index = optionCounter;
-                    const selected = value.includes(m.id);
-                    const active = index === activeIndex;
-                    return (
-                      <div
-                        key={`${m.providerId}:${m.id}`}
-                        id={optionId(index)}
-                        role="option"
-                        aria-selected={selected}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          setActiveIndex(index);
-                          toggle(m.id);
-                        }}
-                        onMouseMove={() => activeIndex !== index && setActiveIndex(index)}
-                        className={`flex min-h-9 w-full cursor-pointer [@media(pointer:coarse)]:min-h-11 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors ${
-                          active ? "bg-hover ring-1 ring-inset ring-accent-500" : selected ? "bg-accent-500/10 hover:bg-accent-500/15" : "hover:bg-hover"
-                        }`}
-                      >
-                        {/* Selected state is a check mark, not just a tint. */}
-                        <span
-                          aria-hidden="true"
-                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                            selected
-                              ? "border-accent-500 bg-accent-500 text-white"
-                              : "border-input bg-surface"
-                          }`}
-                        >
-                          {selected && <Check className="h-3 w-3" strokeWidth={2.5} />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5">
-                            <span className="block truncate font-medium text-fg">{m.name}</span>
-                            <CapabilityGlyphs capabilities={m.capabilities} />
-                          </span>
-                          {m.id !== m.name && <span className="block truncate font-mono text-[12px] text-fg-muted">{m.id}</span>}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))
-            )}
-          </div>
+          {/* Model list grouped by provider (virtualized) */}
+          <VirtualModelList
+            listboxId={listboxId}
+            loading={anyLoading}
+            compact={compact}
+            maxHeight={compact ? undefined : listHeight}
+            rows={rows}
+            headerRows={headerRows}
+            scrollRef={listRef}
+            scrollToRowRef={scrollToRowRef}
+            uid={uid}
+            selectedSet={selectedSet}
+            activeIndex={activeIndex}
+            onSelect={onOptionClick}
+            onHover={onOptionHover}
+          />
 
           {/* Custom pattern input */}
           <div className="shrink-0 border-t border-line bg-subtle p-2">

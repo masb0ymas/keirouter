@@ -572,18 +572,47 @@ func (d *Dispatcher) PrepareCredentials(ctx context.Context, acc store.Account) 
 	return d.prepareAccount(ctx, acc, globalProxyURL, globalNoProxy)
 }
 
-func (d *Dispatcher) prepareAccount(ctx context.Context, acc store.Account, globalProxyURL, globalNoProxy string) (store.Account, core.Credentials, error) {
-	// Resolve the egress route first so an OAuth refresh leaves through the
-	// same proxy as the API calls it authorizes.
+// EgressContext returns ctx carrying the egress route (proxy pool, else the
+// global proxy) the account's traffic must leave through. Account-scoped calls
+// made outside the request path — credential validation, quota and model
+// discovery, background token refreshes — use it so they never leak the
+// server's own IP for an account bound to a pool.
+func (d *Dispatcher) EgressContext(ctx context.Context, acc store.Account) (context.Context, error) {
+	var globalProxyURL, globalNoProxy string
+	if d.proxyReader != nil {
+		globalProxyURL = d.proxyReader.ProxyURL()
+		globalNoProxy = d.proxyReader.NoProxy()
+	}
+	route, err := d.resolveRoute(ctx, acc, globalProxyURL, globalNoProxy)
+	if err != nil {
+		return ctx, err
+	}
+	return core.WithProxy(ctx, route), nil
+}
+
+func (d *Dispatcher) resolveRoute(ctx context.Context, acc store.Account, globalProxyURL, globalNoProxy string) (core.Credentials, error) {
 	var route core.Credentials
 	if d.pools != nil && acc.ProxyPoolID != "" {
 		if err := proxy.ResolvePool(ctx, d.pools, acc.ProxyPoolID, &route); err != nil {
-			return acc, core.Credentials{}, err
+			return core.Credentials{}, err
 		}
 	}
 	if route.ProxyURL == "" && route.RelayURL == "" && globalProxyURL != "" {
 		route.ProxyURL = globalProxyURL
 		route.NoProxy = globalNoProxy
+		// The global proxy has no strict switch; it has always failed
+		// closed, so never fall back to a direct connection around it.
+		route.StrictProxy = true
+	}
+	return route, nil
+}
+
+func (d *Dispatcher) prepareAccount(ctx context.Context, acc store.Account, globalProxyURL, globalNoProxy string) (store.Account, core.Credentials, error) {
+	// Resolve the egress route first so an OAuth refresh leaves through the
+	// same proxy as the API calls it authorizes.
+	route, err := d.resolveRoute(ctx, acc, globalProxyURL, globalNoProxy)
+	if err != nil {
+		return acc, core.Credentials{}, err
 	}
 	if d.refresher != nil {
 		refreshed, err := d.refresher.EnsureFresh(core.WithProxy(ctx, route), acc)

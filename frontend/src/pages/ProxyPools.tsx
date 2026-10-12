@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { parseProxies, runPool } from "../lib/bulk";
-import { Button, Input, Badge, Modal, Skeleton, Toggle, ErrorBanner, IconTile, SectionTitle } from "../components/ui";
+import { Button, Input, Badge, Modal, Skeleton, Toggle, ErrorBanner, SectionTitle, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import {
@@ -124,7 +124,7 @@ export function ProxyPoolsPage() {
     mutationFn: (id: string) => api.deleteProxyPool(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["proxy-pools"] });
-      toast.success("Pool deleted", "Accounts bound to it now connect directly.");
+      toast.success("Pool deleted", "The pool has been removed.");
     },
     onError: (e: Error) => toast.error("Pool deletion failed", e.message),
   });
@@ -133,6 +133,7 @@ export function ProxyPoolsPage() {
     mutationFn: ({ id, is_active }: { id: string; is_active: boolean }) =>
       api.updateProxyPool(id, { is_active }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proxy-pools"] }),
+    onError: (e: Error) => toast.error("Pool update failed", e.message),
   });
 
   const testPool = useMutation({
@@ -140,7 +141,10 @@ export function ProxyPoolsPage() {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["proxy-pools"] });
       if (data.status === "active") {
-        toast.success("Connectivity test passed", "Proxy is reachable and responding.");
+        toast.success(
+          "Connectivity test passed",
+          data.egress_ip ? `Traffic leaves from ${data.egress_ip}.` : "Proxy is reachable and responding.",
+        );
       } else {
         toast.error("Connectivity test failed", data.error || `Proxy status: ${data.status}`);
       }
@@ -195,33 +199,55 @@ export function ProxyPoolsPage() {
     toast.success("Health check complete", `${passed} reachable, ${failed} failed.`);
   };
 
-  const bulkActivate = () => {
-    [...selected].forEach((id) => toggleActive.mutate({ id, is_active: true }));
-    toast.success("Pools enabled", `${selected.size} pool${selected.size !== 1 ? "s" : ""} now route upstream traffic.`);
+  // Bulk actions wait for every request so the summary toast reports what
+  // actually happened instead of what was attempted.
+  const bulkSetActive = async (is_active: boolean) => {
+    const ids = [...selected];
+    const results = await Promise.allSettled(ids.map((id) => api.updateProxyPool(id, { is_active })));
+    qc.invalidateQueries({ queryKey: ["proxy-pools"] });
+    const failed = results.filter((r) => r.status === "rejected").length;
+    const done = ids.length - failed;
+    const noun = `${done} pool${done !== 1 ? "s" : ""}`;
+    if (failed > 0) toast.error(is_active ? "Some pools not enabled" : "Some pools not disabled", `${noun} updated, ${failed} failed.`);
+    else if (is_active) toast.success("Pools enabled", `${noun} now route upstream traffic.`);
+    else toast.success("Pools disabled", `${noun} disabled. Bound accounts use the global proxy or connect directly.`);
   };
-  const bulkDeactivate = () => {
-    [...selected].forEach((id) => toggleActive.mutate({ id, is_active: false }));
-    toast.success("Pools disabled", `${selected.size} pool${selected.size !== 1 ? "s" : ""} disabled. Traffic bypasses them.`);
-  };
+  const bulkActivate = () => void bulkSetActive(true);
+  const bulkDeactivate = () => void bulkSetActive(false);
   const bulkDelete = async () => {
-    const n = selected.size;
+    const ids = [...selected];
+    const inUse = ids.filter((id) => (usage.get(id)?.length ?? 0) > 0);
+    const n = ids.length;
     const ok = await askConfirm({
       title: `Delete ${n} proxy pool${n !== 1 ? "s" : ""}?`,
-      description: "Accounts bound to them fall back to direct connections immediately. This cannot be undone.",
+      description: inUse.length > 0
+        ? `${inUse.length} of them still have bound accounts and will be kept; unbind those accounts first. This cannot be undone.`
+        : "The pools are removed permanently. This cannot be undone.",
       confirmLabel: "Delete",
       tone: "danger",
     });
     if (!ok) return;
-    [...selected].forEach((id) => remove.mutate(id));
+    const results = await Promise.allSettled(ids.map((id) => api.deleteProxyPool(id)));
+    qc.invalidateQueries({ queryKey: ["proxy-pools"] });
     setSelected(new Set());
+    const failed = results.filter((r) => r.status === "rejected").length;
+    const deleted = n - failed;
+    if (failed > 0) toast.error("Some pools were kept", `${deleted} deleted, ${failed} still in use or failed.`);
+    else toast.success("Pools deleted", `${deleted} pool${deleted !== 1 ? "s" : ""} removed.`);
   };
   const deleteOne = async (pool: ProxyPool) => {
-    const bound = usage.get(pool.id)?.length ?? 0;
+    const bound = usage.get(pool.id)?.length ?? pool.bound_connection_count ?? 0;
+    if (bound > 0) {
+      // The server refuses: deleting would break the bound accounts' routing.
+      toast.error(
+        "Pool is in use",
+        `Unbind the ${bound} account${bound !== 1 ? "s" : ""} routing through "${pool.name}" before deleting it.`,
+      );
+      return;
+    }
     const ok = await askConfirm({
       title: `Delete ${pool.name}?`,
-      description: bound > 0
-        ? `${bound} account${bound !== 1 ? "s" : ""} route through this pool and will fall back to direct connections immediately. This cannot be undone.`
-        : "The pool is removed permanently. This cannot be undone.",
+      description: "The pool is removed permanently. This cannot be undone.",
       confirmLabel: "Delete pool",
       tone: "danger",
     });
@@ -273,17 +299,19 @@ export function ProxyPoolsPage() {
       ) : pools.isError ? (
         <ErrorBanner message={`Couldn't load proxy pools. ${pools.error instanceof Error ? pools.error.message : ""} Reload the page to try again.`.replace(/\s+/g, " ").trim()} />
       ) : list.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.proxyPools} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[13px] font-semibold text-fg">No proxy pools yet</h2>
-          <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">
-            Without a pool, every account connects to its provider directly.
-          </p>
-          <Button className="mt-4" onClick={openCreate}>
-            <Plus aria-hidden="true" />
-            Add first pool
-          </Button>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.proxyPools}
+          title="No proxy pools yet"
+          hint="Without a pool, every account connects to its provider directly."
+          action={
+            <Button onClick={openCreate}>
+              <Plus aria-hidden="true" />
+              Add first pool
+            </Button>
+          }
+        />
       ) : (
         <section aria-labelledby="proxy-pools-title" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
           <div className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 border-b border-line px-4 py-3">
@@ -740,7 +768,7 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
           <FormField label="Name">
             {(ids) => <Input {...ids} required value={name} onChange={(e) => setName(e.target.value)} placeholder="us-east-residential" />}
           </FormField>
-          <FormField label="Proxy URL" hint="HTTP, HTTPS or SOCKS5, credentials inline">
+          <FormField label="Proxy URL" hint={isEdit ? "HTTP, HTTPS or SOCKS5. Keep xxxxx to reuse the saved password" : "HTTP, HTTPS or SOCKS5, credentials inline"}>
             {(ids) => (
               <Input {...ids} required value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} placeholder="http://user:pass@host:port" className="font-mono" spellCheck={false} />
             )}
@@ -754,14 +782,14 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
             <SwitchRow
               icon={Power}
               title="Enabled"
-              description="When off, bound accounts connect directly"
+              description="When off, bound accounts use the global proxy or connect directly"
               checked={isActive}
               onChange={setIsActive}
             />
             <SwitchRow
               icon={Lock}
               title="Strict mode"
-              description="Fail requests instead of connecting directly"
+              description="When the proxy is unreachable, fail requests instead of retrying directly"
               checked={strict}
               onChange={setStrict}
             />

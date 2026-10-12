@@ -186,8 +186,9 @@ type LimitsConfig struct {
 	OutputReserveCap int64 `koanf:"output_reserve_cap"`
 	// ConcurrencyRetryAfter is the Retry-After hint on a concurrency denial.
 	ConcurrencyRetryAfter time.Duration `koanf:"concurrency_retry_after"`
-	// AuthFailuresPerMinute throttles an IP after this many invalid API keys
-	// per minute. Applies even when per-key limits are off. Zero disables it.
+	// AuthFailuresPerMinute refuses an IP's invalid API keys with 429 after
+	// this many per minute; valid keys and loopback clients are never refused.
+	// Applies even when per-key limits are off. Zero disables it.
 	AuthFailuresPerMinute int `koanf:"auth_failures_per_minute"`
 	// LoginAttemptsPerMinute caps dashboard login attempts per IP. Zero
 	// disables it.

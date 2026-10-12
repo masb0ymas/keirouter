@@ -60,7 +60,7 @@ func judge(ctx context.Context, c Completer, model string, meta core.RequestMeta
 	temp := 0.0
 	maxTok := 120
 	req := &core.ChatRequest{
-		Metadata:    guardrails.JudgeMetadata(meta, "guardrails-judge"),
+		Metadata:    guardrails.JudgeMetadata(meta, "injection"),
 		Model:       model,
 		System:      judgeSystemPrompt,
 		Messages:    []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: string(payload)}}}},

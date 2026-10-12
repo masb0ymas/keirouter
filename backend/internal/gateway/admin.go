@@ -31,6 +31,7 @@ import (
 // manage API keys, provider accounts, routing chains, budgets, and usage.
 func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/providers", s.adminListProviders)
+	r.Get("/providers/models", s.adminAllProviderModels)
 	r.Get("/providers/{id}/models", s.adminProviderModels)
 	r.Get("/providers/{id}/routing", s.adminGetProviderRouting)
 	r.Post("/providers/{id}/routing", s.adminUpdateProviderRouting)
@@ -193,6 +194,28 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 			"input_per_m":   p.InputPerM,
 			"output_per_m":  p.OutputPerM,
 		}
+		if len(p.Fields) > 0 {
+			entry["fields"] = p.Fields
+		}
+		if p.APIKeyMode != "" {
+			entry["api_key_mode"] = p.APIKeyMode
+		}
+		if p.APIKeyWhen != nil {
+			entry["api_key_when"] = p.APIKeyWhen
+		}
+		if p.APIKeyLabel != "" {
+			entry["api_key_label"] = p.APIKeyLabel
+		}
+		if p.APIKeyPlaceholder != "" {
+			entry["api_key_placeholder"] = p.APIKeyPlaceholder
+		}
+		if p.BaseURLPlaceholder != "" {
+			entry["base_url_placeholder"] = p.BaseURLPlaceholder
+		}
+		// Built-in providers without a default endpoint need one per account.
+		if p.BaseURL == "" && !p.Custom && p.ID != "azure" {
+			entry["base_url_required"] = true
+		}
 		// Custom (user-defined) provider instances expose their configured base
 		// URL so the dashboard can surface it on the provider detail page.
 		if p.Custom {
@@ -226,7 +249,24 @@ func providerIconID(id string) string {
 	if strings.HasPrefix(id, connectors.CustomAnthropicPrefix) {
 		return "custom-anthropic"
 	}
+	if shared, ok := sharedProviderIcons[id]; ok {
+		return shared
+	}
 	return id
+}
+
+// sharedProviderIcons maps providers to the logo of the platform or model
+// family they belong to when they have no logo of their own.
+var sharedProviderIcons = map[string]string{
+	"bedrock": "aws-polly", "sagemaker": "aws-polly", "amazon-nova": "aws-polly",
+	"azure-ai":           "azure",
+	"codestral":          "mistral",
+	"dashscope":          "qwen",
+	"moonshot":           "kimi",
+	"zai":                "glm",
+	"github-models":      "github",
+	"huggingface-router": "huggingface",
+	"triton":             "nvidia",
 }
 
 // webProvider reports whether a provider is served by the web search/fetch
@@ -249,22 +289,90 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown provider: "+providerID)
 		return
 	}
+	kindFilter, ok := parseModelKindFilter(w, r)
+	if !ok {
+		return
+	}
+	refresh := r.URL.Query().Get("refresh") == "1"
+	out, _ := s.providerModelInfos(r.Context(), providerID, kindFilter, refresh, 0)
+	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
+// batchLiveWait bounds how long the batch endpoint waits on any one provider's
+// live discovery. Slower lookups keep running in the background and land in
+// the discovery cache; the provider is reported as pending so the dashboard
+// can fetch it on its own.
+const batchLiveWait = 1500 * time.Millisecond
+
+// adminAllProviderModels serves GET /providers/models: every listed provider's
+// models in one response, so the dashboard's model pickers make one request
+// instead of one per provider (which queue behind the browser's per-host
+// connection limit).
+func (s *Server) adminAllProviderModels(w http.ResponseWriter, r *http.Request) {
+	kindFilter, ok := parseModelKindFilter(w, r)
+	if !ok {
+		return
+	}
+	var ids []string
+	for _, p := range connectors.Catalog() {
+		if !p.Hidden {
+			ids = append(ids, p.ID)
+		}
+	}
+
+	// One deadline for the whole batch, so queued providers do not each add
+	// their own wait on top of the ones before them.
+	deadline := time.Now().Add(batchLiveWait)
+	results := make([][]providerModelInfo, len(ids))
+	pending := make([]bool, len(ids))
+	sem := make(chan struct{}, 32)
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			wait := max(time.Until(deadline), time.Millisecond)
+			results[i], pending[i] = s.providerModelInfos(r.Context(), id, kindFilter, false, wait)
+		}()
+	}
+	wg.Wait()
+
+	providers := make(map[string][]providerModelInfo, len(ids))
+	pendingIDs := []string{}
+	for i, id := range ids {
+		providers[id] = results[i]
+		if pending[i] {
+			pendingIDs = append(pendingIDs, id)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers, "pending": pendingIDs})
+}
+
+func parseModelKindFilter(w http.ResponseWriter, r *http.Request) (core.ServiceKind, bool) {
 	kindFilter := core.ServiceKind(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind"))))
 	if kindFilter != "" && !core.ValidServiceKind(kindFilter) {
 		writeError(w, http.StatusBadRequest, "unknown model kind: "+string(kindFilter))
-		return
+		return "", false
 	}
+	return kindFilter, true
+}
 
-	type modelInfo struct {
-		ID               string                      `json:"id"`
-		Name             string                      `json:"name"`
-		Kind             string                      `json:"kind"`
-		Capabilities     modelCapabilities           `json:"capabilities"`
-		CapabilitySource capability.CapabilitySource `json:"capability_source"`
-		Custom           bool                        `json:"custom,omitempty"`
-		DBID             string                      `json:"db_id,omitempty"`
-		Discovered       bool                        `json:"discovered,omitempty"`
-	}
+type providerModelInfo struct {
+	ID               string                      `json:"id"`
+	Name             string                      `json:"name"`
+	Kind             string                      `json:"kind"`
+	Capabilities     modelCapabilities           `json:"capabilities"`
+	CapabilitySource capability.CapabilitySource `json:"capability_source"`
+	Custom           bool                        `json:"custom,omitempty"`
+	DBID             string                      `json:"db_id,omitempty"`
+	Discovered       bool                        `json:"discovered,omitempty"`
+}
+
+// providerModelInfos lists a provider's static catalog models plus any it
+// discovers live from the upstream. liveWait > 0 caps the wait on live
+// discovery; pending reports that it ran out and the list is static-only.
+func (s *Server) providerModelInfos(ctx context.Context, providerID string, kindFilter core.ServiceKind, refresh bool, liveWait time.Duration) (out []providerModelInfo, pending bool) {
 	modelKind := func(kind core.ServiceKind) core.ServiceKind {
 		if kind == "" {
 			return core.ServiceLLM
@@ -275,7 +383,7 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	// User-registered custom models for this provider (db-backed). These are
 	// tracked separately so the dashboard can render an editable section.
 	customByID := map[string]store.CustomModel{}
-	if cms, cerr := s.db.CustomProviders().ListModelsByProvider(r.Context(), providerID); cerr == nil {
+	if cms, cerr := s.db.CustomProviders().ListModelsByProvider(ctx, providerID); cerr == nil {
 		for _, cm := range cms {
 			customByID[cm.ModelID] = cm
 		}
@@ -285,14 +393,14 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	// ModelsForProvider). Flag any entry that is a user-defined custom model.
 	static := connectors.ModelsForProvider(providerID)
 	seen := map[string]bool{}
-	out := make([]modelInfo, 0, len(static))
+	out = make([]providerModelInfo, 0, len(static))
 	for _, m := range static {
 		kind := modelKind(m.Kind)
 		if kindFilter != "" && kind != kindFilter {
 			continue
 		}
 		caps, source := capabilityPayload(providerID, m.ID, kind)
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source}
+		mi := providerModelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source}
 		if cm, ok := customByID[m.ID]; ok {
 			mi.Custom = true
 			mi.DBID = cm.ID
@@ -306,58 +414,65 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	// yields models and nothing else is in the catalog, fall back to an
 	// unauthenticated fetch so providers whose /models endpoint is public (e.g.
 	// sumopod) still populate before an account is connected.
-	if src := connectors.GetLiveModelSource(providerID); src != nil {
-		appendLive := func(creds core.Credentials) bool {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			models, merr := src.ListModels(ctx, creds)
-			cancel()
-			if merr != nil || len(models) == 0 {
-				return false
+	src := connectors.GetLiveModelSource(providerID)
+	if src == nil {
+		return out, false
+	}
+	// appendLive reports whether it added models, and false for done when the
+	// lookup outlived liveWait.
+	appendLive := func(egress context.Context, cacheKey string, creds core.Credentials) (added, done bool) {
+		models, done := s.liveModels.list(egress, providerID+"\x00"+cacheKey, refresh, liveWait, func(ctx context.Context) ([]connectors.ModelSpec, error) {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return src.ListModels(ctx, creds)
+		})
+		for _, lm := range models {
+			kind := modelKind(lm.Kind)
+			if kindFilter != "" && kind != kindFilter {
+				continue
 			}
-			added := false
-			for _, lm := range models {
-				kind := modelKind(lm.Kind)
-				if kindFilter != "" && kind != kindFilter {
+			if seen[lm.ID] {
+				continue
+			}
+			caps, source := capabilityPayload(providerID, lm.ID, kind)
+			out = append(out, providerModelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true})
+			seen[lm.ID] = true
+			added = true
+		}
+		return added, done
+	}
+
+	discovered := false
+	if s.accounts != nil && s.vault != nil {
+		if accs, err := s.accounts.ListByProvider(ctx, adminTenant, providerID); err == nil {
+			for _, acc := range accs {
+				if acc.Disabled {
 					continue
 				}
-				if seen[lm.ID] {
+				creds, oerr := s.vault.Open(acc)
+				if oerr != nil {
 					continue
 				}
-				caps, source := capabilityPayload(providerID, lm.ID, kind)
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true})
-				seen[lm.ID] = true
-				added = true
-			}
-			return added
-		}
-
-		discovered := false
-		if s.accounts != nil && s.vault != nil {
-			if accs, err := s.accounts.ListByProvider(r.Context(), adminTenant, providerID); err == nil {
-				for _, acc := range accs {
-					if acc.Disabled {
-						continue
-					}
-					creds, oerr := s.vault.Open(acc)
-					if oerr != nil {
-						continue
-					}
-					if appendLive(creds) {
-						discovered = true
-						break // only use first valid account
-					}
+				added, done := appendLive(s.accountEgressContext(ctx, acc), acc.ID+"\x00"+acc.UpdatedAt.String(), creds)
+				if !done {
+					return out, true
+				}
+				if added {
+					discovered = true
+					break // only use first valid account
 				}
 			}
-		}
-
-		// Public fallback: only when we have nothing else to show, to avoid an
-		// extra upstream round-trip for providers that already have models.
-		if !discovered && len(out) == 0 {
-			appendLive(core.Credentials{})
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+	// Public fallback: only when we have nothing else to show, to avoid an
+	// extra upstream round-trip for providers that already have models.
+	if !discovered && len(out) == 0 {
+		if _, done := appendLive(ctx, "", core.Credentials{}); !done {
+			return out, true
+		}
+	}
+	return out, false
 }
 
 // ---- API keys ---------------------------------------------------------------
@@ -664,18 +779,19 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Provider          string `json:"provider"`
-		Label             string `json:"label"`
-		APIKey            string `json:"api_key"`
-		BaseURL           string `json:"base_url"`
-		Region            string `json:"region"`
-		AccountID         string `json:"account_id"`
-		AzureEndpoint     string `json:"azure_endpoint"`
-		AzureDeployment   string `json:"azure_deployment"`
-		AzureAPIVersion   string `json:"azure_api_version"`
-		AzureOrganization string `json:"azure_organization"`
-		ProxyPoolID       string `json:"proxy_pool_id"`
-		Priority          int    `json:"priority"`
+		Provider          string            `json:"provider"`
+		Label             string            `json:"label"`
+		APIKey            string            `json:"api_key"`
+		BaseURL           string            `json:"base_url"`
+		Region            string            `json:"region"`
+		AccountID         string            `json:"account_id"`
+		AzureEndpoint     string            `json:"azure_endpoint"`
+		AzureDeployment   string            `json:"azure_deployment"`
+		AzureAPIVersion   string            `json:"azure_api_version"`
+		AzureOrganization string            `json:"azure_organization"`
+		Fields            map[string]string `json:"fields"`
+		ProxyPoolID       string            `json:"proxy_pool_id"`
+		Priority          int               `json:"priority"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -698,7 +814,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authKind := accountAuthKind(spec, body.APIKey)
-	if authKind != store.AuthNone && strings.TrimSpace(body.APIKey) == "" {
+	if spec.APIKeyRequiredFor(body.Fields) && strings.TrimSpace(body.APIKey) == "" {
 		writeError(w, http.StatusBadRequest, "api_key is required")
 		return
 	}
@@ -718,7 +834,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	meta, err := providerAccountMetadata(spec, providerMetadataInput{
+	meta, secretFields, err := providerAccountMetadata(spec, providerMetadataInput{
 		BaseURL:           body.BaseURL,
 		Region:            body.Region,
 		AccountID:         body.AccountID,
@@ -726,6 +842,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		AzureDeployment:   body.AzureDeployment,
 		AzureAPIVersion:   body.AzureAPIVersion,
 		AzureOrganization: body.AzureOrganization,
+		Fields:            body.Fields,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -750,7 +867,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if body.ProxyPoolID != "" {
 		acc.ProxyPoolID = strings.TrimSpace(body.ProxyPoolID)
 	}
-	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
+	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta, SecretFields: secretFields}); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
 		return
 	}
@@ -785,15 +902,16 @@ type bulkAccountItem struct {
 type bulkAccountsRequest struct {
 	Provider string `json:"provider"`
 	// Shared settings applied to every item unless an item overrides them.
-	BaseURL           string `json:"base_url"`
-	Region            string `json:"region"`
-	AccountID         string `json:"account_id"`
-	AzureEndpoint     string `json:"azure_endpoint"`
-	AzureDeployment   string `json:"azure_deployment"`
-	AzureAPIVersion   string `json:"azure_api_version"`
-	AzureOrganization string `json:"azure_organization"`
-	Priority          int    `json:"priority"`
-	ProxyPoolID       string `json:"proxy_pool_id"`
+	BaseURL           string            `json:"base_url"`
+	Region            string            `json:"region"`
+	AccountID         string            `json:"account_id"`
+	AzureEndpoint     string            `json:"azure_endpoint"`
+	AzureDeployment   string            `json:"azure_deployment"`
+	AzureAPIVersion   string            `json:"azure_api_version"`
+	AzureOrganization string            `json:"azure_organization"`
+	Fields            map[string]string `json:"fields"`
+	Priority          int               `json:"priority"`
+	ProxyPoolID       string            `json:"proxy_pool_id"`
 	// Validate probes each credential against the upstream before persisting.
 	// Off by default for bulk to avoid slow imports and upstream rate limits.
 	Validate bool              `json:"validate"`
@@ -875,7 +993,7 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 		results[i] = bulkAccountResult{Index: i, Label: label}
 
 		authKind := accountAuthKind(spec, key)
-		if authKind != store.AuthNone && key == "" {
+		if spec.APIKeyRequiredFor(body.Fields) && key == "" {
 			results[i].Status = "error"
 			results[i].Error = "api_key is required"
 			continue
@@ -913,7 +1031,7 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			meta, err := providerAccountMetadata(spec, providerMetadataInput{
+			meta, secretFields, err := providerAccountMetadata(spec, providerMetadataInput{
 				BaseURL:           baseURL,
 				Region:            body.Region,
 				AccountID:         body.AccountID,
@@ -921,6 +1039,7 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 				AzureDeployment:   body.AzureDeployment,
 				AzureAPIVersion:   body.AzureAPIVersion,
 				AzureOrganization: body.AzureOrganization,
+				Fields:            body.Fields,
 			})
 			if err != nil {
 				results[i].Status = "error"
@@ -946,7 +1065,7 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 			if body.ProxyPoolID != "" {
 				acc.ProxyPoolID = strings.TrimSpace(body.ProxyPoolID)
 			}
-			if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: key, Metadata: meta}); err != nil {
+			if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: key, Metadata: meta, SecretFields: secretFields}); err != nil {
 				results[i].Status = "error"
 				results[i].Error = "vault seal failed"
 				return
@@ -1008,16 +1127,17 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Provider          string `json:"provider"`
-		Label             string `json:"label"`
-		APIKey            string `json:"api_key"`
-		BaseURL           string `json:"base_url"`
-		Region            string `json:"region"`
-		AccountID         string `json:"account_id"`
-		AzureEndpoint     string `json:"azure_endpoint"`
-		AzureDeployment   string `json:"azure_deployment"`
-		AzureAPIVersion   string `json:"azure_api_version"`
-		AzureOrganization string `json:"azure_organization"`
+		Provider          string            `json:"provider"`
+		Label             string            `json:"label"`
+		APIKey            string            `json:"api_key"`
+		BaseURL           string            `json:"base_url"`
+		Region            string            `json:"region"`
+		AccountID         string            `json:"account_id"`
+		AzureEndpoint     string            `json:"azure_endpoint"`
+		AzureDeployment   string            `json:"azure_deployment"`
+		AzureAPIVersion   string            `json:"azure_api_version"`
+		AzureOrganization string            `json:"azure_organization"`
+		Fields            map[string]string `json:"fields"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1032,7 +1152,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authKind := accountAuthKind(spec, body.APIKey)
-	if authKind != store.AuthNone && strings.TrimSpace(body.APIKey) == "" {
+	if spec.APIKeyRequiredFor(body.Fields) && strings.TrimSpace(body.APIKey) == "" {
 		writeError(w, http.StatusBadRequest, "provider and api_key are required")
 		return
 	}
@@ -1056,7 +1176,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	meta, err := providerAccountMetadata(spec, providerMetadataInput{
+	meta, secretFields, err := providerAccountMetadata(spec, providerMetadataInput{
 		BaseURL:           body.BaseURL,
 		Region:            body.Region,
 		AccountID:         body.AccountID,
@@ -1064,6 +1184,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 		AzureDeployment:   body.AzureDeployment,
 		AzureAPIVersion:   body.AzureAPIVersion,
 		AzureOrganization: body.AzureOrganization,
+		Fields:            body.Fields,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": err.Error()})
@@ -1076,7 +1197,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 		Provider: body.Provider,
 		AuthKind: authKind,
 	}
-	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
+	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta, SecretFields: secretFields}); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
 		return
 	}
@@ -1205,7 +1326,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 	// usage panel while the rest of the provider page continues to work.
 	quotaAcc := acc
 	if s.refresher != nil {
-		if refreshed, refreshErr := s.refresher.EnsureFresh(r.Context(), acc); refreshErr == nil {
+		if refreshed, refreshErr := s.refresher.EnsureFresh(s.accountEgressContext(r.Context(), acc), acc); refreshErr == nil {
 			quotaAcc = refreshed
 		}
 	}
@@ -1216,7 +1337,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(s.accountEgressContext(r.Context(), quotaAcc), 15*time.Second)
 	defer cancel()
 
 	quota, qerr := qs.FetchQuota(ctx, creds)
@@ -1273,7 +1394,7 @@ func (s *Server) adminCodexResetCredits(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(s.accountEgressContext(r.Context(), acc), 15*time.Second)
 	defer cancel()
 
 	result, ferr := fetchCodexResetCredits(ctx, creds.AccessToken, creds.Extra)
@@ -1325,7 +1446,7 @@ func (s *Server) adminCodexConsumeCredit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(s.accountEgressContext(r.Context(), acc), 15*time.Second)
 	defer cancel()
 
 	result, cerr := consumeCodexResetCredit(ctx, creds.AccessToken, creds.Extra, body.RedeemRequestID, body.CreditID)
@@ -1422,7 +1543,7 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(s.accountEgressContext(r.Context(), acc), 20*time.Second)
 	defer cancel()
 
 	// Usage windows and reset credits come from independent upstream endpoints.
@@ -1493,7 +1614,7 @@ func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]s
 		req.Header.Set("ChatGPT-Account-ID", accountID)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := connectors.EgressClient(ctx, 15*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -1587,7 +1708,7 @@ func fetchCodexResetCredits(ctx context.Context, accessToken string, extra map[s
 		req.Header.Set("ChatGPT-Account-ID", accountID)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := connectors.EgressClient(ctx, 15*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return codexResetCreditsData{}, fmt.Errorf("request failed: %w", err)
@@ -1712,7 +1833,7 @@ func consumeCodexResetCredit(ctx context.Context, accessToken string, extra map[
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := connectors.EgressClient(ctx, 15*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -2669,39 +2790,90 @@ func (s *Server) adminConsoleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Send initial history.
-	entries := s.consoleLog.Entries()
-	initData, _ := json.Marshal(map[string]any{"type": "init", "logs": entries})
-	fmt.Fprintf(w, "data: %s\n\n", initData)
-	flusher.Flush()
-
-	// Subscribe to new log lines via buffered channel.
-	listener := consolelog.NewListener(256)
-	s.consoleLog.Subscribe(listener)
+	// Subscribe and snapshot atomically so no line falls between the history
+	// and the live feed. The epoch changes when the process restarts, which
+	// tells a reconnecting client that sequence numbers started over.
+	listener := consolelog.NewListener(1024)
+	entries := s.consoleLog.Subscribe(listener)
 	defer s.consoleLog.Unsubscribe(listener)
 
-	// Keepalive ping every 25s.
-	keepalive := time.NewTicker(25 * time.Second)
+	// The client's EventSource retries after this delay if the connection drops.
+	fmt.Fprint(w, "retry: 2000\n\n")
+	if !writeSSEJSON(w, map[string]any{"type": "init", "epoch": s.consoleLog.Epoch(), "logs": entries}) {
+		return
+	}
+	flusher.Flush()
+
+	// Lines are batched: a burst of requests costs one write and one flush per
+	// window instead of one per line, and the browser re-renders once.
+	const batchWindow = 150 * time.Millisecond
+	const batchMax = 200
+	batch := make([]consolelog.Entry, 0, 32)
+	flushBatch := func() bool {
+		if len(batch) == 0 {
+			return true
+		}
+		ok := writeSSEJSON(w, map[string]any{"type": "lines", "logs": batch})
+		batch = batch[:0]
+		flusher.Flush()
+		return ok
+	}
+
+	// A data-frame heartbeat (not an SSE comment) so the client can tell a
+	// live but quiet stream from one a proxy silently stopped forwarding.
+	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
+	window := time.NewTimer(batchWindow)
+	window.Stop()
+	windowOpen := false
 
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case ev := <-listener.C:
-			var data []byte
 			if ev.Clear {
-				data, _ = json.Marshal(map[string]any{"type": "clear"})
-			} else {
-				data, _ = json.Marshal(map[string]any{"type": "line", "log": ev.Entry})
+				batch = batch[:0]
+				if !writeSSEJSON(w, map[string]any{"type": "clear"}) {
+					return
+				}
+				flusher.Flush()
+				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			batch = append(batch, ev.Entry)
+			if len(batch) >= batchMax {
+				if !flushBatch() {
+					return
+				}
+				continue
+			}
+			if !windowOpen {
+				window.Reset(batchWindow)
+				windowOpen = true
+			}
+		case <-window.C:
+			windowOpen = false
+			if !flushBatch() {
+				return
+			}
 		case <-keepalive.C:
-			fmt.Fprintf(w, ": ping\n\n")
+			if !writeSSEJSON(w, map[string]any{"type": "ping"}) {
+				return
+			}
 			flusher.Flush()
 		}
 	}
+}
+
+// writeSSEJSON writes one SSE data frame and reports whether the write
+// succeeded (false once the client is gone).
+func writeSSEJSON(w http.ResponseWriter, v any) bool {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return true
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
+	return err == nil
 }
 
 // adminConsoleClear clears the log buffer.
@@ -2735,7 +2907,8 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 		}
 		if portable {
 			if err := s.exportPortableSecrets(out, a, passphrase); err != nil {
-				s.consoleLog.Log("ERROR", fmt.Sprintf("Portable export failed for account %s", a.ID), err.Error())
+				s.consoleLog.Add(consolelog.Entry{Level: "ERROR", Kind: consolelog.KindAdmin,
+					Message: fmt.Sprintf("Portable export failed for account %s", a.ID), Detail: err.Error()})
 				writeError(w, http.StatusInternalServerError, "portable export failed: cannot re-key account "+a.ID+" (master key mismatch?)")
 				return
 			}
@@ -2900,7 +3073,8 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 				}
 				if portable {
 					if err := s.importPortableSecrets(&acc, a.PortableSecret, passphrase); err != nil {
-						s.consoleLog.Log("ERROR", fmt.Sprintf("Portable import failed for account %s", acc.ID), err.Error())
+						s.consoleLog.Add(consolelog.Entry{Level: "ERROR", Kind: consolelog.KindAdmin,
+							Message: fmt.Sprintf("Portable import failed for account %s", acc.ID), Detail: err.Error()})
 						writeError(w, http.StatusBadRequest, "portable import failed: wrong passphrase or corrupt backup")
 						return
 					}
@@ -3112,6 +3286,8 @@ type providerMetadataInput struct {
 	AzureDeployment   string
 	AzureAPIVersion   string
 	AzureOrganization string
+	// Fields are values for spec.Fields, keyed by CredentialField.Key.
+	Fields map[string]string
 }
 
 func accountAuthKind(spec connectors.ProviderSpec, apiKey string) store.AuthKind {
@@ -3121,8 +3297,12 @@ func accountAuthKind(spec connectors.ProviderSpec, apiKey string) store.AuthKind
 	return store.AuthAPIKey
 }
 
-func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataInput) (map[string]string, error) {
+func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataInput) (map[string]string, map[string]string, error) {
 	meta := map[string]string{}
+	secrets, err := applyCredentialFields(spec, in.Fields, meta)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	baseURL := strings.TrimSpace(in.BaseURL)
 	if in.Region != "" {
@@ -3132,7 +3312,7 @@ func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataIn
 		}
 	}
 	if spec.BaseURL == "" && spec.ID != "azure" && baseURL == "" {
-		return nil, fmt.Errorf("base_url is required for %s", spec.DisplayName)
+		return nil, nil, fmt.Errorf("base_url is required for %s", spec.DisplayName)
 	}
 	if baseURL != "" {
 		meta["base_url"] = baseURL
@@ -3142,7 +3322,7 @@ func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataIn
 	case "cloudflare-ai":
 		accountID := strings.TrimSpace(in.AccountID)
 		if accountID == "" {
-			return nil, errors.New("account_id is required for Cloudflare Workers AI")
+			return nil, nil, errors.New("account_id is required for Cloudflare Workers AI")
 		}
 		// OpenAICompatible resolves {accountId} placeholders from Extra.
 		meta["accountId"] = accountID
@@ -3156,10 +3336,10 @@ func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataIn
 		endpoint := strings.TrimRight(strings.TrimSpace(in.AzureEndpoint), "/")
 		deployment := strings.TrimSpace(in.AzureDeployment)
 		if endpoint == "" {
-			return nil, errors.New("azure_endpoint is required for Azure OpenAI")
+			return nil, nil, errors.New("azure_endpoint is required for Azure OpenAI")
 		}
 		if deployment == "" {
-			return nil, errors.New("azure_deployment is required for Azure OpenAI")
+			return nil, nil, errors.New("azure_deployment is required for Azure OpenAI")
 		}
 		meta["azure_endpoint"] = endpoint
 		meta["deployment"] = deployment
@@ -3171,7 +3351,64 @@ func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataIn
 		}
 	}
 
-	return meta, nil
+	return meta, secrets, nil
+}
+
+// applyCredentialFields validates the provider's declared fields, writes the
+// non-secret ones into meta and returns the secret ones for sealing. Hidden
+// fields (their When condition does not hold) are dropped so stale values
+// from another auth mode never reach the connector.
+func applyCredentialFields(spec connectors.ProviderSpec, values map[string]string, meta map[string]string) (map[string]string, error) {
+	if len(spec.Fields) == 0 {
+		return nil, nil
+	}
+	secrets := map[string]string{}
+	for _, f := range spec.Fields {
+		if !f.When.Matches(spec, values) {
+			continue
+		}
+		v := strings.TrimSpace(values[f.Key])
+		if f.Multiline {
+			// Keep PEM/JSON line structure; only trim the outer whitespace.
+			v = strings.TrimSpace(strings.ReplaceAll(values[f.Key], "\r\n", "\n"))
+		}
+		if v == "" {
+			v = f.Default
+		}
+		if v == "" {
+			if f.Required {
+				return nil, fmt.Errorf("%s is required for %s", f.Label, spec.DisplayName)
+			}
+			continue
+		}
+		if len(v) > 64*1024 {
+			return nil, fmt.Errorf("%s is too long", f.Label)
+		}
+		if len(f.Options) > 0 {
+			ok := false
+			for _, o := range f.Options {
+				if o.Value == v {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return nil, fmt.Errorf("invalid %s: %q", f.Label, v)
+			}
+		}
+		if f.URL {
+			v = strings.TrimRight(v, "/")
+			if err := httputil.ValidateBaseURL(v); err != nil {
+				return nil, fmt.Errorf("invalid %s: URL blocked by security policy", f.Label)
+			}
+		}
+		if f.Secret {
+			secrets[f.Key] = v
+		} else {
+			meta[f.Key] = v
+		}
+	}
+	return secrets, nil
 }
 
 // validateAccountCredentials unseals an account's credentials and, if the
@@ -3201,6 +3438,9 @@ func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Accou
 	if !ok {
 		return nil // connector doesn't support validation
 	}
+	// Probe (and refresh) through the account's proxy pool so validation
+	// leaves from the same egress IP as its traffic.
+	ctx = s.accountEgressContext(ctx, acc)
 	// Refresh OAuth tokens if they are about to expire so the upstream probe
 	// does not fail with a stale access token.
 	if s.refresher != nil {

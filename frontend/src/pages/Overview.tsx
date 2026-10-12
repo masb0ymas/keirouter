@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-import { AlertTriangle, ArrowRight, Check, Copy, Inbox, Plus, RefreshCw, type LucideIcon } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { AlertTriangle, ArrowRight, Check, Inbox, Plus, RefreshCw, type LucideIcon } from "lucide-react";
 import {
   api,
   connectUsageStream,
@@ -16,9 +16,12 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
 import { TrafficCard } from "../components/charts/TrafficChart";
-import { Badge, ErrorCard, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton } from "../components/ui";
+import { GuardrailsNotice } from "../components/GuardrailMonitor";
+import { Badge, DeltaBadge, ErrorCard, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, EmptyState } from "../components/ui";
+import { formatDateTime, ptsDelta, relDelta, type Delta } from "../lib/format";
 import { ICONS } from "../lib/icons";
-import { useToast } from "../components/Toast";
+import { CopyButton, HighlightedCode } from "../components/ui/code-block";
+import type { CodeLanguage } from "../lib/highlight";
 
 // ── Period model ─────────────────────────────────────────────────────────────
 
@@ -197,6 +200,7 @@ export function OverviewPage() {
       />
 
       <BudgetNotice budgets={budgets.data?.budgets ?? []} />
+      {!firstRun && <GuardrailsNotice period={period} periodText={cfg.text} />}
 
       {insights.isLoading ? (
         <OverviewSkeleton />
@@ -206,7 +210,7 @@ export function OverviewPage() {
         <FirstRun />
       ) : (
         <div className="space-y-6">
-          <KpiStrip data={data} />
+          <KpiStrip data={data} prevLabel={`the previous ${cfg.label}`} />
 
           <div className="grid gap-4 xl:grid-cols-3">
             <TrafficCard data={data} className="xl:col-span-2" />
@@ -219,7 +223,7 @@ export function OverviewPage() {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-3">
-            <RecentRequestsCard recent={data.recent} className="xl:col-span-2" />
+            <RecentRequestsCard recent={data.recent} period={period} className="xl:col-span-2" />
             <ChainsCard chains={chains.data?.chains} loading={chains.isLoading} />
           </div>
         </div>
@@ -266,30 +270,14 @@ function PeriodSelect({ value, onChange }: { value: PeriodKey; onChange: (p: Per
 // dashboard is served by the gateway itself and in development Vite proxies
 // /v1, so the page origin is always the correct client-facing endpoint.
 function BaseUrlChip() {
-  const toast = useToast();
   const url = `${window.location.origin}/v1`;
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success("Base URL copied", url);
-    } catch {
-      toast.error("Couldn't copy", "Your browser blocked clipboard access. Select the URL and copy it manually.");
-    }
-  };
   return (
     // Hidden on phones: copying an endpoint is a desktop job, and the header
     // row there is reserved for range, refresh and the primary action.
     <div className="hidden h-8 max-w-full items-center overflow-hidden rounded-lg border border-line bg-surface md:inline-flex">
       <span className="flex h-full shrink-0 items-center border-r border-line px-2.5 text-[12px] text-fg-muted">Base URL</span>
       <span className="min-w-0 truncate px-2.5 font-mono text-[12px] text-fg" title={url}>{url}</span>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label="Copy base URL"
-        className="flex h-full w-8 shrink-0 items-center justify-center border-l border-line bg-subtle text-fg-muted transition-colors hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
-      >
-        <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-      </button>
+      <CopyButton value={url} label="Copy base URL" toast="Base URL copied" className="h-full w-8 rounded-none border-l border-line bg-subtle focus-visible:ring-inset" />
     </div>
   );
 }
@@ -371,14 +359,7 @@ function PanelLink({ to, children }: { to: string; children: ReactNode }) {
 }
 
 function PanelEmpty({ icon = Inbox, title, hint, action }: { icon?: LucideIcon; title: string; hint?: string; action?: ReactNode }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-1 px-6 py-10 text-center">
-      <IconTile icon={icon} size="lg" className="mb-2" />
-      <p className="text-[13px] font-medium text-fg">{title}</p>
-      {hint && <p className="max-w-sm text-[12px] text-fg-muted">{hint}</p>}
-      {action && <div className="mt-3">{action}</div>}
-    </div>
-  );
+  return <EmptyState icon={icon} title={title} hint={hint} action={action} size="sm" className="flex-1 justify-center" />;
 }
 
 const TH = "px-4 py-2 font-medium";
@@ -386,21 +367,7 @@ const THEAD = "border-b border-line bg-subtle text-left text-[12px] text-fg-fain
 
 // ── KPI strip ────────────────────────────────────────────────────────────────
 
-type DeltaTone = "good" | "bad" | "flat";
-
-function DeltaText({ delta, className }: { delta: { text: string; tone: DeltaTone }; className?: string }) {
-  return (
-    <span className={cn("whitespace-nowrap text-[12px] font-medium tabular-nums", deltaClass(delta.tone), className)}>
-      {delta.text}
-      <span className="sr-only">
-        {" "}
-        vs previous period{delta.tone === "good" ? ", better" : delta.tone === "bad" ? ", worse" : ""}
-      </span>
-    </span>
-  );
-}
-
-function KpiStrip({ data }: { data: UsageInsights }) {
+function KpiStrip({ data, prevLabel }: { data: UsageInsights; prevLabel: string }) {
   const s = data.summary;
   const p = data.previous;
   const series = data.series;
@@ -417,7 +384,7 @@ function KpiStrip({ data }: { data: UsageInsights }) {
     tone?: "ok" | "warn" | "bad" | "section";
     value: string;
     sub?: string;
-    delta: { text: string; tone: DeltaTone } | null;
+    delta: Delta | null;
     spark: number[];
   }[] = [
     {
@@ -463,45 +430,15 @@ function KpiStrip({ data }: { data: UsageInsights }) {
             icon={item.icon}
             tone={item.tone}
             label={item.label}
-            value={
-              <span className="whitespace-nowrap">
-                {item.value}
-                {item.sub && <span className="ml-2 text-[12px] font-normal tracking-normal text-fg-muted">{item.sub}</span>}
-              </span>
-            }
-            hint={
-              <span className="flex min-h-6 items-center gap-3">
-                {item.delta ? <DeltaText delta={item.delta} /> : <span>No prior data</span>}
-                <Sparkline values={item.spark} />
-              </span>
-            }
+            value={<span className="whitespace-nowrap">{item.value}</span>}
+            delta={item.delta}
+            deltaLabel={`vs ${prevLabel}`}
+            hint={item.sub}
+            trend={item.spark}
           />
         ))}
       </KpiGrid>
     </section>
-  );
-}
-
-function Sparkline({ values }: { values: number[] }) {
-  if (values.length < 2 || values.every((v) => v === values[0])) return <span className="h-6 w-[72px]" aria-hidden="true" />;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const points = values
-    .map((v, i) => `${((i / (values.length - 1)) * 100).toFixed(2)},${(25 - ((v - min) / span) * 21).toFixed(2)}`)
-    .join(" ");
-  return (
-    <svg width="72" height="24" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true" className="shrink-0">
-      <polyline
-        points={points}
-        fill="none"
-        className="stroke-accent-500"
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }
 
@@ -715,7 +652,7 @@ function CostCard({ data, budgets, budgetsLoading }: { data: UsageInsights; budg
           <span className="text-[22px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-fg">{fmtUSD(sv.usd_saved)}</span>
           {gross > 0 && <span className="text-[12px] tabular-nums text-fg-muted">{fmtPct(sv.usd_saved / gross, 1)} of gross</span>}
           {sv.usd_saved_estimate && <span className="text-[12px] text-fg-muted">· estimated</span>}
-          {savedDelta && <DeltaText delta={savedDelta} className="ml-auto" />}
+          {savedDelta && <DeltaBadge delta={savedDelta} className="ml-auto" />}
         </p>
         {usdTotal > 0 && (
           <div className="mt-3 flex h-2 gap-0.5 overflow-hidden rounded-full" aria-hidden="true">
@@ -904,9 +841,12 @@ const STATUS_STYLE: Record<string, { label: string; tone: "success" | "accent" |
   cancelled: { label: "Cancelled", tone: "neutral" },
 };
 
-function RecentRequestsCard({ recent, className }: { recent: RecentActivity[]; className?: string }) {
+function RecentRequestsCard({ recent, period, className }: { recent: RecentActivity[]; period: PeriodKey; className?: string }) {
+  const navigate = useNavigate();
+  // Every row opens the request's detail drawer on the Usage page.
+  const detailHref = (r: RecentActivity) => `/usage?period=${period}&tab=requests&request=${encodeURIComponent(r.id)}`;
   return (
-    <Panel icon={ICONS.requests} title="Recent requests" action={<PanelLink to="/usage?tab=requests">All requests</PanelLink>} className={className}>
+    <Panel icon={ICONS.requests} title="Recent requests" action={<PanelLink to={`/usage?period=${period}&tab=requests`}>All requests</PanelLink>} className={className}>
       {recent.length === 0 ? (
         <PanelEmpty icon={ICONS.requests} title="No requests in this period" />
       ) : (
@@ -917,41 +857,43 @@ function RecentRequestsCard({ recent, className }: { recent: RecentActivity[]; c
               const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.cancelled;
               const caller = [r.api_key_name, r.client].filter(Boolean).join(" · ");
               return (
-                <li key={r.id} className="px-4 py-3">
-                  <div className="flex items-center gap-2.5">
-                    <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={18} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-mono text-[12.5px] text-fg" title={`${r.provider}/${r.model}`}>{r.model || "unknown"}</p>
-                      {caller && <p className="truncate font-mono text-[11.5px] text-fg-muted">{caller}</p>}
+                <li key={r.id}>
+                  <Link to={detailHref(r)} className="block px-4 py-3 transition-colors hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500">
+                    <div className="flex items-center gap-2.5">
+                      <ProviderLogo icon={r.provider_icon} name={r.provider_name || r.provider} size={18} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-[12.5px] text-fg" title={`${r.provider}/${r.model}`}>{r.model || "unknown"}</p>
+                        {caller && <p className="truncate font-mono text-[11.5px] text-fg-muted">{caller}</p>}
+                      </div>
+                      <span className="shrink-0">
+                        <Badge tone={st.tone} title={r.error_kind || undefined}>
+                          {requestStatusLabel(r, st.label)}
+                        </Badge>
+                      </span>
                     </div>
-                    <span className="shrink-0">
-                      <Badge tone={st.tone} title={r.error_kind || undefined}>
-                        {requestStatusLabel(r, st.label)}
-                      </Badge>
-                    </span>
-                  </div>
-                  <p className="mt-1.5 flex flex-wrap gap-x-1.5 text-[12px] tabular-nums text-fg-muted">
-                    <time dateTime={r.created_at} title={new Date(r.created_at).toLocaleString()} className="font-mono">
-                      {formatClock(r.created_at)}
-                    </time>
-                    <span aria-hidden="true">·</span>
-                    <span>{fmtMs(r.latency_ms)}</span>
-                    {(r.prompt_tokens > 0 || r.completion_tokens > 0) && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          {requestTokens(r)}
-                          <span className="sr-only"> tokens in and out</span>
-                        </span>
-                      </>
-                    )}
-                    {requestCost(r) !== "—" && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-fg">{requestCost(r)}</span>
-                      </>
-                    )}
-                  </p>
+                    <p className="mt-1.5 flex flex-wrap gap-x-1.5 text-[12px] tabular-nums text-fg-muted">
+                      <time dateTime={r.created_at} title={formatDateTime(r.created_at)} className="font-mono">
+                        {formatClock(r.created_at)}
+                      </time>
+                      <span aria-hidden="true">·</span>
+                      <span>{fmtMs(r.latency_ms)}</span>
+                      {(r.prompt_tokens > 0 || r.completion_tokens > 0) && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            {requestTokens(r)}
+                            <span className="sr-only"> tokens in and out</span>
+                          </span>
+                        </>
+                      )}
+                      {requestCost(r) !== "—" && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-fg">{requestCost(r)}</span>
+                        </>
+                      )}
+                    </p>
+                  </Link>
                 </li>
               );
             })}
@@ -978,9 +920,13 @@ function RecentRequestsCard({ recent, className }: { recent: RecentActivity[]; c
                   const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.cancelled;
                   const caller = [r.api_key_name, r.client].filter(Boolean).join(" · ");
                   return (
-                    <tr key={r.id} className="transition-colors hover:bg-hover">
-                      <td className="whitespace-nowrap px-4 py-2 font-mono text-[12px] text-fg-muted" title={new Date(r.created_at).toLocaleString()}>
-                        {formatClock(r.created_at)}
+                    // The row is a mouse convenience; the time link is the keyboard / AT path.
+                    <tr key={r.id} className="cursor-pointer transition-colors hover:bg-hover" onClick={() => navigate(detailHref(r))}>
+                      <td className="whitespace-nowrap px-4 py-2 font-mono text-[12px] text-fg-muted" title={formatDateTime(r.created_at)}>
+                        <Link to={detailHref(r)} onClick={(e) => e.stopPropagation()} className={cn("rounded-sm hover:text-fg hover:underline", FOCUS_RING)}>
+                          {formatClock(r.created_at)}
+                          <span className="sr-only">, {r.model || "unknown model"}: open request details</span>
+                        </Link>
                       </td>
                       <td className="px-4 py-2">
                         <Badge tone={st.tone} title={r.error_kind || undefined}>
@@ -1047,7 +993,6 @@ function FirstRun() {
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys(), staleTime: 30_000 });
   const info = useQuery({ queryKey: ["gateway-info"], queryFn: () => api.gatewayInfo(), staleTime: 60_000 });
   const [snippet, setSnippet] = useState<SnippetKey>("claude");
-  const toast = useToast();
   const setupId = useId();
   const gatewayId = useId();
   const snippetBase = useId();
@@ -1060,30 +1005,24 @@ function FirstRun() {
   const current = steps.findIndex((s) => !s);
 
   const origin = window.location.origin;
-  const snippets: Record<SnippetKey, { label: string; code: string }> = {
+  const snippets: Record<SnippetKey, { label: string; code: string; language: CodeLanguage }> = {
     claude: {
       label: "Claude Code",
+      language: "bash",
       code: `export ANTHROPIC_BASE_URL=${origin}\nexport ANTHROPIC_AUTH_TOKEN=<your KeiRouter key>\nclaude`,
     },
     openai: {
       label: "OpenAI SDK",
-      code: `from openai import OpenAI\n\nclient = OpenAI(base_url="${origin}/v1", api_key="<your KeiRouter key>")\nclient.chat.completions.create(model="<model or chain>", messages=[{"role": "user", "content": "ping"}])`,
+      language: "python",
+      code: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${origin}/v1",\n    api_key="<your KeiRouter key>",\n)\nclient.chat.completions.create(\n    model="<model or chain>",\n    messages=[{"role": "user", "content": "ping"}],\n)`,
     },
     curl: {
       label: "curl",
+      language: "bash",
       code: `curl ${origin}/v1/chat/completions \\\n  -H "Authorization: Bearer <your KeiRouter key>" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "<model or chain>", "messages": [{"role": "user", "content": "ping"}]}'`,
     },
   };
   const snippetKeys = Object.keys(snippets) as SnippetKey[];
-
-  const copySnippet = async () => {
-    try {
-      await navigator.clipboard.writeText(snippets[snippet].code);
-      toast.success("Snippet copied");
-    } catch {
-      toast.error("Couldn't copy", "Your browser blocked clipboard access. Select the snippet and copy it manually.");
-    }
-  };
 
   return (
     <div className="grid gap-4 xl:grid-cols-3">
@@ -1119,7 +1058,7 @@ function FirstRun() {
             current={current}
             done={steps[0]}
             title="Connect a provider"
-            body={steps[0] ? `${accountCount} account${accountCount === 1 ? "" : "s"} connected.` : "An API key or OAuth sign-in, any of 90+ providers."}
+            body={steps[0] ? `${accountCount} account${accountCount === 1 ? "" : "s"} connected.` : "An API key or OAuth sign-in, any of 160+ providers."}
             action={<SetupAction to="/providers" primary={current === 0}>{steps[0] ? "Manage providers" : "Connect provider"}</SetupAction>}
           />
           <SetupStep
@@ -1168,23 +1107,18 @@ function FirstRun() {
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={copySnippet}
-                  aria-label={`Copy ${snippets[snippet].label} snippet`}
-                  className={cn("ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:bg-hover hover:text-fg sm:h-7 sm:w-7", FOCUS_RING)}
-                >
-                  <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-                </button>
+                <CopyButton value={snippets[snippet].code} label={`Copy ${snippets[snippet].label} snippet`} toast="Snippet copied" size="sm" className="ml-1" />
               </div>
               <pre
                 id={`${snippetBase}-panel`}
                 role="tabpanel"
                 aria-labelledby={`${snippetBase}-tab-${snippet}`}
                 tabIndex={0}
-                className={cn("overflow-x-auto bg-canvas px-3.5 py-3 font-mono text-[12px] leading-relaxed text-fg", FOCUS_RING)}
+                className={cn("overflow-x-auto bg-[var(--code-bg)] px-3.5 py-3 font-mono text-[12.5px] leading-[1.65] text-[var(--code-fg)]", FOCUS_RING)}
               >
-                {snippets[snippet].code}
+                <code>
+                  <HighlightedCode code={snippets[snippet].code} language={snippets[snippet].language} />
+                </code>
               </pre>
             </div>
           </SetupStep>
@@ -1357,31 +1291,12 @@ function fmtPct(ratio: number, digits: number): string {
   return `${(ratio * 100).toFixed(digits)}%`;
 }
 
-function relDelta(cur: number, prev: number | undefined, mode: "flat" | "lower-better" | "higher-better"): { text: string; tone: DeltaTone } | null {
-  if (!prev || !Number.isFinite(prev) || prev <= 0 || !cur) return null;
-  const change = (cur - prev) / prev;
-  const text = `${change >= 0 ? "+" : "−"}${Math.abs(change * 100).toFixed(1)}%`;
-  if (Math.abs(change) < 0.005 || mode === "flat") return { text, tone: "flat" };
-  const better = mode === "lower-better" ? change < 0 : change > 0;
-  return { text, tone: better ? "good" : "bad" };
-}
-
-function ptsDelta(cur: number, prev: number): { text: string; tone: DeltaTone } {
-  const diff = (cur - prev) * 100;
-  const text = `${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(2)} pts`;
-  if (Math.abs(diff) < 0.01) return { text, tone: "flat" };
-  return { text, tone: diff > 0 ? "good" : "bad" };
-}
-
-function absUSDDelta(cur: number, prev: number | undefined): { text: string; tone: DeltaTone } | null {
+function absUSDDelta(cur: number, prev: number | undefined): Delta | null {
   if (prev === undefined || (!prev && !cur)) return null;
   const diff = cur - prev;
   const text = `${diff >= 0 ? "+" : "−"}${fmtUSD(Math.abs(diff))}`;
-  return { text, tone: Math.abs(diff) < 0.005 ? "flat" : diff > 0 ? "good" : "bad" };
-}
-
-function deltaClass(tone: DeltaTone): string {
-  return tone === "good" ? "text-ok" : tone === "bad" ? "text-bad" : "text-fg-muted";
+  const dir = Math.abs(diff) < 0.005 ? "flat" : diff > 0 ? "up" : "down";
+  return { text, tone: dir === "flat" ? "flat" : dir === "up" ? "good" : "bad", dir };
 }
 
 function formatBucket(iso: string, withDate: boolean): string {

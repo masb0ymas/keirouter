@@ -4,7 +4,7 @@ import { ChartCard, TimeBars, TimeLines, clockLabel, dayLabel } from "./charts/T
 import type { HealthSnapshot } from "../lib/api";
 import { cn } from "@/lib/utils";
 import { ICONS } from "@/lib/icons";
-import { IconTile, SectionTitle } from "./ui";
+import { EmptyState, SectionTitle } from "./ui";
 import { fmtIssue } from "./HealthBadge";
 
 // Provider-health trend charts. Raw snapshots are one row per minute per
@@ -98,11 +98,7 @@ export function HealthTrends({ snapshots, range }: { snapshots: HealthSnapshot[]
   );
   if (!snapshots.length) {
     return (
-      <div className="flex flex-col items-center rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-10 text-center">
-        <IconTile icon={ICONS.trend} size="lg" className="mb-3" />
-        <p className="text-[13px] font-medium text-fg">No trend data in this range</p>
-        <p className="mt-1 text-[12.5px] text-fg-muted">Trends appear once requests or probes run.</p>
-      </div>
+      <EmptyState variant="card" size="sm" icon={ICONS.trend} title="No trend data in this range" hint="Trends appear once requests or probes run." />
     );
   }
   return (

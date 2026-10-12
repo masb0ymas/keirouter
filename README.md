@@ -63,7 +63,7 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 - [Branding & White-Label](#-make-it-yours-branding)
 - [CLI Tools Auto-Config](#-cli-tools-auto-config)
 - [Usage Portal](#-usage-portal)
-- [Supported Providers](#-supported-providers-90)
+- [Supported Providers](#-supported-providers-160)
 - [Configuration](#-configuration)
 - [Architecture](#-architecture)
 - [Security](#-security)
@@ -77,6 +77,7 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 **Routing & reliability**
 - 🔀 **One endpoint, every provider** — Your apps speak OpenAI Chat, the OpenAI Responses API, Anthropic Messages, or native Gemini; KeiRouter quietly translates to whatever you actually want to use.
 - 🛡️ **Never stop coding** — Provider down? Rate limited? Fallback chains with priority, round-robin, latency or cost ordering keep you moving like nothing happened.
+- 🏢 **Enterprise clouds, natively** — AWS Bedrock, SageMaker, Azure AI Foundry, IBM watsonx.ai, Oracle Cloud, SAP Generative AI Hub, Databricks and Snowflake Cortex, with their own auth (IAM roles, Entra ID, signed requests) handled for you.
 - 🩺 **Provider health** — Real-traffic telemetry plus synthetic probes, with 24h / 7d history that survives restarts.
 - ⚡ **Response cache** — Ask the same thing twice and get it back instantly for $0.00. Exact-match out of the box, true semantic matching with an embeddings API.
 
@@ -88,12 +89,12 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 - 📈 **Quota tracker** — Upstream limits and local usage for every provider account in one place.
 
 **Safety & governance**
-- 🛡️ **Guardrails** — PII, prompt-injection, toxicity, topics, and bias detectors layered global → provider → model → chain → key, with mid-stream output scanning, an ML classifier, an LLM judge, and a fully-offline mode.
+- 🛡️ **Guardrails** — PII, prompt-injection, toxicity, topics, and bias detectors layered global → provider → model → chain → key, with mid-stream output scanning, an ML classifier, an LLM judge, a fully-offline mode, and a monitor that shows what got blocked and what it cost.
 - 📜 **Audit log** — Every sign-in and config change, hash-chained so tampering shows, exported as OpenTelemetry logs and JSONL for your SIEM.
 - 🔐 **Locked down by default** — AES-256-GCM envelope encryption for credentials, a loopback-only admin API, a password-gated dashboard, HMAC sessions, and SSRF protection on outbound calls.
 
 **Operations & UX**
-- 📊 **See everything** — Usage by provider, model, chain and request; TTFT and p95 latency; a live console log; host and process resource charts; Prometheus metrics.
+- 📊 **See everything** — Usage by provider, model, chain and request; TTFT and p95 latency; a live console that traces every request through its fallbacks; host and process resource charts; Prometheus metrics.
 - 🧠 **Skills** — Custom instructions injected into matching chat requests, plus reference skills that teach any agent how to use your gateway.
 - 🔧 **CLI auto-config** — Detects 11 coding tools on your machine and writes their config in one click.
 - 🌐 **Proxy pools & tunnels** — Route upstream traffic through proxies or a one-click Cloudflare Worker relay, and expose the gateway via Cloudflare Tunnel or Tailscale Funnel.
@@ -115,9 +116,10 @@ Oh, and it's written in Go. So it's light on memory, boots instantly, ships as o
 
 | | |
 |---|---|
-| <img src="assets/screenshots/chains.png" alt="Chain builder with route preview" width="400"><br><sub><b>Chains</b> — build fallback routes and preview them live</sub> | <img src="assets/screenshots/health.png" alt="Provider health" width="400"><br><sub><b>Provider health</b> — uptime, fallbacks and p95 latency per upstream</sub> |
-| <img src="assets/screenshots/guardrails.png" alt="New guardrail policy dialog" width="400"><br><sub><b>Guardrails</b> — scoped policies with a dry-run tester</sub> | <img src="assets/screenshots/endpoints.png" alt="Endpoints page with quick start" width="400"><br><sub><b>Endpoints</b> — base URL, quick-start snippets and API reference</sub> |
-| <img src="assets/screenshots/token-saving.png" alt="Token saving settings" width="400"><br><sub><b>Token saving</b> — toggle each saver independently</sub> | <img src="assets/screenshots/system.png" alt="System resources page" width="400"><br><sub><b>System</b> — CPU, memory and goroutine history for the instance</sub> |
+| <img src="assets/screenshots/chains.png" alt="Chain builder with route preview" width="400"><br><sub><b>Chains</b> — build fallback routes and preview them live</sub> | <img src="assets/screenshots/provider-credentials.png" alt="Connect AWS Bedrock with IAM access keys" width="400"><br><sub><b>Providers</b> — each provider asks for exactly the credentials it needs</sub> |
+| <img src="assets/screenshots/health.png" alt="Provider health" width="400"><br><sub><b>Provider health</b> — uptime, fallbacks and p95 latency per upstream</sub> | <img src="assets/screenshots/guardrails.png" alt="New guardrail policy dialog" width="400"><br><sub><b>Guardrails</b> — scoped policies with a dry-run tester</sub> |
+| <img src="assets/screenshots/audit-log.png" alt="Audit log page" width="400"><br><sub><b>Audit log</b> — hash-chained sign-ins and config changes</sub> | <img src="assets/screenshots/endpoints.png" alt="Endpoints page with quick start" width="400"><br><sub><b>Endpoints</b> — base URL, quick-start snippets and API reference</sub> |
+| <img src="assets/screenshots/token-saving.png" alt="Token saving settings" width="400"><br><sub><b>Token saving</b> — toggle each saver independently</sub> | <img src="assets/screenshots/cli-tools.png" alt="CLI tools page" width="400"><br><sub><b>CLI tools</b> — detects your coding tools and configures them in one click</sub> |
 
 ---
 
@@ -187,7 +189,7 @@ curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/inst
 keirouter start
 ```
 
-Works on amd64 and arm64 (including 64-bit Raspberry Pi OS). Only `curl` and `tar` are needed, which every Ubuntu already has.
+Works on amd64 and arm64 (including 64-bit Raspberry Pi OS). All it needs is `curl` (or `wget`) and `tar`, which every Ubuntu already has.
 
 To keep KeiRouter running in the background and start it on boot, install it as a systemd service instead:
 
@@ -306,7 +308,7 @@ In your AI tool of choice, set:
 - **API Key:** the `kr_` key from the dashboard or `keirouter bootstrap` (sent as `Authorization: Bearer …` or `x-api-key`)
 - **Model:** a provider model like `openai/gpt-4o`, or the name of a fallback [chain](#-smart-routing-chains) you cooked up
 
-That's it. You're routing. The **Endpoints** page has copy-paste snippets for cURL, Python, Node.js and Claude Code, and the **CLI tools** page can [write the config for you](#-cli-tools-auto-config).
+That's it. You're routing. The **Endpoints** page has copy-paste snippets for cURL, Python, Node.js, Claude Code and plain environment variables, and the **CLI tools** page can [write the config for you](#-cli-tools-auto-config).
 
 ---
 
@@ -534,7 +536,8 @@ A built-in content-safety layer runs detectors against every request and respons
 - **Streaming-safe:** a short hold-back buffer scans assistant output before it is forwarded, so leaked PII is masked and blocked text never reaches the client, even when it is split across chunks.
 - **Prompt-injection hardening** (per policy): spotlighting marks tool results as untrusted data, a canary marker in the system prompt blocks responses that leak it, and tool calls are refused in a turn whose tool results look injected.
 - **Test before you ship:** every policy has a dry-run tester — nothing reaches a provider.
-- **Observability:** every decision shows up in the **Audit log** tab of the Guardrails page (live via SSE); Prometheus serves `keirouter_guardrail_decisions_total` and `keirouter_guardrail_eval_seconds` at `/metrics`.
+- **Monitoring:** the **Overview** tab of the Guardrails page shows how often requests were blocked, masked or warned (inbound, outbound and mid-stream), which detectors and reasons fired, the top PII entities, keys and models involved, the latency guardrails added, and what the LLM judge cost. Drill down by API key or model. The Overview page tells you when guardrails acted in the selected period, and each API key shows its own 7-day numbers.
+- **Observability:** every decision also shows up in the **Audit log** tab of the Guardrails page (live via SSE); Prometheus serves `keirouter_guardrail_decisions_total` and `keirouter_guardrail_eval_seconds` at `/metrics`.
 - **Compliance:** a per-tenant **Allow external detector engines** switch forces every detector offline; `KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS` controls retention; the test endpoint is capped at 10 req/min.
 
 Starter templates ship in the **Start from template** picker (Indonesia PII · Strict safety · Compliance audit · Public chatbot · Coding agent · Alerts-only), and you can export/import policies as a JSON bundle.
@@ -563,7 +566,8 @@ Then turn on **ML classifier** in a prompt-injection policy. Any server speaking
 |---|---|
 | **Overview** | Requests, success rate, latency and spend vs. the previous period, top models, provider health, savings |
 | **Usage** | Cost, tokens and latency (p50 / p95 / TTFT) by provider, model, chain and individual request |
-| **Console** | Live gateway log stream with level filters |
+| **Console** | Live gateway activity: one row per request with a timeline of its fallback attempts and rate-limit waits, plus background warnings (OAuth refresh, health, tunnels) in plain language. Filter with `key:prod status:5xx ms>5s is:fallback` and friends, then download what you found |
+| **Guardrails** | Block / mask / warn rates, detector breakdowns, overhead and judge cost (see [Guardrails](#-guardrails)) |
 | **Health** | Per-provider and per-model uptime, fallbacks, p95 latency and synthetic probes; 24h / 7d history from persisted snapshots |
 | **Quota** | Upstream quota windows and local usage for every account, with auto-refresh |
 | **System** | CPU, memory, disk, goroutines and KeiRouter's own RSS / heap over time |
@@ -575,7 +579,7 @@ Prometheus metrics live at `/metrics` (loopback-only by default): requests, late
 Every dashboard sign-in and configuration change is recorded on the **Audit log** page: who did it (a stable per-session id), the action (`keys.create`, `settings.endpoint`, `auth.login`, ...), the resource, the outcome, client IP, request id and W3C trace id. Request bodies are never stored, only the names of the fields that were sent. Reading a full config export or a database backup is audited too.
 
 - **Tamper-evident:** each replica writes an HMAC hash chain keyed from the master key. **Verify integrity** (or `GET /api/audit/verify`) reports any row that was edited, inserted or deleted.
-- **OpenTelemetry-native:** set `audit.otlp.endpoint` (or the standard `OTEL_EXPORTER_OTLP_ENDPOINT`) and each event is also shipped as an OTLP log record, using semantic-convention attributes such as `user.id`, `client.address`, `http.route` and `event.name=keirouter.audit.<action>`. Any OTel Collector, Grafana Loki, Datadog, Elastic or Splunk pipeline can ingest it.
+- **OpenTelemetry-native:** set `audit.otlp.endpoint` (or the standard `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`; OTLP over HTTP) and each event is also shipped as an OTLP log record, using semantic-convention attributes such as `user.id`, `client.address`, `http.route` and `event.name=keirouter.audit.<action>`. Any OTel Collector, Grafana Loki, Datadog, Elastic or Splunk pipeline can ingest it.
 - **SIEM export:** **Export JSONL** (or `GET /api/audit/export`) downloads the filtered log as JSON Lines.
 - **Never in the way:** events are queued and batch-written off the request path, and a slow collector has its own queue. `audit.retention_days` (default 365) prunes old rows.
 
@@ -590,7 +594,8 @@ audit:
 
 ## 🌐 Networking: Proxy Pools & Tunnels
 
-- **Proxy pools** — Send upstream traffic for chosen accounts through HTTP proxies or edge relays (Vercel, Cloudflare, Deno). **Deploy relay** pushes a Cloudflare Worker relay for you and watches until it's ready. A global outbound proxy lives in **Settings → Network**.
+- **Proxy pools** — Send upstream traffic for chosen accounts through HTTP proxies or edge relays (Vercel, Cloudflare, Deno). Everything an account does goes through its pool, not just chat: credential checks, quota and model lookups, OAuth token refreshes and health probes. Add **bypass hosts** that should connect directly, and pick per pool what happens when the proxy itself fails: retry directly, or turn on **strict mode** to fail closed. A global outbound proxy lives in **Settings → Network**.
+- **Cloudflare relay** — **Deploy relay** pushes a Cloudflare Worker for you and watches until it's ready. Each deploy gets its own secret, so the relay can't be used as an open proxy, and it strips client IP headers before forwarding.
 - **Public tunnels** — Need to reach your gateway from elsewhere? Turn on a **Cloudflare quick tunnel** or **Tailscale Funnel** from the **Endpoints** page.
 
 ---
@@ -635,22 +640,41 @@ A dedicated, no-admin-required view at `/portal` where teammates keep an eye on 
 
 ---
 
-## 🌐 Supported Providers (90+)
+## 🌐 Supported Providers (160+)
 
 **🧠 LLM / Chat**
 
 | Category | Providers |
 |----------|-----------|
-| **Major Cloud** | OpenAI, Anthropic, Google Gemini, Azure OpenAI, Vercel AI Gateway |
-| **Free / Free Tier** | OpenRouter, NVIDIA NIM, Ollama (Cloud & Local), Cloudflare Workers AI, BytePlus ModelArk, MiMo Free, Kiro |
+| **Major Cloud** | OpenAI, Anthropic, Google Gemini, Azure OpenAI (API key or Entra ID), Vercel AI Gateway |
+| **Enterprise Cloud** | AWS Bedrock, AWS SageMaker, Azure AI Foundry, IBM watsonx.ai, Oracle Cloud Generative AI, SAP Generative AI Hub, Databricks, Snowflake Cortex |
+| **Free / Free Tier** | OpenRouter, NVIDIA NIM, Ollama Cloud, Cloudflare Workers AI, BytePlus ModelArk, MiMo Free, Kiro |
 | **Sign in with a plan** | Claude Code, OpenAI Codex, GitHub Copilot, Gemini CLI, Antigravity, Cursor IDE, Cline, ClinePass, Kilo Code, Qwen Code, Qoder, iFlow, Kimi Coding, Kimchi, CodeBuddy (Tencent), Grok CLI, Command Code |
-| **China / Asia** | DeepSeek, Qwen / Alibaba (incl. Intl), GLM Coding (+ China), Kimi (Moonshot), MiniMax Coding (+ China), Volcengine Ark, Xiaomi MiMo (+ Token Plan), SiliconFlow |
-| **Performance** | Groq, Cerebras, SambaNova, DeepInfra |
-| **Specialized** | xAI (Grok), Mistral, Perplexity (+ Agent / Responses), Cohere, AI21 Labs, Venice AI |
-| **Aggregators & hosts** | Together AI, Fireworks AI, Nebius AI, OpenCode, AgentRouter, Hyperbolic, Featherless, Nscale, Baseten, Nous Research, Scaleway AI |
-| **Emerging** | Blackbox AI, Chutes AI, and more |
-| **Self-hosted** | vLLM, Ollama Local |
+| **Model labs** | xAI (Grok), Mistral (+ Codestral), Cohere, AI21 Labs, Perplexity (+ Agent / Responses), Meta (Llama API, Model API), Amazon Nova, Inception Labs, v0, Cognition, Sarvam AI, Maritaca AI, GigaChat (Sber) |
+| **China / Asia** | DeepSeek, Alibaba (Model Studio / DashScope, Coding, Intl), Moonshot AI & Kimi, Z.AI & GLM Coding (+ China), MiniMax Coding (+ China), Volcengine Ark, Xiaomi MiMo (+ Token Plan), SiliconFlow, ModelScope, Tencent TokenHub |
+| **Fast inference** | Groq, Cerebras, SambaNova, DeepInfra, FriendliAI |
+| **Inference clouds** | Together AI, Fireworks AI, Nebius AI, Hyperbolic, Featherless, Nscale, Baseten, Nous Research, Scaleway AI, Lambda, Replicate, Hugging Face Inference Providers, OVHcloud, DigitalOcean Gradient AI, Heroku, W&B Inference, Clarifai, Crusoe Cloud, GMI Cloud, Parasail, DataRobot, Venice AI, and more |
+| **Aggregators & gateways** | OpenCode, AgentRouter, GitHub Models, Helicone AI Gateway, CometAPI, AIHubMix, Eden AI, NanoGPT, Poe |
+| **Emerging** | Blackbox AI, Chutes AI, Galadriel, Cortecs, LibertAI, Synthetic, and many more |
+| **Self-hosted** | vLLM, Ollama, LM Studio, llamafile, Docker Model Runner, Xinference, Lemonade, Text Generation WebUI, NVIDIA Triton, RAGFlow |
 | **Custom** | Any OpenAI- or Anthropic-compatible endpoint (self-hosted, proxy, etc.), with your own model registry and prices |
+
+> **Self-hosted on the same machine or LAN?** KeiRouter's SSRF guard blocks loopback and private addresses by default. Set `KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL=true` (or `security.allow_private_base_url: true`) to reach them.
+
+**🏢 Enterprise clouds** connect with their own credentials, not just an API key. The connect form asks for exactly what each one needs:
+
+| Provider | Authentication |
+|---|---|
+| **AWS Bedrock** | Bedrock API key, IAM access key, or the server's environment / instance role, with optional STS assume-role. Converse API for every model family, native Anthropic via `invoke/`, embeddings, and optional Bedrock Guardrails |
+| **AWS SageMaker** | IAM access key or instance role; the model is your endpoint name (TGI, LMI, vLLM, SGLang), with optional inference components |
+| **Azure OpenAI** · **Azure AI Foundry** | API key or a Microsoft Entra ID service principal |
+| **IBM watsonx.ai** | IBM Cloud IAM, Cloud Pak for Data, or a bearer token; project or deployment space |
+| **Oracle Cloud Generative AI** | Signed requests (tenancy, user, fingerprint, PEM key); on-demand or dedicated clusters |
+| **SAP Generative AI Hub** | AI Core service key or client credentials; deployment discovered for you |
+| **Databricks** | Personal access token or OAuth machine-to-machine; serving endpoints discovered live |
+| **Snowflake Cortex** | Programmatic access token or key-pair JWT |
+
+Exchanged tokens are cached and refreshed automatically, and every secret field is sealed with the same envelope encryption as API keys.
 
 **🎨 Media & Search**
 
@@ -660,7 +684,7 @@ A dedicated, no-admin-required view at `/portal` where teammates keep an eye on 
 | **Video Generation** | xAI |
 | **Text-to-Speech** | OpenAI, Gemini, NVIDIA NIM, ElevenLabs, Deepgram, MiniMax, Hyperbolic, AWS Polly, Google TTS, Edge TTS, Inworld, Local Device |
 | **Speech-to-Text** | OpenAI Whisper, Groq Whisper, Deepgram, AssemblyAI, Gemini, HuggingFace |
-| **Embeddings** | OpenAI, Gemini, Mistral, Together AI, Fireworks AI, Nebius, NVIDIA NIM, GitHub Copilot, vLLM, Venice AI, Voyage AI, Jina AI, OpenRouter |
+| **Embeddings** | OpenAI, Gemini, Mistral, Cohere, AWS Bedrock, Azure AI Foundry, Databricks, Together AI, Fireworks AI, Nebius, NVIDIA NIM, GitHub Copilot, GitHub Models, GigaChat, vLLM, Venice AI, Voyage AI, Jina AI, OpenRouter |
 | **Web Search** | Tavily, Exa, Serper, Brave Search, Perplexity, xAI, Gemini, Kimi, MiniMax, Google PSE, OpenAI |
 | **Web Fetch** | Tavily, Exa, Firecrawl, Jina |
 
@@ -697,7 +721,7 @@ Curious what happens after you hit send? Here's the life of a request:
 
 - The admin API (`/api/*`) only answers on loopback by default (`security.bind_loopback_only`). Exposing it? Put it behind a reverse proxy and set a stable master key.
 - **Guard your master key with your life** — it's the root of trust for every encrypted credential.
-- Credentials sit behind AES-256-GCM envelope encryption; the dashboard uses Argon2id password hashing + HMAC session cookies; outbound requests get SSRF protection.
+- Credentials sit behind AES-256-GCM envelope encryption, including provider-specific secrets such as AWS secret keys, OAuth client secrets and PEM private keys; the dashboard uses Argon2id password hashing + HMAC session cookies; outbound requests get SSRF protection.
 
 Found a security issue? Please follow [SECURITY.md](SECURITY.md) instead of opening a public issue. 🙏
 

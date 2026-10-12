@@ -344,19 +344,18 @@ export function ChainsPage() {
       ) : chainsQuery.isError ? (
         <ErrorBanner message="Couldn't load chains. Refresh the page to try again." />
       ) : allChains.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface">
-          <EmptyState
-            icon={ICONS.chains}
-            title="No chains yet"
-            hint="A chain tries models in order, so one failing provider doesn't fail the request."
-            action={(
-              <Button onClick={() => navigate("/chains/new")}>
-                <Plus aria-hidden="true" />
-                Create chain
-              </Button>
-            )}
-          />
-        </div>
+        <EmptyState
+          variant="card"
+          icon={ICONS.chains}
+          title="No chains yet"
+          hint="A chain tries models in order, so one failing provider doesn't fail the request."
+          action={(
+            <Button onClick={() => navigate("/chains/new")}>
+              <Plus aria-hidden="true" />
+              Create chain
+            </Button>
+          )}
+        />
       ) : (
         <div className="space-y-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">

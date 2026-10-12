@@ -25,18 +25,24 @@ func VerificationCode() string {
 	return hex.EncodeToString(b[:])
 }
 
+// JudgeClientKind is the client recorded on the usage rows of every LLM judge
+// call, so guardrail overhead can be told apart from client traffic.
+const JudgeClientKind = "guardrails-judge"
+
 // JudgeMetadata derives the metadata of a judge call from the request that
-// triggered it, so its usage is metered against the same key.
-func JudgeMetadata(meta core.RequestMetadata, kind string) core.RequestMetadata {
+// triggered it, so its usage is metered against the same key. detector names
+// the guardrail that asked; it suffixes the request id, keeping the judge row
+// correlated with (but distinct from) the triggering request.
+func JudgeMetadata(meta core.RequestMetadata, detector string) core.RequestMetadata {
 	out := core.RequestMetadata{
-		ClientKind: kind,
+		ClientKind: JudgeClientKind,
 		APIKeyID:   meta.APIKeyID,
 		TenantID:   meta.TenantID,
 		ProjectID:  meta.ProjectID,
 		RequestID:  meta.RequestID,
 	}
 	if out.RequestID != "" {
-		out.RequestID += "-" + kind
+		out.RequestID += "-guardrails-" + detector
 	}
 	return out
 }

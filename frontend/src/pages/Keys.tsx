@@ -14,25 +14,12 @@ import {
   X,
 } from "lucide-react";
 import { api, type APIKey, type CreatedKey, type Plan } from "../lib/api";
-import { microsToUSD, formatTokens } from "../lib/format";
+import { microsToUSD, formatTokens, formatDate, formatDateTime } from "../lib/format";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { formatTokenLimit, ModelMultiSelect } from "../components/ModelSelect";
-import {
-  Badge,
-  Button,
-  IconTile,
-  Input,
-  SectionTitle,
-  Select,
-  Skeleton,
-  Toggle,
-  Modal,
-  ErrorBanner,
-  TablePagination,
-  useClientPagination,
-} from "../components/ui";
+import { Badge, Button, IconTile, Input, SectionTitle, Select, Skeleton, Toggle, Modal, ErrorBanner, TablePagination, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -79,7 +66,7 @@ function relativeTime(iso?: string | null): string {
   if (h < 24) return `${Math.round(h)} h ago`;
   const d = h / 24;
   if (d < 30) return `${Math.round(d)} d ago`;
-  return new Date(t).toLocaleDateString();
+  return formatDate(t);
 }
 
 function portalUrlFor(id: string) {
@@ -635,15 +622,19 @@ export function KeysPage() {
           <Button variant="secondary" onClick={() => keys.refetch()}>Retry</Button>
         </div>
       ) : allKeys.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.keys} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[14px] font-semibold text-fg">No API keys yet</h2>
-          <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">Create a key for each tool, app or teammate that calls KeiRouter.</p>
-          <Button className="mt-4" onClick={openModal}>
-            <Plus aria-hidden="true" />
-            Create key
-          </Button>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.keys}
+          title="No API keys yet"
+          hint="Create a key for each tool, app or teammate that calls KeiRouter."
+          action={
+            <Button onClick={openModal}>
+              <Plus aria-hidden="true" />
+              Create key
+            </Button>
+          }
+        />
       ) : (
         <section aria-labelledby={`${fid}-list`} className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
           <div className="border-b border-line px-4 py-3">
@@ -779,7 +770,7 @@ export function KeysPage() {
               ))}
             </ul>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[760px] text-[13px]">
+              <table className="w-full min-w-[620px] text-[13px]">
                 <thead>
                   <tr className="border-b border-line bg-subtle text-left text-[12px] text-fg-faint">
                     <th scope="col" className="w-10 px-4 py-2">
@@ -798,7 +789,7 @@ export function KeysPage() {
                     <th scope="col" className="px-4 py-2 font-medium">Plan</th>
                     <th scope="col" className="px-4 py-2 font-medium">Status</th>
                     <th scope="col" className="px-4 py-2 font-medium">Last used</th>
-                    <th scope="col" className="px-4 py-2 font-medium">Created</th>
+                    <th scope="col" className="hidden px-4 py-2 font-medium xl:table-cell">Created</th>
                     <th scope="col" className="w-10 px-2 py-2"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
@@ -965,16 +956,17 @@ function KeyRow({
       <td className="px-4 py-2.5" onClick={stop}>
         <span className="inline-flex items-center gap-2">
           <Toggle checked={!k.disabled} onChange={onToggle} disabled={togglePending} label={`${k.name} active`} />
-          <span aria-hidden="true">
-            <KeyStatusBadge disabled={k.disabled} />
+          {/* The switch already shows the state; the word is for scanning a long list. */}
+          <span aria-hidden="true" className={cn("w-14 text-[12px]", k.disabled ? "text-fg-faint" : "text-fg-muted")}>
+            {k.disabled ? "Disabled" : "Active"}
           </span>
         </span>
       </td>
-      <td className="whitespace-nowrap px-4 py-2.5" title={lastUsed ? new Date(lastUsed).toLocaleString() : undefined}>
+      <td className="whitespace-nowrap px-4 py-2.5" title={lastUsed ? formatDateTime(lastUsed) : undefined}>
         <span className={lastUsed ? "text-fg" : "text-fg-muted"}>{relativeTime(k.last_used_at)}</span>
       </td>
-      <td className="whitespace-nowrap px-4 py-2.5 text-fg-muted" title={new Date(k.created_at).toLocaleString()}>
-        {new Date(k.created_at).toLocaleDateString()}
+      <td className="hidden whitespace-nowrap px-4 py-2.5 text-fg-muted xl:table-cell" title={formatDateTime(k.created_at)}>
+        {formatDate(k.created_at, { short: true })}
       </td>
       <td className="px-2 py-2.5" onClick={stop}>
         <KeyActionsMenu apiKey={k} onOpen={onOpen} onCopyKey={onCopyKey} onCopyPortal={onCopyPortal} onRevoke={onRevoke} />

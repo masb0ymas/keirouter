@@ -88,7 +88,7 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
         overflow: "hidden",
         boxSizing: "border-box",
         fontFamily:
-          "'-apple-system', 'BlinkMacSystemFont', 'SF Pro Display', 'Inter', sans-serif",
+          "'IBM Plex Sans Variable', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif",
         background: `linear-gradient(150deg, ${C.bg} 0%, ${C.bgGradientTo} 100%)`,
         color: C.text,
         padding: "44px 52px",

@@ -21,27 +21,12 @@ import { REPORT_PERIODS } from "../lib/periods";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  ErrorCard,
-  IconTile,
-  Input,
-  Kpi,
-  KpiGrid,
-  SectionTitle,
-  Select,
-  Skeleton,
-  TablePagination,
-  Toggle,
-  useClientPagination,
-} from "../components/ui";
+import { Badge, Button, Card, EmptyState, ErrorCard, IconTile, Input, Kpi, KpiGrid, SectionTitle, Select, Skeleton, TablePagination, Toggle, useClientPagination } from "../components/ui";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { useToast } from "../components/Toast";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import { ICONS } from "../lib/icons";
+import { formatDateTime } from "../lib/format";
 
 const PERIODS = REPORT_PERIODS.map((p) => ({ ...p }));
 
@@ -365,17 +350,19 @@ export function QuotaPage() {
       ) : quota.isLoading ? (
         <QuotaSkeleton />
       ) : accounts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.quota} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[14px] font-medium text-fg">No connected accounts</h2>
-          <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">
-            Connect a provider account to track its usage and limits.
-          </p>
-          <Button className="mt-4" onClick={() => navigate("/providers")}>
-            <Plug aria-hidden="true" />
-            Connect a provider
-          </Button>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.quota}
+          title="No connected accounts"
+          hint="Connect a provider account to track its usage and limits."
+          action={
+            <Button onClick={() => navigate("/providers")}>
+              <Plug aria-hidden="true" />
+              Connect a provider
+            </Button>
+          }
+        />
       ) : (
         <div className="space-y-6 pb-12">
           {(depletedAccounts.length > 0 || resumableAccounts.length > 0) && (
@@ -1224,10 +1211,6 @@ function relativeTime(value: string): string {
   return `${Math.floor(difference / 86_400_000)}d ago`;
 }
 
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
-}
 
 function humanize(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());

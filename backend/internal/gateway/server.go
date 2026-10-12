@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -85,11 +86,13 @@ type Server struct {
 	version             string
 	updates             *update.Checker
 	insightsCache       *ttlCache
+	liveModels          *liveModelCache
 	guardrails          *guardrails.Engine
 	guardrailRepo       *store.GuardrailRepo
 	guardrailLogs       *store.GuardrailLogRepo
 	guardrailHub        *guardrails.LogHub
 	guardrailTenantFlag *guardrails.SettingsTenantPolicy
+	guardrailRetention  int // guardrail_logs retention in days; 0 = forever
 	guardrailTestRL     *guardrailTestRateLimiter
 	health              *store.HealthRepo
 	healthChecker       *healthcheck.Checker
@@ -145,10 +148,13 @@ type Deps struct {
 	GuardrailLogs        *store.GuardrailLogRepo
 	GuardrailHub         *guardrails.LogHub
 	GuardrailTenantFlags *guardrails.SettingsTenantPolicy
-	Health               *store.HealthRepo
-	HealthChecker        *healthcheck.Checker
-	ProviderHealth       *health.Service
-	ProbeRunner          *health.ProbeRunner
+	// GuardrailRetentionDays is how long guardrail_logs rows are kept
+	// (0 = forever); the stats endpoint flags windows older than that.
+	GuardrailRetentionDays int
+	Health                 *store.HealthRepo
+	HealthChecker          *healthcheck.Checker
+	ProviderHealth         *health.Service
+	ProbeRunner            *health.ProbeRunner
 }
 
 // New builds a gateway Server and wires its routes.
@@ -209,11 +215,13 @@ func New(d Deps) *Server {
 		version:             d.Version,
 		updates:             d.Updates,
 		insightsCache:       newTTLCache(insightsCacheTTL),
+		liveModels:          newLiveModelCache(),
 		guardrails:          d.Guardrails,
 		guardrailRepo:       d.GuardrailRepo,
 		guardrailLogs:       d.GuardrailLogs,
 		guardrailHub:        d.GuardrailHub,
 		guardrailTenantFlag: d.GuardrailTenantFlags,
+		guardrailRetention:  d.GuardrailRetentionDays,
 		guardrailTestRL:     newGuardrailTestRateLimiter(guardrailTestBurst, time.Minute),
 		health:              d.Health,
 		healthChecker:       d.HealthChecker,
@@ -290,7 +298,11 @@ func (s *Server) routes() chi.Router {
 		if maxConc <= 0 {
 			maxConc = 100 // sensible default for AI gateway workloads
 		}
-		r.Use(concurrencyLimiter(maxConc))
+		r.Use(concurrencyLimiter(maxConc, func(r *http.Request) {
+			newReqTrace(s.consoleLog, r).reject(http.StatusServiceUnavailable, "Rejected · gateway at capacity",
+				fmt.Sprintf("Limit: %d concurrent requests", maxConc),
+				"Every concurrent-request slot is busy (mostly long streams). Raise server.max_concurrent_requests or add capacity.")
+		}))
 		r.Use(s.authMiddleware)
 		r.Post("/v1/chat/completions", s.handleOpenAIChat)
 		r.Post("/v1/messages", s.handleAnthropicMessages)

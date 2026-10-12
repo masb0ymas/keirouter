@@ -1,6 +1,6 @@
 # Auto-updated by release.yml on tag v0.1.29. Do not edit manually.
 class Keirouter < Formula
-  desc "Self-hosted AI gateway — one endpoint for 90+ providers with fallback, caching, and a dashboard"
+  desc "Self-hosted AI gateway — one endpoint for 160+ providers with fallback, caching, and a dashboard"
   homepage "https://github.com/mydisha/keirouter"
   version "0.1.29"
   license "MIT"

@@ -42,6 +42,7 @@ func (s *Server) mountGuardrails(r chi.Router) {
 	r.Post("/guardrails/import", s.adminImportGuardrails)
 	r.Get("/guardrails/tenant-flags", s.adminGetGuardrailTenantFlags)
 	r.Put("/guardrails/tenant-flags", s.adminPutGuardrailTenantFlags)
+	r.Get("/guardrails/stats", s.adminGuardrailStats)
 	r.Get("/guardrails/logs", s.adminListGuardrailLogs)
 	r.Get("/guardrails/logs/stream", s.adminGuardrailLogStream)
 	r.Post("/guardrails/test", s.adminTestGuardrail)
@@ -254,9 +255,18 @@ func (s *Server) adminListGuardrailLogs(w http.ResponseWriter, r *http.Request) 
 	}
 	q := r.URL.Query()
 	f := store.GuardrailLogFilter{
-		APIKeyID: q.Get("api_key_id"),
-		Detector: q.Get("detector"),
-		Action:   q.Get("action"),
+		APIKeyID:  q.Get("api_key_id"),
+		Detector:  q.Get("detector"),
+		Action:    q.Get("action"),
+		Direction: q.Get("direction"),
+		Model:     q.Get("model"),
+		ChainID:   q.Get("chain_id"),
+		RequestID: q.Get("request_id"),
+	}
+	// period reuses the dashboard's window names (24h, 7d, 30d, ...) so a
+	// drill-down from the stats view lists the same rows it counted.
+	if period := q.Get("period"); period != "" {
+		f.Since = sinceForPeriod(period, q.Get("tz"))
 	}
 	if v := q.Get("limit"); v != "" {
 		// best-effort parse; the repo clamps to a sane upper bound
@@ -337,7 +347,7 @@ func (s *Server) adminTestGuardrail(w http.ResponseWriter, r *http.Request) {
 		Metadata: core.RequestMetadata{
 			TenantID:  store.DefaultTenantID,
 			APIKeyID:  "test-panel",
-			RequestID: "test-" + newGuardrailID()[3:11],
+			RequestID: store.GuardrailTestRequestPrefix + newGuardrailID()[3:11],
 		},
 		Messages: []core.Message{
 			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: in.Text}}},

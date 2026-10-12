@@ -13,6 +13,9 @@
 //   - models: the requested or primary resolved model matches a pattern in
 //     Models (empty = every model). Patterns allow a trailing '*'.
 //
+// Prompts may contain {{name}} placeholders filled from the skill's Variables
+// at compile time, so operators edit values in form fields instead of the text.
+//
 // Like caveman, Apply adds no visible marker: the rendered block itself is the
 // idempotency probe, so retries and chained fallbacks never inject it twice.
 // The block is PREPENDED so it forms a stable prefix ahead of the client's own
@@ -20,6 +23,7 @@
 package skills
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -47,6 +51,8 @@ type Skill struct {
 	// mandatory ones always apply.
 	Optional bool
 	Scope    Scope
+	// Variables fill {{name}} placeholders in Prompt.
+	Variables map[string]string
 }
 
 // Request describes the caller a block is selected for.
@@ -77,7 +83,7 @@ type Set struct {
 func Compile(list []Skill) *Set {
 	s := &Set{}
 	for _, sk := range list {
-		p := strings.TrimSpace(sk.Prompt)
+		p := strings.TrimSpace(Render(sk.Prompt, sk.Variables))
 		if !sk.Enabled || p == "" {
 			continue
 		}
@@ -157,6 +163,25 @@ func MatchModel(model string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// placeholderRE matches a {{name}} placeholder; spaces inside the braces are
+// allowed.
+var placeholderRE = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}`)
+
+// Render replaces each {{name}} placeholder that has a non-empty value in vars.
+// Placeholders without a value are left as written.
+func Render(prompt string, vars map[string]string) string {
+	if len(vars) == 0 || !strings.Contains(prompt, "{{") {
+		return prompt
+	}
+	return placeholderRE.ReplaceAllStringFunc(prompt, func(m string) string {
+		name := placeholderRE.FindStringSubmatch(m)[1]
+		if v := vars[name]; v != "" {
+			return v
+		}
+		return m
+	})
 }
 
 func toSet(ids []string) map[string]struct{} {

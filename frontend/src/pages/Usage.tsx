@@ -16,9 +16,10 @@ import {
   type UsageTerminalStatus,
 } from "../lib/api";
 import { REPORT_PERIODS } from "../lib/periods";
+import { formatDateTime, relDelta, type Delta } from "../lib/format";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
-import { Badge, Button, ErrorBanner, ErrorCard, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination } from "../components/ui";
+import { Badge, Button, ErrorBanner, ErrorCard, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { HealthStatusBadge } from "../components/HealthBadge";
 import { ProviderLogo } from "../components/ProviderLogo";
@@ -197,7 +198,7 @@ export function UsagePage() {
         <ErrorCard message="Couldn't load usage analytics. Check that the gateway is running, then refresh." />
       ) : (
         <div className="space-y-6">
-          <KpiStrip data={data} />
+          <KpiStrip data={data} period={period} />
           <PricingCoverageNotice summary={data.summary} />
 
           {/* Phones: one scrollable row bleeding to the screen edges; the active tab is kept in view. */}
@@ -215,7 +216,7 @@ export function UsagePage() {
                   : t.value === "models"
                     ? (modelUsage.data?.models.length ?? null)
                     : t.value === "requests"
-                      ? data.recent.length
+                      ? data.summary.total_requests
                       : null;
               const active = tab === t.value;
               return (
@@ -236,7 +237,7 @@ export function UsagePage() {
                   )}
                 >
                   {t.label}
-                  {count != null && <span className="rounded-md bg-subtle px-1.5 text-[11.5px] tabular-nums text-fg-muted">{count}</span>}
+                  {count != null && <span className="rounded-md bg-subtle px-1.5 text-[11.5px] tabular-nums text-fg-muted">{fmtCompact(count)}</span>}
                   {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent-500" aria-hidden="true" />}
                 </button>
               );
@@ -255,7 +256,14 @@ export function UsagePage() {
             )}
             {tab === "providers" && <ProviderAccounting providers={data.providers} health={health.data} healthLoading={health.isLoading} healthError={health.isError} />}
             {tab === "models" && <ModelUsageTable models={modelUsage.data?.models ?? []} loading={modelUsage.isLoading} error={modelUsage.isError} />}
-            {tab === "requests" && <RecentRequests records={data.recent} />}
+            {tab === "requests" && (
+              <RecentRequests
+                records={data.recent}
+                total={data.summary.total_requests}
+                openId={params.get("request")}
+                onOpenChange={(id) => setParam("request", id ?? "", "")}
+              />
+            )}
           </div>
         </div>
       )}
@@ -265,11 +273,14 @@ export function UsagePage() {
 
 // ── KPI strip ────────────────────────────────────────────────────────────────
 
-function KpiStrip({ data }: { data: UsageInsights }) {
+function KpiStrip({ data, period }: { data: UsageInsights; period: string }) {
   const s = data.summary;
+  const p = data.previous;
+  const series = data.series;
   const headingId = useId();
   const lowSuccess = s.total_requests > 0 && s.success_rate < 0.95;
-  const cells: { label: string; icon: LucideIcon; value: string; hint: ReactNode }[] = [
+  const prevLabel = period === "today" ? "vs yesterday" : `vs the previous ${period}`;
+  const cells: { label: string; icon: LucideIcon; value: string; hint: ReactNode; delta: Delta | null; trend: number[] }[] = [
     {
       label: "Requests",
       icon: ICONS.requests,
@@ -279,6 +290,8 @@ function KpiStrip({ data }: { data: UsageInsights }) {
           <span className={cn(lowSuccess && "text-warn")}>{s.total_requests ? fmtRatio(s.success_rate) : "—"} success</span> · {fmtInteger(s.failed_requests)} failed
         </>
       ),
+      delta: relDelta(s.total_requests, p?.total_requests, "flat"),
+      trend: series.map((pt) => pt.requests),
     },
     {
       label: "Spend",
@@ -286,20 +299,36 @@ function KpiStrip({ data }: { data: UsageInsights }) {
       value: fmtUSD(s.cost_usd),
       hint: (
         <>
-          {fmtUSD(s.cost_per_request_usd)} per request
+          {fmtUSD(s.cost_per_request_usd)} / request
           {s.unpriced_requests > 0 && <span className="text-warn"> · {fmtInteger(s.unpriced_requests)} unpriced</span>}
         </>
       ),
+      delta: relDelta(s.cost_usd, p?.cost_usd, "flat"),
+      trend: series.map((pt) => pt.cost_usd),
     },
-    { label: "Tokens", icon: ICONS.tokens, value: fmtCompact(s.total_tokens), hint: `${fmtCompact(s.prompt_tokens)} in · ${fmtCompact(s.completion_tokens)} out` },
-    { label: "Latency p50", icon: ICONS.latency, value: fmtMs(s.p50_latency_ms), hint: `p95 ${fmtMs(s.p95_latency_ms)} · TTFT ${fmtMs(s.avg_ttft_ms)}` },
+    {
+      label: "Tokens",
+      icon: ICONS.tokens,
+      value: fmtCompact(s.total_tokens),
+      hint: `${fmtCompact(s.prompt_tokens)} in · ${fmtCompact(s.completion_tokens)} out`,
+      delta: relDelta(s.total_tokens, p?.total_tokens, "flat"),
+      trend: series.map((pt) => pt.prompt_tokens + pt.completion_tokens),
+    },
+    {
+      label: "Latency p50",
+      icon: ICONS.latency,
+      value: fmtMs(s.p50_latency_ms),
+      hint: `p95 ${fmtMs(s.p95_latency_ms)} · TTFT ${fmtMs(s.avg_ttft_ms)}`,
+      delta: relDelta(s.p50_latency_ms, p?.p50_latency_ms, "lower-better"),
+      trend: series.filter((pt) => pt.avg_latency_ms > 0).map((pt) => pt.avg_latency_ms),
+    },
   ];
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId} className="sr-only">Key metrics</h2>
       <KpiGrid cols={4}>
         {cells.map((c) => (
-          <Kpi key={c.label} icon={c.icon} label={c.label} value={c.value} hint={<span className="tabular-nums">{c.hint}</span>} />
+          <Kpi key={c.label} icon={c.icon} label={c.label} value={c.value} delta={c.delta} deltaLabel={prevLabel} trend={c.trend} hint={c.hint} />
         ))}
       </KpiGrid>
     </section>
@@ -388,14 +417,8 @@ function Panel({ icon, title, action, children, className }: { icon: LucideIcon;
   );
 }
 
-function Empty({ icon = Inbox, title, action }: { icon?: LucideIcon; title: string; action?: ReactNode }) {
-  return (
-    <div className="px-6 py-10 text-center">
-      <IconTile icon={icon} size="lg" className="mx-auto mb-3" />
-      <p className="text-[13px] font-medium text-fg">{title}</p>
-      {action && <div className="mt-3">{action}</div>}
-    </div>
-  );
+function Empty({ icon = Inbox, title, hint, action }: { icon?: LucideIcon; title: string; hint?: string; action?: ReactNode }) {
+  return <EmptyState icon={icon} title={title} hint={hint} action={action} size="sm" />;
 }
 
 const TH = "px-4 py-2 font-medium";
@@ -413,7 +436,7 @@ function ProviderDistribution({ providers, onShowAll }: { providers: ProviderUsa
   return (
     <Panel icon={ICONS.route} title="Where requests went">
       {active.length === 0 ? (
-        <Empty icon={ICONS.route} title="No provider traffic in this period" />
+        <Empty icon={ICONS.route} title="No provider traffic in this period" hint="Pick a longer period, or send a request through KeiRouter." />
       ) : (
         <>
           <ul className="space-y-3 px-4 py-4">
@@ -483,7 +506,7 @@ function ProviderAccounting({
         }
       >
         {rows.length === 0 ? (
-          <Empty icon={ICONS.providers} title="No provider usage in this period" />
+          <Empty icon={ICONS.providers} title="No provider usage in this period" hint="Pick a longer period to see per-provider accounting." />
         ) : (
           <div className="overflow-x-auto" role="region" aria-label="Provider accounting table">
             <table className="w-full min-w-[860px] text-[13px]">
@@ -637,6 +660,7 @@ function ModelUsageTable({ models, loading, error }: { models: ModelUsage[]; loa
         <Empty
           icon={models.length === 0 ? ICONS.model : Search}
           title={models.length === 0 ? "No model usage in this period" : "No models match"}
+          hint={models.length === 0 ? "Pick a longer period to compare models." : `Nothing matches “${search.trim()}”. Try a provider or a shorter model name.`}
           action={models.length > 0 ? <Button variant="secondary" onClick={() => setSearch("")}>Clear filter</Button> : undefined}
         />
       ) : (
@@ -752,8 +776,25 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "blocked", label: "Blocked" },
 ];
 
-function RecentRequests({ records }: { records: RecentActivity[] }) {
-  const [selected, setSelected] = useState<RecentActivity | null>(null);
+function RecentRequests({
+  records,
+  total,
+  openId,
+  onOpenChange,
+}: {
+  records: RecentActivity[];
+  total: number;
+  /** Request id from the URL (?request=), so other pages can deep-link a request. */
+  openId: string | null;
+  onOpenChange: (id: string | null) => void;
+}) {
+  const selected = useMemo(() => (openId ? (records.find((r) => r.id === openId) ?? null) : null), [records, openId]);
+  const setSelected = (r: RecentActivity | null) => onOpenChange(r ? r.id : null);
+  const counts = useMemo(() => {
+    const c: Record<StatusFilter, number> = { all: records.length, success: 0, cache_hit: 0, failed: 0, blocked: 0 };
+    for (const r of records) if (r.status in c) c[r.status as StatusFilter] += 1;
+    return c;
+  }, [records]);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => {
@@ -764,7 +805,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
       return `${r.model} ${r.provider} ${r.api_key_name} ${r.client} ${r.request_id}`.toLowerCase().includes(q);
     });
   }, [records, status, query]);
-  const { page, pages, paged, setPage, total } = useClientPagination(filtered, 20);
+  const { page, pages, paged, setPage, total: filteredTotal } = useClientPagination(filtered, 20);
   useEffect(() => setPage(1), [status, query, setPage]);
   const filtering = status !== "all" || query.trim() !== "";
   const clearFilters = () => {
@@ -802,7 +843,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
             </div>
             {/* Wraps to at most two lines on phones; wider gaps there keep taps apart. */}
             <div className="flex flex-wrap gap-2 sm:gap-1" role="radiogroup" aria-label="Status" onKeyDown={(e) => onGroupArrowKeys(e, "radio")}>
-              {STATUS_FILTERS.map((f) => (
+              {STATUS_FILTERS.filter((f) => f.value === "all" || counts[f.value] > 0 || status === f.value).map((f) => (
                 <button
                   key={f.value}
                   type="button"
@@ -817,6 +858,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
                   )}
                 >
                   {f.label}
+                  <span className={cn("ml-1.5 tabular-nums", status === f.value ? "text-link/80" : "text-fg-faint")}>{counts[f.value]}</span>
                 </button>
               ))}
             </div>
@@ -830,6 +872,7 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
           <Empty
             icon={records.length === 0 ? ICONS.requests : Search}
             title={records.length === 0 ? "No requests in this period" : "No requests match"}
+            hint={records.length === 0 ? "Requests appear here a few seconds after they finish." : "Try another status, or search by model, key, client or request ID."}
             action={records.length > 0 ? <Button variant="secondary" onClick={clearFilters}>Clear filters</Button> : undefined}
           />
         ) : (
@@ -951,7 +994,13 @@ function RecentRequests({ records }: { records: RecentActivity[] }) {
                 </tbody>
               </table>
             </div>
-            {pages > 1 && <TablePagination page={page} pages={pages} total={total} onPage={setPage} />}
+            {pages > 1 && <TablePagination page={page} pages={pages} total={filteredTotal} onPage={setPage} />}
+            {records.length < total && (
+              <p className="border-t border-line bg-subtle px-4 py-2 text-[12px] text-fg-muted">
+                Showing the latest <span className="tabular-nums text-fg">{fmtInteger(records.length)}</span> of{" "}
+                <span className="tabular-nums text-fg">{fmtInteger(total)}</span> requests in this period. Filters apply to these.
+              </p>
+            )}
           </>
         )}
       </Panel>
@@ -1477,10 +1526,6 @@ function fmtBytes(value: number) {
   return `${fmtInteger(value)} B`;
 }
 
-function formatDateTime(value: string) {
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
-}
 
 function relativeTime(value: string) {
   const t = new Date(value).getTime();

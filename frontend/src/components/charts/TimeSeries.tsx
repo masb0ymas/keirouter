@@ -183,6 +183,55 @@ export function xLabelStyle(i: number, length: number): { left: string; transfor
   return { left: `${pct}%`, transform: `translateX(${shift})` };
 }
 
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+const TIME_STEPS = [15 * MIN, 30 * MIN, HOUR, 2 * HOUR, 3 * HOUR, 4 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY];
+
+/**
+ * niceTimeTicks places x-axis labels on round clock times (every 2h, every
+ * day…) instead of on every Nth bucket, which with odd bucket sizes gives
+ * labels like 01:35, 03:10. Positions are percentages of the plot width,
+ * where the plot spans [first bucket start, last bucket start + bucket size).
+ */
+export function niceTimeTicks(starts: string[], maxLabels: number): { pct: number; label: string }[] {
+  if (starts.length < 2) return [];
+  const t0 = Date.parse(starts[0]);
+  const bucket = Date.parse(starts[1]) - t0;
+  if (!Number.isFinite(t0) || !(bucket > 0)) return [];
+  const end = t0 + bucket * starts.length;
+  const span = end - t0;
+  const step = TIME_STEPS.find((s) => s >= bucket && span / s <= maxLabels) ?? TIME_STEPS[TIME_STEPS.length - 1];
+
+  // Align to local midnight, then walk forward in whole steps.
+  const midnight = new Date(t0);
+  midnight.setHours(0, 0, 0, 0);
+  let t = midnight.getTime();
+  if (step < DAY) t += Math.ceil((t0 - t) / step) * step;
+  else while (t < t0) t += DAY;
+
+  const ticks: { pct: number; label: string }[] = [];
+  for (; t < end; t += step) {
+    const d = new Date(t);
+    // Day-sized steps keep landing on midnight even across DST changes.
+    if (step >= DAY) d.setHours(0, 0, 0, 0);
+    const atMidnight = d.getHours() === 0 && d.getMinutes() === 0;
+    const label =
+      step >= DAY || (atMidnight && d.getTime() > t0)
+        ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+        : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+    ticks.push({ pct: ((d.getTime() - t0) / span) * 100, label });
+    if (step >= DAY) t = d.getTime();
+  }
+  return ticks;
+}
+
+/** Inline style for a niceTimeTicks label; edge labels are kept inside the plot. */
+export function timeTickStyle(pct: number): { left: string; transform: string } {
+  const shift = pct < 6 ? "0" : pct > 94 ? "-100%" : "-50%";
+  return { left: `${pct}%`, transform: `translateX(${shift})` };
+}
+
 export function niceScale(peak: number, fixedMax?: number): { max: number; ticks: number[] } {
   if (fixedMax && fixedMax > 0) {
     const step = fixedMax / 4;

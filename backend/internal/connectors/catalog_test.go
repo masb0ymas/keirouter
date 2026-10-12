@@ -26,6 +26,31 @@ func TestSpecByAlias(t *testing.T) {
 	}
 }
 
+// A custom provider created before a release added a built-in with the same
+// ID keeps its alias, so "<alias>/<model>" strings route as before upgrading.
+func TestSpecByAliasPrefersCustomOverNewBuiltin(t *testing.T) {
+	const customID = "custom-openai-lm-studio-test"
+	RegisterDynamicProvider(DynamicProvider{
+		ID: customID, DisplayName: "LM Studio", Alias: "lm-studio", Dialect: core.DialectOpenAI, BaseURL: "http://192.0.2.10:1234/v1",
+	})
+	t.Cleanup(func() { UnregisterDynamicProvider(customID) })
+
+	if spec, ok := SpecByAlias("lm-studio"); !ok || spec.ID != customID {
+		t.Fatalf("custom alias should win over the built-in, got %q ok=%v", spec.ID, ok)
+	}
+	if spec, ok := BuiltinSpecByAlias("lm-studio"); !ok || spec.ID != "lm-studio" {
+		t.Fatalf("BuiltinSpecByAlias should ignore custom providers, got %q ok=%v", spec.ID, ok)
+	}
+	// IDs remain exact: the built-in is still found by SpecByID.
+	if spec, ok := SpecByID("lm-studio"); !ok || spec.ID != "lm-studio" {
+		t.Fatalf("SpecByID should still return the built-in, got %q ok=%v", spec.ID, ok)
+	}
+	// Unrelated built-in aliases are unaffected.
+	if spec, ok := SpecByAlias("ds"); !ok || spec.ID != "deepseek" {
+		t.Fatalf("alias ds should still resolve to deepseek, got %q ok=%v", spec.ID, ok)
+	}
+}
+
 func TestSpecsByKind(t *testing.T) {
 	cases := map[core.ServiceKind][]string{
 		core.ServiceImage:  {"nanobanana", "fal-ai", "stability-ai"},

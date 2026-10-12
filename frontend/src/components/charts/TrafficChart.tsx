@@ -3,7 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import type { SeriesPoint, UsageInsights } from "../../lib/api";
 import { ICONS } from "../../lib/icons";
 import { cn } from "@/lib/utils";
-import { PlotTooltip, useElementWidth, usePlotPointer, xLabelCount, xLabelStyle } from "./TimeSeries";
+import { PlotTooltip, niceTimeTicks, timeTickStyle, useElementWidth, usePlotPointer, xLabelCount } from "./TimeSeries";
 
 // TrafficCard is the shared requests / tokens / cost / latency bar chart used
 // by Overview and Usage. Plain HTML bars (no charting library), stacked where
@@ -86,7 +86,7 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
   }, [series, def]);
 
   const [plotRef, plotWidth] = useElementWidth<HTMLDivElement>();
-  const labelEvery = Math.max(1, Math.ceil(series.length / xLabelCount(plotWidth, 7, 84)));
+  const xTicks = useMemo(() => niceTimeTicks(series.map((p) => p.start), xLabelCount(plotWidth, 7, 84)), [series, plotWidth]);
   const pointer = usePlotPointer(series.length, setHover, () => viaKeys && setViaKeys(false));
   // Series colours as classes (accent first, then the lightness-separated alt).
   const aClass = "bg-accent-500";
@@ -138,9 +138,15 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
 
   return (
     <section aria-label="Traffic" className={cn("flex min-w-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]", className)}>
-      <div className="flex flex-wrap items-stretch border-b border-line">
-        {/* Phones: a 2×2 grid of metric tabs; from sm a single row. */}
-        <div className="grid w-full grid-cols-2 sm:flex sm:w-auto sm:flex-wrap sm:items-stretch" role="tablist" aria-label="Chart metric" onKeyDown={onTabKeyDown}>
+      {/* The KPI strip above already carries the headline numbers, so the
+          header is just a metric switch, the selected total and a legend. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2.5">
+        <div
+          className="inline-flex max-w-full overflow-x-auto rounded-xl border border-line bg-subtle p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          role="tablist"
+          aria-label="Chart metric"
+          onKeyDown={onTabKeyDown}
+        >
           {METRIC_KEYS.map((key) => {
             const active = key === metric;
             const MetricIcon = METRICS[key].icon;
@@ -155,23 +161,21 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
                 tabIndex={active ? 0 : -1}
                 onClick={() => setMetric(key)}
                 className={cn(
-                  "relative flex min-w-0 flex-col items-start gap-0.5 border-r border-line px-4 py-2.5 text-left even:border-r-0 [&:nth-child(-n+2)]:border-b sm:min-w-[128px] sm:even:border-r sm:[&:nth-child(-n+2)]:border-b-0 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500",
-                  active ? "bg-surface" : "bg-subtle hover:bg-hover",
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-[background-color,color,box-shadow] duration-150 [@media(pointer:coarse)]:h-8",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
+                  active ? "bg-surface text-fg shadow-[var(--shadow-card)] ring-1 ring-line-strong" : "text-fg-muted hover:text-fg",
                 )}
               >
-                <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-fg-muted">
-                  <MetricIcon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-tone" : "text-fg-faint")} strokeWidth={1.75} aria-hidden="true" />
-                  {METRICS[key].label}
-                </span>
-                <span className={cn("text-[16px] font-semibold tracking-[-0.01em] tabular-nums", active ? "text-fg" : "text-fg-muted")}>
-                  {METRICS[key].total(data)}
-                </span>
-                {active && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent-500" aria-hidden="true" />}
+                <MetricIcon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-tone" : "text-fg-faint")} strokeWidth={1.75} aria-hidden="true" />
+                {METRICS[key].label}
               </button>
             );
           })}
         </div>
-        <div className="flex items-center gap-3.5 px-4 py-2 text-[12px] text-fg-muted sm:ml-auto">
+        <p className="text-[12px] text-fg-muted">
+          {metric === "latency" ? "Overall" : "Total"} <span className="font-semibold tabular-nums text-fg">{def.total(data)}</span>
+        </p>
+        <div className="flex items-center gap-3.5 text-[12px] text-fg-muted sm:ml-auto">
           <LegendSwatch className={aClass} label={def.legendA} />
           {def.legendB && <LegendSwatch className={bClass} label={def.legendB} />}
         </div>
@@ -209,7 +213,7 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
                 return (
                   <div
                     key={p.start}
-                    className={cn("flex h-full min-w-[2px] flex-1 flex-col justify-end gap-px", hover !== null && hover !== i && "opacity-60")}
+                    className={cn("flex h-full min-w-[2px] flex-1 flex-col justify-end gap-px transition-opacity duration-100", hover !== null && hover !== i && "opacity-45")}
                   >
                     {b > 0 && <div className={cn("rounded-t-[2px]", bClass)} style={{ height: `${(b / max) * 100}%` }} />}
                     <div className={cn(aClass, b > 0 ? "rounded-[1px]" : "rounded-t-[2px]")} style={{ height: `${(a / max) * 100}%` }} />
@@ -229,13 +233,11 @@ export function TrafficCard({ data, className }: { data: UsageInsights; classNam
             )}
           </div>
           <div className="relative h-4 overflow-hidden text-[11px] tabular-nums text-fg-faint" aria-hidden="true">
-            {series.map((p, i) =>
-              i % labelEvery === 0 ? (
-                <span key={p.start} className="absolute whitespace-nowrap" style={xLabelStyle(i, series.length)}>
-                  {p.label}
-                </span>
-              ) : null,
-            )}
+            {xTicks.map((t) => (
+              <span key={t.pct} className="absolute whitespace-nowrap" style={timeTickStyle(t.pct)}>
+                {t.label}
+              </span>
+            ))}
           </div>
         </div>
       </div>

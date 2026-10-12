@@ -41,7 +41,19 @@ type Checker struct {
 	health   *store.HealthRepo
 	conns    ConnectorSource
 	vault    *vault.Vault
+	// prepare, when set, builds credentials exactly as routed traffic gets
+	// them (proxy pool / global proxy, OAuth refresh). Without it probes
+	// would leave from the server's own IP, bypassing the account's pool.
+	prepare CredentialPreparer
 }
+
+// CredentialPreparer resolves an account's egress route and secrets the same
+// way the dispatcher does for real requests.
+type CredentialPreparer func(ctx context.Context, acc store.Account) (store.Account, core.Credentials, error)
+
+// SetCredentialPreparer installs the dispatcher's credential preparation so
+// probes honour the account's proxy pool.
+func (c *Checker) SetCredentialPreparer(p CredentialPreparer) { c.prepare = p }
 
 // New builds a Checker.
 func New(cfg Config, log *slog.Logger, accounts *store.AccountRepo, health *store.HealthRepo, conns ConnectorSource, vault *vault.Vault) *Checker {
@@ -219,13 +231,18 @@ func (c *Checker) probe(ctx context.Context, acc store.Account, model string) {
 		c.record(ctx, acc, model, 0, err)
 		return
 	}
-	creds, err := c.vault.Open(acc)
+	var creds core.Credentials
+	if c.prepare != nil {
+		acc, creds, err = c.prepare(ctx, acc)
+	} else {
+		creds, err = c.vault.Open(acc)
+	}
 	if err != nil {
 		c.record(ctx, acc, model, 0, err)
 		return
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	probeCtx, cancel := context.WithTimeout(core.WithProxy(ctx, creds), c.cfg.Timeout)
 	defer cancel()
 
 	start := time.Now()

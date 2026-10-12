@@ -109,13 +109,14 @@ func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
 		return Result{Action: ActionAllow}
 	}
 
+	attachOutcome(req)
 	in := &InboundRequest{Source: req, FlatText: flattenRequest(req)}
 	final := Result{Action: ActionAllow}
 
 	for _, d := range e.detectors {
 		start := time.Now()
 		dec, err := d.Inbound(ctx, in, policy)
-		e.recordLatency(d.Name(), start)
+		e.recordLatency(req, d.Name(), start)
 		if err != nil {
 			e.log.Warn("guardrail detector error (inbound)", "detector", d.Name(), "err", err)
 			continue
@@ -153,6 +154,7 @@ func (e *Engine) Outbound(ctx context.Context, req *core.ChatRequest, resp *core
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow}
 	}
+	attachOutcome(req)
 	out := &OutboundResponse{Source: resp, Request: req, Text: flattenResponse(resp), Streaming: false}
 	res := e.evalOutbound(ctx, policy, out, true)
 	for i := range res.Decisions {
@@ -173,6 +175,7 @@ func (e *Engine) OutboundChunk(ctx context.Context, req *core.ChatRequest, text 
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow, Text: text}
 	}
+	attachOutcome(req)
 	res := e.evalOutbound(ctx, policy, &OutboundResponse{Request: req, Text: text, Streaming: true}, false)
 	for i := range res.Decisions {
 		e.report(req, &res.Decisions[i])
@@ -191,6 +194,7 @@ func (e *Engine) OutboundText(ctx context.Context, req *core.ChatRequest, text s
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow, Text: text}
 	}
+	attachOutcome(req)
 	all := e.evalOutbound(ctx, policy, &OutboundResponse{Request: req, Text: text, Streaming: true}, false)
 	res := Result{Action: ActionAllow, Text: all.Text}
 	for _, d := range all.Decisions {
@@ -210,7 +214,7 @@ func (e *Engine) evalOutbound(ctx context.Context, policy Policy, out *OutboundR
 	for _, d := range e.detectors {
 		start := time.Now()
 		dec, err := d.Outbound(ctx, out, policy)
-		e.recordLatency(d.Name(), start)
+		e.recordLatency(out.Request, d.Name(), start)
 		if err != nil {
 			e.log.Warn("guardrail detector error (outbound)", "detector", d.Name(), "err", err)
 			continue
@@ -243,17 +247,33 @@ func (e *Engine) evalOutbound(ctx context.Context, policy Policy, out *OutboundR
 	return final
 }
 
-// report records metrics and writes the audit row for one decision.
+// report records metrics, folds the decision into the request's outcome, and
+// writes the audit row for one decision.
 func (e *Engine) report(req *core.ChatRequest, dec *Decision) {
 	e.recordDecision(dec.Detector, dec.Action)
+	req.Metadata.Guardrail.Note(string(dec.Action), rank(dec.Action), dec.Detector, string(dec.Direction))
 	e.logDecision(req, dec)
 }
 
-func (e *Engine) recordLatency(name string, start time.Time) {
+// recordLatency charges one detector evaluation to the metrics and to the
+// request's guardrail overhead.
+func (e *Engine) recordLatency(req *core.ChatRequest, name string, start time.Time) {
+	elapsed := time.Since(start)
+	if req != nil {
+		req.Metadata.Guardrail.AddElapsed(elapsed)
+	}
 	if e.metrics == nil {
 		return
 	}
-	e.metrics.RecordGuardrailLatency(name, time.Since(start).Seconds())
+	e.metrics.RecordGuardrailLatency(name, elapsed.Seconds())
+}
+
+// attachOutcome gives req a GuardrailOutcome once a policy applies to it, so
+// its usage row records that guardrails ran even when nothing fired.
+func attachOutcome(req *core.ChatRequest) {
+	if req.Metadata.Guardrail == nil {
+		req.Metadata.Guardrail = &core.GuardrailOutcome{}
+	}
 }
 
 func (e *Engine) recordDecision(name string, action Action) {

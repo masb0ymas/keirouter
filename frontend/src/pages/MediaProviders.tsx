@@ -6,7 +6,7 @@ import { api, type Account, type Provider } from "../lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { Badge, ErrorBanner, IconTile, SectionTitle, Skeleton } from "../components/ui";
+import { Badge, ErrorBanner, SectionTitle, Skeleton, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 
 // Media service kinds — everything that isn't a plain chat/LLM provider.
@@ -188,14 +188,14 @@ export function MediaProvidersPage() {
       ) : providers.isError ? (
         <ErrorBanner message="Couldn't load providers. Check that the backend is running, then reload." />
       ) : !list.length ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={activeKind.icon} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[13px] font-semibold text-fg">No {kindLower} providers</h2>
-          <p className="mt-1 text-[12.5px] text-fg-muted">Pick another capability, or add an account on the Providers page.</p>
-          <Link to="/providers" className="mt-3 inline-block rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
-            Go to providers
-          </Link>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={activeKind.icon}
+          title={`No ${kindLower} providers`}
+          hint="Pick another capability, or add an account on the Providers page."
+          action={<Link to="/providers" className="rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">Go to providers</Link>}
+        />
       ) : (
         <div className="space-y-6">
           <section aria-labelledby="media-connected-heading">
@@ -213,13 +213,13 @@ export function MediaProvidersPage() {
               />
             </div>
             {connected.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-8 text-center">
-                <IconTile icon={searchQuery ? Search : PlugZap} size="lg" className="mx-auto mb-3" />
-                <p className="text-[13px] font-semibold text-fg">{searchQuery ? "No connected provider matches" : `No ${kindLower} provider connected`}</p>
-                <p className="mt-1 text-[12.5px] text-fg-muted">
-                  {searchQuery ? "Clear the search to see all of them." : "Pick one below and add an account."}
-                </p>
-              </div>
+              <EmptyState
+                variant="card"
+                size="sm"
+                icon={searchQuery ? Search : PlugZap}
+                title={searchQuery ? "No connected provider matches" : `No ${kindLower} provider connected`}
+                hint={searchQuery ? "Clear the search to see all of them." : "Pick one below and add an account."}
+              />
             ) : (
               <ConnectedTable providers={connected} kind={activeFilter} accountsByProvider={accountsByProvider} />
             )}

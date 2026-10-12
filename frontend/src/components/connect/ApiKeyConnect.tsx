@@ -18,6 +18,7 @@ import {
   TextAreaField,
   TextField,
 } from "./ConnectKit";
+import { apiKeyRequired, apiKeyVisible, CredentialFieldInputs, initialFieldValues, missingFields, submittedFields, type FieldValues } from "./CredentialFields";
 
 // Rules that decide which fields a provider's API-key form needs. Shared by
 // the single-key and bulk dialogs so the two never disagree.
@@ -31,11 +32,14 @@ function keyFormRules(provider: Provider) {
   // User-created custom provider instances carry their own base URL, so their
   // accounts inherit it; only the built-in generic gateways need one per key.
   const inheritsBaseURL = !!provider.custom && !!provider.base_url;
-  const requiresBaseURL = !inheritsBaseURL && (provider.id === "custom-openai" || provider.id === "custom-anthropic");
-  const keyPlaceholder = isCloudflare ? "Cloudflare API token" : isQoder ? "pt-…" : provider.id === "xai" ? "xai-…" : "sk-…";
+  const requiresBaseURL = !inheritsBaseURL && (!!provider.base_url_required || provider.id === "custom-openai" || provider.id === "custom-anthropic");
+  const keyPlaceholder =
+    provider.api_key_placeholder ?? (isCloudflare ? "Cloudflare API token" : isQoder ? "pt-…" : provider.id === "xai" ? "xai-…" : "sk-…");
   return {
     isNoAuth: supportsNone && !supportsApiKey,
-    keyOptional: supportsNone && supportsApiKey,
+    keyOptional: (supportsNone && supportsApiKey) || provider.api_key_mode === "optional",
+    keyLabel: provider.api_key_label ?? "API key",
+    baseURLPlaceholder: provider.base_url_placeholder ?? "https://…/v1",
     isAzure,
     isCloudflare,
     isQoder,
@@ -100,6 +104,14 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
     azureAPIVersion: "2024-10-01-preview",
     azureOrganization: "",
   });
+  const [fields, setFields] = useState<FieldValues>(() => initialFieldValues(provider));
+  const setField = (key: string, value: string) => {
+    setFields((f) => ({ ...f, [key]: value }));
+    setCheck({ status: "idle" });
+  };
+  const showKey = !rules.isNoAuth && apiKeyVisible(provider, fields);
+  const keyRequired = showKey && !rules.keyOptional && apiKeyRequired(provider, fields);
+  const missingExtra = missingFields(provider, fields);
   const [check, setCheck] = useState<{ status: "idle" | "checking" | "ok" | "error"; message?: string }>({ status: "idle" });
   // Required-field errors appear only after a submit attempt.
   const [showErrors, setShowErrors] = useState(false);
@@ -119,6 +131,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
     azure_deployment: form.azureDeployment || undefined,
     azure_api_version: form.azureAPIVersion || undefined,
     azure_organization: form.azureOrganization || undefined,
+    fields: submittedFields(provider, fields),
   });
 
   const create = useMutation({
@@ -133,7 +146,8 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
   // Same completeness rules as before, broken out per field so each missing
   // value can be reported next to its input.
   const missing = {
-    apiKey: !(rules.isNoAuth || rules.keyOptional || !!form.apiKey.trim()),
+    apiKey: keyRequired && !form.apiKey.trim(),
+    fields: missingExtra.size > 0,
     accountID: rules.isCloudflare && !form.accountID.trim(),
     azureEndpoint: rules.isAzure && !form.azureEndpoint.trim(),
     azureDeployment: rules.isAzure && !form.azureDeployment.trim(),
@@ -175,7 +189,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
 
   return (
     <ConnectDialog
-      title={rules.isNoAuth ? `Enable ${provider.display_name}` : `Add ${provider.display_name} API key`}
+      title={rules.isNoAuth ? `Enable ${provider.display_name}` : showKey && !provider.fields?.length ? `Add ${provider.display_name} ${rules.keyLabel}` : `Connect ${provider.display_name}`}
       description={rules.isNoAuth ? "No credentials needed." : undefined}
       logo={{ icon: provider.icon, name: provider.display_name }}
       onClose={onClose}
@@ -184,7 +198,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
           {!rules.isNoAuth && (
             <SecondaryAction onClick={runCheck} disabled={!complete || check.status === "checking"}>
               <RefreshCw className={cn(check.status === "checking" && "animate-spin")} aria-hidden="true" />
-              {check.status === "checking" ? "Testing…" : "Test key"}
+              {check.status === "checking" ? "Testing…" : provider.fields?.length ? "Test connection" : "Test key"}
             </SecondaryAction>
           )}
           <PrimaryAction type="submit" form={formId} busy={create.isPending}>
@@ -195,11 +209,14 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
     >
       <form id={formId} className="space-y-3.5" noValidate onSubmit={submit}>
         {rules.isCloudflare && <CloudflareSteps />}
-        {!rules.isNoAuth && (
+        {provider.fields?.length ? (
+          <CredentialFieldInputs provider={provider} values={fields} onChange={setField} advanced={false} missing={missingExtra} showErrors={showErrors} />
+        ) : null}
+        {showKey && (
           <TextField
-            label="API key"
-            optional={rules.keyOptional}
-            required={!rules.keyOptional}
+            label={rules.keyLabel}
+            optional={!keyRequired}
+            required={keyRequired}
             type="password"
             autoComplete="off"
             value={form.apiKey}
@@ -207,7 +224,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
             placeholder={rules.keyPlaceholder}
             className="font-mono"
             hint={keyHint}
-            error={err("apiKey", "Enter the API key.")}
+            error={err("apiKey", `Enter the ${rules.keyLabel === "API key" ? "API key" : rules.keyLabel.toLowerCase()}.`)}
           />
         )}
         {rules.isCloudflare && (
@@ -250,7 +267,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
             required
             value={form.baseURL}
             onChange={set("baseURL")}
-            placeholder="https://…/v1"
+            placeholder={rules.baseURLPlaceholder}
             className="font-mono"
             hint="The compatible endpoint this key belongs to"
             error={err("baseURL", "Enter the endpoint's base URL.")}
@@ -270,6 +287,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
             {optionalBaseURL && (
               <TextField label="Base URL" optional value={form.baseURL} onChange={set("baseURL")} placeholder="https://…/v1" className="font-mono" hint="Only for a proxy or self-hosted endpoint" />
             )}
+            <CredentialFieldInputs provider={provider} values={fields} onChange={setField} advanced missing={missingExtra} showErrors={showErrors} />
             {rules.isAzure && (
               <div className="grid gap-3.5 sm:grid-cols-2">
                 <TextField label="API version" value={form.azureAPIVersion} onChange={set("azureAPIVersion")} className="font-mono" />
@@ -283,7 +301,7 @@ export function ApiKeyConnect({ provider, onClose }: { provider: Provider; onClo
           {check.status === "ok" && (
             <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-ok">
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              The key works.
+              The credentials work.
             </p>
           )}
         </div>
@@ -309,6 +327,8 @@ export function BulkKeyImport({ provider, onClose }: { provider: Provider; onClo
   const [baseURL, setBaseURL] = useState(provider.base_url ?? "");
   const [region, setRegion] = useState(provider.default_region ?? provider.regions?.[0]?.id ?? "");
   const [accountID, setAccountID] = useState("");
+  const [fields, setFields] = useState<FieldValues>(() => initialFieldValues(provider));
+  const missingExtra = missingFields(provider, fields);
   const [results, setResults] = useState<BulkAccountResult[] | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const textId = useId();
@@ -326,6 +346,7 @@ export function BulkKeyImport({ provider, onClose }: { provider: Provider; onClo
         base_url: showBaseURL && baseURL.trim() ? baseURL.trim() : undefined,
         region: rules.hasRegions ? region : undefined,
         account_id: rules.isCloudflare ? accountID.trim() : undefined,
+        fields: submittedFields(provider, fields),
         validate,
         items: parsed.entries.map((e) => ({ label: e.label || undefined, api_key: e.apiKey, base_url: e.baseURL })),
       }),
@@ -338,7 +359,7 @@ export function BulkKeyImport({ provider, onClose }: { provider: Provider; onClo
     onError: (e: Error) => toast.error("Import failed", e.message),
   });
 
-  const canImport = ready > 0 && !importMut.isPending && (!rules.requiresBaseURL || !!baseURL.trim()) && (!rules.isCloudflare || !!accountID.trim());
+  const canImport = ready > 0 && !importMut.isPending && (!rules.requiresBaseURL || !!baseURL.trim()) && (!rules.isCloudflare || !!accountID.trim()) && missingExtra.size === 0;
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -420,6 +441,12 @@ export function BulkKeyImport({ provider, onClose }: { provider: Provider; onClo
       <div className="space-y-3.5">
         {rules.isCloudflare && <CloudflareSteps />}
         {rules.hasRegions && <RegionSelect provider={provider} value={region} onChange={setRegion} />}
+        {provider.fields?.length ? (
+          <>
+            <CredentialFieldInputs provider={provider} values={fields} onChange={(k, v) => setFields((f) => ({ ...f, [k]: v }))} advanced={false} missing={missingExtra} />
+            <CredentialFieldInputs provider={provider} values={fields} onChange={(k, v) => setFields((f) => ({ ...f, [k]: v }))} advanced missing={missingExtra} />
+          </>
+        ) : null}
         {rules.isCloudflare && (
           <TextField label="Account ID" required value={accountID} onChange={(e) => setAccountID(e.target.value)} placeholder="a1b2c3d4e5f6…" className="font-mono" hint={`Applies to every ${noun}`} />
         )}
@@ -430,7 +457,7 @@ export function BulkKeyImport({ provider, onClose }: { provider: Provider; onClo
             required={rules.requiresBaseURL}
             value={baseURL}
             onChange={(e) => setBaseURL(e.target.value)}
-            placeholder="https://…/v1"
+            placeholder={rules.baseURLPlaceholder}
             className="font-mono"
             hint={`Applies to every ${noun}`}
           />

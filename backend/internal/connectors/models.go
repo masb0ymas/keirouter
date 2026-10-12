@@ -609,7 +609,7 @@ func (s *AnthropicCompatibleModelSource) ListModels(ctx context.Context, creds c
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := sharedClient.Do(req)
+	resp, err := proxyDo(egressCtx(ctx, creds), req)
 	if err != nil {
 		return nil, err
 	}

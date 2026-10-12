@@ -239,8 +239,8 @@ export function NetworkTab({ local, update }: TabProps) {
           </>
         )}
         <SettingRow controlId="auth-failures" label="Invalid API key limit"
-          description="Block an IP for the rest of the minute after this many invalid keys. 0 turns it off."
-          info="Applies even when key rate limits are off. Valid requests never count.">
+          description="After this many invalid keys from one IP, refuse that IP's invalid keys for the rest of the minute. 0 turns it off."
+          info="Applies even when key rate limits are off. Valid keys are never refused, and local (loopback) clients are not counted.">
           <NumberUnitInput
             id="auth-failures"
             unit="/min"

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,6 +33,50 @@ func newTestDB(t *testing.T) *DB {
 	require.NoError(t, db.Tenants().EnsureDefault(ctx))
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// TestSQLitePragmas_ApplyToEveryConnection holds several pool connections at
+// once so each is a distinct SQLite handle, and checks that per-connection
+// pragmas reached all of them rather than only the first.
+func TestSQLitePragmas_ApplyToEveryConnection(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		dsn  string
+		file bool
+	}{
+		{name: "file", dsn: t.TempDir() + "/pragmas.db", file: true},
+		{name: "memory", dsn: ":memory:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: tc.dsn, MaxOpenConns: 4}, t.TempDir())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = db.Close() })
+
+			conns := make([]*sql.Conn, 4)
+			for i := range conns {
+				conns[i], err = db.SQL().Conn(ctx)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = conns[i].Close() })
+			}
+			pragma := func(c *sql.Conn, name string) string {
+				var v string
+				require.NoError(t, c.QueryRowContext(ctx, "PRAGMA "+name).Scan(&v))
+				return v
+			}
+			for i, c := range conns {
+				require.Equal(t, strconv.Itoa(-sqliteCacheKiB), pragma(c, "cache_size"), "conn %d", i)
+				require.Equal(t, "1", pragma(c, "foreign_keys"), "conn %d", i)
+				require.Equal(t, "2", pragma(c, "temp_store"), "conn %d", i)
+				require.Equal(t, "5000", pragma(c, "busy_timeout"), "conn %d", i)
+				if tc.file {
+					require.Equal(t, "wal", pragma(c, "journal_mode"), "conn %d", i)
+					require.Equal(t, "1", pragma(c, "synchronous"), "conn %d", i)
+					require.Equal(t, strconv.Itoa(sqliteMmapBytes), pragma(c, "mmap_size"), "conn %d", i)
+				}
+			}
+		})
+	}
 }
 
 func TestMigrate_Idempotent(t *testing.T) {

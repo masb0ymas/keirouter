@@ -25,6 +25,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 
@@ -361,6 +362,12 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 
 	// Actionable provider health dashboard: real-traffic telemetry aggregation
 	// + synthetic probe runner. Best-effort, never blocks the request path.
+	// Dashboard console: background components mirror their warnings into it
+	// so operators see refresh failures, health and tunnel problems next to
+	// request traffic.
+	conLog := consolelog.New()
+	sysLog := func(source string) *slog.Logger { return consolelog.Tee(log, conLog, slog.LevelWarn, source) }
+
 	healthSvc := health.New(health.Config{
 		Enabled:              cfg.ProviderHealth.Enabled,
 		QueueSize:            cfg.ProviderHealth.QueueSize,
@@ -368,8 +375,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		SnapshotInterval:     cfg.ProviderHealth.SnapshotInterval,
 		RollingWindow:        cfg.ProviderHealth.RollingWindow,
 		LatencyThresholds:    cfg.ProviderHealth.LatencyThresholds,
-	}, log, db.ProviderHealth())
-	probeRunner := health.NewProbeRunner(log, db.ProviderHealth(), db.Accounts(), connRegistry, v,
+	}, sysLog("health"), db.ProviderHealth())
+	probeRunner := health.NewProbeRunner(sysLog("health"), db.ProviderHealth(), db.Accounts(), connRegistry, v,
 		cfg.ProviderHealth.LatencyThresholds, cfg.ProviderHealth.ProbeTimeout)
 	probeRunner.SetCredentialPreparer(disp)
 
@@ -398,12 +405,13 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	}
 
 	// Tunnel managers for Cloudflare quick tunnel and Tailscale funnel.
-	cfManager := cloudflare.NewManager(dataDir, cfg.Server.Port, log)
-	tsManager := tailscale.NewManager(dataDir, cfg.Server.Port, log)
+	cfManager := cloudflare.NewManager(dataDir, cfg.Server.Port, sysLog("tunnel"))
+	tsManager := tailscale.NewManager(dataDir, cfg.Server.Port, sysLog("tunnel"))
 
 	// Background OAuth token keepalive. Proactively refreshes near-expiry
 	// tokens every 30 minutes so requests never hit a stale token.
-	keepAlive := oauth.NewKeepAlive(tokenRefresher, db.Accounts(), store.DefaultTenantID, log)
+	keepAlive := oauth.NewKeepAlive(tokenRefresher, db.Accounts(), store.DefaultTenantID, sysLog("oauth"))
+	keepAlive.SetEgress(disp.EgressContext)
 
 	healthChecker := healthcheck.New(healthcheck.Config{
 		Enabled:              cfg.Health.Enabled,
@@ -414,7 +422,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		SuccessThreshold:     cfg.Health.SuccessThreshold,
 		RecentModelWindow:    cfg.Health.RecentModelWindow,
 		MaxModelsPerProvider: cfg.Health.MaxModelsPerProvider,
-	}, log, db.Accounts(), db.Health(), connRegistry, v)
+	}, sysLog("health"), db.Accounts(), db.Health(), connRegistry, v)
+	healthChecker.SetCredentialPreparer(disp.PrepareCredentials)
 
 	reloadPricing := func(reloadCtx context.Context) error {
 		mtr.ReplacePrices(buildPricing(), buildModelPrices(reloadCtx, db, log))
@@ -429,47 +438,49 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	}
 
 	gw := gateway.New(gateway.Deps{
-		Config:               cfg,
-		Logger:               log,
-		Version:              version,
-		Updates:              update.NewChecker(version, ""),
-		DB:                   db,
-		Identity:             idSvc,
-		Auth:                 authSvc,
-		Audit:                auditRec,
-		Pipeline:             pipe,
-		Conns:                connRegistry,
-		Chains:               db.Chains(),
-		Aliases:              db.Aliases(),
-		Accounts:             db.Accounts(),
-		Pools:                db.ProxyPools(),
-		Budgets:              db.Budgets(),
-		BudgetEngine:         bud,
-		Usage:                db.Usage(),
-		Resources:            db.Resources(),
-		Settings:             db.Settings(),
-		Vault:                v,
-		Codecs:               codecs,
-		Metrics:              metrics,
-		FrontendDir:          frontendDir,
-		DataDir:              dataDir,
-		CfManager:            cfManager,
-		TsManager:            tsManager,
-		UsageHub:             uh,
-		TimeoutNotifier:      timeoutNotifier,
-		ProxyNotifier:        proxyNotifier,
-		RateLimiter:          limiter,
-		Refresher:            tokenRefresher,
-		ReloadPricing:        reloadPricing,
-		Guardrails:           guardrailEngine,
-		GuardrailRepo:        db.Guardrails(),
-		GuardrailLogs:        db.GuardrailLogs(),
-		GuardrailHub:         guardrailLogHub,
-		GuardrailTenantFlags: guardrailTenantPolicy,
-		Health:               db.Health(),
-		HealthChecker:        healthChecker,
-		ProviderHealth:       healthSvc,
-		ProbeRunner:          probeRunner,
+		Config:                 cfg,
+		Logger:                 log,
+		ConsoleLog:             conLog,
+		Version:                version,
+		Updates:                update.NewChecker(version, ""),
+		DB:                     db,
+		Identity:               idSvc,
+		Auth:                   authSvc,
+		Audit:                  auditRec,
+		Pipeline:               pipe,
+		Conns:                  connRegistry,
+		Chains:                 db.Chains(),
+		Aliases:                db.Aliases(),
+		Accounts:               db.Accounts(),
+		Pools:                  db.ProxyPools(),
+		Budgets:                db.Budgets(),
+		BudgetEngine:           bud,
+		Usage:                  db.Usage(),
+		Resources:              db.Resources(),
+		Settings:               db.Settings(),
+		Vault:                  v,
+		Codecs:                 codecs,
+		Metrics:                metrics,
+		FrontendDir:            frontendDir,
+		DataDir:                dataDir,
+		CfManager:              cfManager,
+		TsManager:              tsManager,
+		UsageHub:               uh,
+		TimeoutNotifier:        timeoutNotifier,
+		ProxyNotifier:          proxyNotifier,
+		RateLimiter:            limiter,
+		Refresher:              tokenRefresher,
+		ReloadPricing:          reloadPricing,
+		Guardrails:             guardrailEngine,
+		GuardrailRepo:          db.Guardrails(),
+		GuardrailLogs:          db.GuardrailLogs(),
+		GuardrailHub:           guardrailLogHub,
+		GuardrailTenantFlags:   guardrailTenantPolicy,
+		GuardrailRetentionDays: cfg.Guardrails.AuditRetentionDays,
+		Health:                 db.Health(),
+		HealthChecker:          healthChecker,
+		ProviderHealth:         healthSvc,
+		ProbeRunner:            probeRunner,
 	})
 
 	srv := &http.Server{
@@ -900,6 +911,14 @@ func loadCustomProviders(ctx context.Context, db *store.DB, log *slog.Logger) {
 		connectors.RegisterDynamicProvider(connectors.DynamicProvider{
 			ID: p.ID, DisplayName: p.DisplayName, Alias: p.Alias, Dialect: dialect, BaseURL: p.BaseURL,
 		})
+		// A release may add a built-in provider whose ID or alias matches an
+		// existing custom alias. The custom provider keeps the alias (see
+		// connectors.SpecByAlias); say so, since the built-in is then only
+		// reachable by renaming the custom alias.
+		if b, ok := connectors.BuiltinSpecByAlias(p.Alias); ok && p.Alias != "" {
+			log.Warn("custom provider alias shadows a built-in provider; "+p.Alias+"/<model> keeps routing to the custom provider. Rename the custom alias to use the built-in.",
+				"custom_provider", p.DisplayName, "alias", p.Alias, "builtin_provider", b.ID)
+		}
 	}
 
 	models, err := repo.ListModels(ctx, store.DefaultTenantID)

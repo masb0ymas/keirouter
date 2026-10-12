@@ -41,6 +41,16 @@ type KeepAlive struct {
 	// Only touched from the serial refresh path.
 	lastFailSig    string
 	failedRepeated bool
+
+	// egress, when set, routes each refresh through the account's proxy
+	// pool so background refreshes leave from the same IP as its traffic.
+	egress func(ctx context.Context, acc store.Account) (context.Context, error)
+}
+
+// SetEgress installs the per-account egress resolver (the dispatcher's
+// EgressContext).
+func (k *KeepAlive) SetEgress(fn func(ctx context.Context, acc store.Account) (context.Context, error)) {
+	k.egress = fn
 }
 
 // NewKeepAlive builds a KeepAlive.
@@ -158,7 +168,16 @@ func (k *KeepAlive) refreshAccounts(ctx context.Context, accs []store.Account) (
 				return
 			}
 
-			_, err := k.tokenMgr.ForceRefresh(ctx, acc)
+			refreshCtx := ctx
+			if k.egress != nil {
+				ectx, err := k.egress(ctx, acc)
+				if err != nil {
+					results <- refreshResult{acc: acc, err: err}
+					return
+				}
+				refreshCtx = ectx
+			}
+			_, err := k.tokenMgr.ForceRefresh(refreshCtx, acc)
 			if err == nil {
 				k.log.Debug("oauth keepalive: refreshed", "account", acc.ID, "provider", acc.Provider)
 			}

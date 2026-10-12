@@ -21,7 +21,9 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
-import { AlertCircle, Inbox, X, type LucideIcon } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AlertCircle, ArrowDownRight, ArrowRight, ArrowUpRight, Inbox, X, type LucideIcon } from "lucide-react";
+import type { Delta } from "@/lib/format";
 
 // joinIds merges space-separated id lists (aria-describedby etc.), dropping blanks.
 function joinIds(...ids: (string | undefined | false | null)[]): string | undefined {
@@ -205,7 +207,7 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = "primary", className = "", ...props }: ButtonProps) {
   const base =
-    "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-[background-color,border-color,color,opacity] duration-150 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas [&_svg]:size-4 [&_svg]:shrink-0";
+    "inline-flex min-h-9 select-none items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-[background-color,border-color,color,opacity,transform] duration-150 active:scale-[0.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas [&_svg]:size-4 [&_svg]:shrink-0";
   // Primary is the brand blue action colour; secondary and ghost stay neutral
   // so there is one obvious next step per view.
   const variants = {
@@ -431,24 +433,57 @@ export function StatusDot({
   );
 }
 
+/**
+ * EmptyState is the one "nothing here yet" surface: a tone-coloured icon, a
+ * title that says what is missing, one line on why it matters or what to do,
+ * and at most one primary plus one secondary action.
+ *
+ * - `variant="inline"` (default) sits inside an existing card.
+ * - `variant="card"` is a standalone dashed card (a whole page/section is empty).
+ * - `size="sm"` is the compact form for dashboard panels.
+ */
 export function EmptyState({
   title,
   hint,
   action,
+  secondaryAction,
   icon: Icon = Inbox,
+  tone,
+  variant = "inline",
+  size = "md",
+  titleAs: Title = "p",
+  className = "",
 }: {
-  title: string;
-  hint?: string;
+  title: ReactNode;
+  hint?: ReactNode;
   /** One primary action, e.g. <Button>Add pool</Button>. */
   action?: ReactNode;
+  /** A quieter follow-up, e.g. a docs or "Clear filters" link. */
+  secondaryAction?: ReactNode;
   icon?: LucideIcon;
+  tone?: TileTone;
+  variant?: "inline" | "card";
+  size?: "md" | "sm";
+  /** Heading level when the empty state is the page's main content (e.g. "not found"). */
+  titleAs?: "p" | "h1" | "h2" | "h3";
+  className?: string;
 }) {
+  const sm = size === "sm";
   return (
-    <div className="px-6 py-14 text-center">
-      <IconTile icon={Icon} size="lg" className="mx-auto mb-3" />
-      <p className="text-[13px] font-semibold text-fg">{title}</p>
-      {hint && <p className="mx-auto mt-1 max-w-md text-[13px] leading-5 text-fg-muted">{hint}</p>}
-      {action && <div className="mt-4 flex justify-center">{action}</div>}
+    <div
+      className={`flex flex-col items-center text-center ${sm ? "px-6 py-9" : "px-6 py-12"} ${
+        variant === "card" ? "rounded-2xl border border-dashed border-line-strong bg-surface" : ""
+      } ${className}`}
+    >
+      <IconTile icon={Icon} size="lg" tone={tone} className={`${sm ? "mb-2.5" : "mb-3.5"} shadow-[0_0_0_6px_color-mix(in_srgb,var(--tone-fg)_5%,transparent)]`} />
+      <Title className={`font-semibold tracking-[-0.005em] text-fg ${sm ? "text-[13px]" : "text-[14px]"}`}>{title}</Title>
+      {hint && <p className={`mx-auto mt-1 max-w-md text-pretty leading-5 text-fg-muted ${sm ? "text-[12.5px]" : "text-[13px]"}`}>{hint}</p>}
+      {(action || secondaryAction) && (
+        <div className={`flex flex-wrap items-center justify-center gap-x-4 gap-y-2 ${sm ? "mt-3" : "mt-4"}`}>
+          {action}
+          {secondaryAction}
+        </div>
+      )}
     </div>
   );
 }
@@ -500,39 +535,6 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
     <div className="flex items-center justify-center py-10" role="status">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-fg-muted" aria-hidden="true" />
       <span className="sr-only">{label}</span>
-    </div>
-  );
-}
-
-export function StatCard({
-  icon: Icon,
-  iconTone = "accent",
-  label,
-  value,
-  delta,
-}: {
-  icon: LucideIcon;
-  iconTone?: "accent" | "warning" | "danger";
-  label: string;
-  value: string;
-  delta?: { text: string; direction?: "up" | "down" | "flat" };
-}) {
-  const deltaColor =
-    delta?.direction === "up"
-      ? "text-ok"
-      : delta?.direction === "down"
-        ? "text-bad"
-        : "text-fg-muted";
-  const iconColor = iconTone === "danger" ? "text-bad" : iconTone === "warning" ? "text-warn" : "text-fg-faint";
-
-  return (
-    <div className="rounded-2xl border border-line bg-surface px-4 py-3.5 shadow-[var(--shadow-card)]">
-      <div className="flex items-center gap-1.5 text-[12px] font-medium text-fg-muted">
-        <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} strokeWidth={1.75} aria-hidden="true" />
-        <span className="truncate">{label}</span>
-      </div>
-      <p className="mt-1.5 text-2xl font-semibold tracking-[-0.02em] tabular-nums text-fg">{value}</p>
-      {delta && <p className={`mt-1 text-[12px] font-medium tabular-nums ${deltaColor}`}>{delta.text}</p>}
     </div>
   );
 }
@@ -605,8 +607,8 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(opt.value)}
             className={`h-7 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[12px] font-medium transition-colors [@media(pointer:coarse)]:h-8 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50 ${
               checked
-                ? "bg-surface text-fg ring-1 ring-line-strong"
-                : "text-fg-muted hover:text-fg"
+                ? "bg-surface text-fg shadow-[var(--shadow-card)] ring-1 ring-line-strong"
+                : "text-fg-muted hover:bg-surface/60 hover:text-fg"
             }`}
           >
             {opt.label}
@@ -767,7 +769,10 @@ export function Modal({
 
   if (!open) return null;
 
-  return (
+  // Portalled to <body> so the overlay always covers the whole viewport: inside
+  // <main> an ancestor's transform (page-in animation), overflow or stacking
+  // context would otherwise trap the `fixed` backdrop within the page content.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-black/45 animate-in fade-in-0 duration-150"
       onClick={onClose}
@@ -811,7 +816,8 @@ export function Modal({
         {footer && <ModalFooter>{footer}</ModalFooter>}
       </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -958,13 +964,13 @@ export function Toggle({
       onClick={() => onChange(!checked)}
       // The visible track is 36×20; an invisible ::before extends the hit
       // area to 44×32 (44×40 on touch) without changing the visuals.
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors before:absolute before:-inset-x-1 before:-inset-y-1.5 before:content-[''] [@media(pointer:coarse)]:before:-inset-y-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-200 before:absolute before:-inset-x-1 before:-inset-y-1.5 before:content-[''] [@media(pointer:coarse)]:before:-inset-y-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-50 ${
         checked ? "bg-accent-500" : "bg-input"
       } ${className}`}
     >
       <span
         aria-hidden="true"
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.18)] transition-transform ${
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.18)] transition-transform duration-200 ease-[cubic-bezier(0.3,1.4,0.5,1)] ${
           checked ? "translate-x-[18px]" : "translate-x-0.5"
         }`}
       />
@@ -1115,31 +1121,84 @@ export function KpiGrid({ children, cols = 4, label }: { children: ReactNode; co
   );
 }
 
+/** A period-over-period change: arrow, signed text, coloured by whether it is good. */
+export function DeltaBadge({ delta, label = "vs previous period", className = "" }: { delta: Delta; label?: string; className?: string }) {
+  const Arrow = delta.dir === "up" ? ArrowUpRight : delta.dir === "down" ? ArrowDownRight : ArrowRight;
+  const tone = delta.tone === "good" ? "bg-ok/10 text-ok" : delta.tone === "bad" ? "bg-bad/10 text-bad" : "bg-subtle text-fg-muted";
+  return (
+    <span className={`inline-flex h-5 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-md px-1.5 text-[11.5px] font-medium tabular-nums ${tone} ${className}`}>
+      <Arrow className="h-3 w-3" strokeWidth={2.25} aria-hidden="true" />
+      {delta.text}
+      <span className="sr-only">
+        {" "}
+        {label}
+        {delta.tone === "good" ? ", better" : delta.tone === "bad" ? ", worse" : ""}
+      </span>
+    </span>
+  );
+}
+
+/** A 72×24 trend line. Renders an empty box (keeps rows aligned) when there is nothing to draw. */
+export function Sparkline({ values, className = "" }: { values: number[]; className?: string }) {
+  if (values.length < 2 || values.every((v) => v === values[0])) return <span className={`inline-block h-6 w-[72px] shrink-0 ${className}`} aria-hidden="true" />;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pts = values.map((v, i) => [(i / (values.length - 1)) * 100, 25 - ((v - min) / span) * 21] as const);
+  const line = pts.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
+  const area = `0,28 ${line} 100,28`;
+  return (
+    <svg width="72" height="24" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true" className={`shrink-0 overflow-visible ${className}`}>
+      <polygon points={area} className="fill-accent-500/10" />
+      <polyline points={line} fill="none" className="stroke-accent-500" strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function Kpi({
   icon,
   label,
   value,
   hint,
+  delta,
+  deltaLabel,
+  trend,
   tone = "section",
   valueClassName = "",
 }: {
   icon?: LucideIcon;
   label: ReactNode;
   value: ReactNode;
+  /** Secondary line: a breakdown or context ("6.2M in · 514k out"). */
   hint?: ReactNode;
+  /** Change vs the previous period; `null` shows "No prior data". */
+  delta?: Delta | null;
+  /** Screen-reader context for the delta, e.g. "vs previous 7 days". */
+  deltaLabel?: string;
+  /** Values for a sparkline drawn beside the number. */
+  trend?: number[];
   tone?: TileTone;
   valueClassName?: string;
 }) {
   // dl > div > (dt, dd…) is the only valid nesting, so the tile lives inside
   // the <dt> and is positioned into the cell's left gutter.
+  const footer = delta !== undefined || hint;
   return (
     <div className={`relative bg-surface py-3.5 pr-4 ${icon ? "pl-[3.75rem]" : "pl-4"}`}>
-      <dt className="text-[12px] font-medium text-fg-muted">
+      <dt className="truncate text-[12px] font-medium text-fg-muted">
         {icon && <IconTile icon={icon} size="md" tone={tone} className="absolute left-4 top-4" />}
         {label}
       </dt>
-      <dd className={`mt-0.5 text-[20px] font-semibold leading-tight tracking-[-0.01em] tabular-nums text-fg ${valueClassName}`}>{value}</dd>
-      {hint && <dd className="mt-0.5 truncate text-[12px] text-fg-muted">{hint}</dd>}
+      <dd className="mt-0.5 flex items-end justify-between gap-3">
+        <span className={`min-w-0 text-[20px] font-semibold leading-tight tracking-[-0.01em] tabular-nums text-fg ${valueClassName}`}>{value}</span>
+        {trend && <Sparkline values={trend} className="mb-0.5" />}
+      </dd>
+      {footer && (
+        <dd className="mt-1 flex min-h-5 min-w-0 items-center gap-2 text-[12px] text-fg-muted">
+          {delta ? <DeltaBadge delta={delta} label={deltaLabel} /> : delta === null ? <span className="shrink-0 text-fg-faint">No prior data</span> : null}
+          {hint && <span className="min-w-0 truncate tabular-nums">{hint}</span>}
+        </dd>
+      )}
     </div>
   );
 }

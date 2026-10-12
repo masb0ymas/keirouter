@@ -198,7 +198,17 @@ type UsageRecord struct {
 	HeadroomTokensSaved int  // tokens saved by Headroom (input-side compression)
 	HeadroomBytesSaved  int  // bytes removed by Headroom (input-side compression)
 	HeadroomActive      bool // Headroom achieved real (non-phantom) savings
-	PonytailActive      bool // ponytail output injection was active
+
+	// Guardrail outcome: the strictest action the guardrails took ("allow"
+	// when they ran and nothing fired, "" when no policy applied), the
+	// detector and direction that decided it, whether a block cut a stream
+	// the client was already receiving, and the evaluation overhead.
+	GuardrailAction    string
+	GuardrailDetector  string
+	GuardrailDirection string
+	GuardrailMidStream bool
+	GuardrailMS        int
+	PonytailActive     bool // ponytail output injection was active
 
 	CreatedAt time.Time
 }

@@ -95,7 +95,7 @@ limits:
   # Retry-After hint sent when a key hits its concurrency limit.
   concurrency_retry_after: 1s
   # Per-IP abuse guards; they apply even when enabled is false. 0 = off.
-  auth_failures_per_minute: 20
+  auth_failures_per_minute: 20   # then 429 for that IP's invalid keys; valid keys and loopback are never refused
   login_attempts_per_minute: 5
   # backend=redis only. Empty falls back to cache.redis_url.
   redis_url: ""            # e.g. redis://:password@redis:6379/0 or rediss://...

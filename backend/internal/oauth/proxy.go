@@ -40,8 +40,8 @@ const maxProxyTransports = 16
 // proxyTransport routes each OAuth request through the proxy chosen for it:
 // the account's proxy from the request context (set by the dispatcher before
 // a refresh), else the global outbound proxy, else the environment proxy.
-// Relay-only accounts fall through to the global proxy because a relay
-// forwards provider API calls, not token-endpoint exchanges.
+// Relay-bound accounts send token exchanges through their relay too, so a
+// refresh leaves from the same egress as the API calls it authorizes.
 type proxyTransport struct {
 	direct *http.Transport
 
@@ -56,6 +56,18 @@ func newProxyTransport() *proxyTransport {
 }
 
 func (t *proxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if creds, ok := core.ProxyFromContext(req.Context()); ok && creds.ProxyURL == "" && creds.RelayURL != "" {
+		relay, err := url.Parse(creds.RelayURL)
+		if err != nil || relay.Host == "" {
+			if req.Body != nil {
+				req.Body.Close()
+			}
+			return nil, errors.New("invalid relay URL")
+		}
+		out := req.Clone(req.Context())
+		httputil.RelayRequest(out, relay)
+		return t.direct.RoundTrip(out)
+	}
 	proxyURL, noProxy := requestProxy(req)
 	if proxyURL == "" {
 		return t.direct.RoundTrip(req)

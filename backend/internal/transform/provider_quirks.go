@@ -148,7 +148,7 @@ func applyThinkingByFormat(out *oaiRequest, req *core.ChatRequest, providerID st
 func applyProviderParamRules(out *oaiRequest, req *core.ChatRequest, providerID string, profile capability.Profile) {
 	model := strings.ToLower(req.Model)
 	switch providerID {
-	case "mistral":
+	case "mistral", "codestral":
 		// tool_choice "required" and the object form are spelled "any".
 		if len(out.Tools) > 0 && out.ToolChoice != nil {
 			switch tc := out.ToolChoice.(type) {

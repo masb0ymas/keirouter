@@ -95,8 +95,33 @@ func TestSkillsValidation(t *testing.T) {
 func TestSkillsConfigLoadsPersistedSkills(t *testing.T) {
 	s, _ := newSkillsTestServer(t)
 	require.NoError(t, s.settings.Set(context.Background(), skillsKey,
-		`[{"id":"1","name":"a","prompt":"One.","enabled":true},{"id":"2","name":"b","prompt":"Two.","enabled":false}]`))
+		`[{"id":"1","name":"a","prompt":"One.","enabled":true,"optional":false,"scope":{}},`+
+			`{"id":"2","name":"b","prompt":"Two.","enabled":false,"optional":false,"scope":{}}]`))
 	require.Equal(t, "One.", s.skillSet().Block(skills.Request{}))
+}
+
+// Skills saved by earlier versions were stored but never applied; upgrading
+// must not start injecting them into every request.
+func TestSkillsLegacyEntriesAreDisabledOnce(t *testing.T) {
+	s, h := newSkillsTestServer(t)
+	ctx := context.Background()
+	require.NoError(t, s.settings.Set(ctx, skillsKey,
+		`[{"id":"old","name":"Old","prompt":"Legacy.","enabled":true,"created_at":"2026-01-01T00:00:00Z"},`+
+			`{"id":"new","name":"New","prompt":"Current.","enabled":true,"optional":false,"scope":{}}]`))
+
+	require.Equal(t, "Current.", s.skillSet().Block(skills.Request{}), "legacy skill must not be injected")
+
+	// The migration is persisted, so re-enabling the skill afterwards sticks.
+	raw, err := s.settings.Get(ctx, skillsKey)
+	require.NoError(t, err)
+	require.Contains(t, raw, `"scope"`)
+	code, _ := doSkills(t, h, http.MethodPost, "/skills/old", `{"enabled":true}`)
+	require.Equal(t, http.StatusOK, code)
+	require.Contains(t, s.skillSet().Block(skills.Request{}), "Legacy.")
+	require.Len(t, s.loadSkills(ctx), 2)
+	for _, sk := range s.loadSkills(ctx) {
+		require.True(t, sk.Enabled, sk.ID)
+	}
 }
 
 // upstreamSystem posts a chat request and returns the system message the fake
@@ -197,4 +222,30 @@ func TestSkillsScopeNormalized(t *testing.T) {
 	code, updated := doSkills(t, h, http.MethodPost, "/skills/"+created["id"].(string), `{"scope":{}}`)
 	require.Equal(t, http.StatusOK, code)
 	require.Empty(t, updated["scope"])
+}
+
+func TestSkillsVariables(t *testing.T) {
+	s, h := newSkillsTestServer(t)
+	code, created := doSkills(t, h, http.MethodPost, "/skills",
+		`{"name":"a","prompt":"Support for {{company}} via {{contact}}.","variables":{" company ":" Acme ","contact":"  "}}`)
+	require.Equal(t, http.StatusCreated, code)
+	require.Equal(t, map[string]any{"company": "Acme"}, created["variables"])
+	require.Equal(t, "Support for Acme via {{contact}}.", s.skillSet().Block(skills.Request{}))
+	id := created["id"].(string)
+
+	code, updated := doSkills(t, h, http.MethodPost, "/skills/"+id, `{"variables":{"company":"Globex","contact":"help@globex.test"}}`)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, "Support for {{company}} via {{contact}}.", updated["prompt"])
+	require.Equal(t, "Support for Globex via help@globex.test.", s.skillSet().Block(skills.Request{}))
+
+	code, _ = doSkills(t, h, http.MethodPost, "/skills/"+id, `{"variables":{"bad name":"x"}}`)
+	require.Equal(t, http.StatusBadRequest, code)
+
+	long := strings.Repeat("x", maxSkillPromptLen-5)
+	code, _ = doSkills(t, h, http.MethodPost, "/skills", `{"name":"b","prompt":"`+long+`{{v}}","variables":{"v":"0123456789"}}`)
+	require.Equal(t, http.StatusBadRequest, code)
+
+	code, updated = doSkills(t, h, http.MethodPost, "/skills/"+id, `{"variables":{}}`)
+	require.Equal(t, http.StatusOK, code)
+	require.Nil(t, updated["variables"])
 }

@@ -70,23 +70,51 @@ func TestE2E_AuthFailuresThrottleIP(t *testing.T) {
 		o.cfg.Limits.AuthFailuresPerMinute = 2
 	})
 	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	const remote = "203.0.113.7:51000"
 
 	for range 2 {
-		resp := h.post(t, "/v1/chat/completions", body, "kr_invalid")
+		resp := h.postFrom(t, remote, "/v1/chat/completions", body, "kr_invalid")
 		resp.Body.Close()
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	}
-	resp := h.post(t, "/v1/chat/completions", body, "kr_invalid")
+	resp := h.postFrom(t, remote, "/v1/chat/completions", body, "kr_invalid")
 	resp.Body.Close()
 	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
 	require.NotEmpty(t, resp.Header.Get("Retry-After"))
 
+	// A valid key from the same (blocked) IP still gets through: clients
+	// behind one proxy share an IP, and one stale key must not lock out the rest.
+	resp = h.postFrom(t, remote, "/v1/chat/completions", body, h.apiKey)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Other IPs are unaffected.
+	resp = h.postFrom(t, "198.51.100.9:40000", "/v1/chat/completions", body, "kr_invalid")
+	resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
 	// Raising the limit from the dashboard takes effect immediately.
 	limit := 10
 	h.gateway.applyLimitSettings(EndpointSettings{RateLimitsEnabled: true, AuthFailuresPerMinute: &limit})
-	resp = h.post(t, "/v1/chat/completions", body, h.apiKey)
+	resp = h.postFrom(t, remote, "/v1/chat/completions", body, "kr_invalid")
 	resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestE2E_AuthFailuresIgnoreLoopback(t *testing.T) {
+	h := newE2E(t, openAIUpstream(), func(o *e2eOptions) {
+		o.cfg.Limits.AuthFailuresPerMinute = 1
+	})
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	// Local tools (and a reverse proxy on the same host) all arrive over
+	// loopback; a stale key there keeps getting a plain 401, never a block.
+	for _, remote := range []string{"127.0.0.1:50000", "[::1]:50000"} {
+		for range 3 {
+			resp := h.postFrom(t, remote, "/v1/chat/completions", body, "kr_invalid")
+			resp.Body.Close()
+			require.Equal(t, http.StatusUnauthorized, resp.StatusCode, remote)
+		}
+	}
 }
 
 func TestE2E_SuccessfulRequestsDoNotCountAsAuthFailures(t *testing.T) {

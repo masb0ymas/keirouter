@@ -4,11 +4,11 @@ import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tansta
 import { Ban, ChevronDown, FileText, MoreHorizontal, Pencil, Plus, Target, Trash2, type LucideIcon } from "lucide-react";
 import { api, type BudgetStatus, type Plan } from "../lib/api";
 import { formatTokenLimit, ModelMultiSelect } from "../components/ModelSelect";
-import { microsToUSD, formatTokens, formatSpendUSD } from "../lib/format";
+import { microsToUSD, formatTokens, formatSpendUSD, formatDateTime } from "../lib/format";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
-import { Badge, Button, Input, Select, Skeleton, ErrorBanner, Toggle, Modal, IconTile, SectionTitle, KpiGrid, Kpi } from "../components/ui";
+import { Badge, Button, Input, Select, Skeleton, ErrorBanner, Toggle, Modal, SectionTitle, KpiGrid, Kpi, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import {
@@ -367,14 +367,7 @@ function EnforcementBadge({ hardCutoff, blocking = false }: { hardCutoff: boolea
 }
 
 function EmptyPanel({ icon, title, body, action }: { icon: LucideIcon; title: string; body: string; action?: ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-      <IconTile icon={icon} size="lg" className="mx-auto mb-3" />
-      <h2 className="text-[14px] font-medium text-fg">{title}</h2>
-      <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">{body}</p>
-      {action && <div className="mt-4 flex justify-center">{action}</div>}
-    </div>
-  );
+  return <EmptyState variant="card" titleAs="h2" icon={icon} title={title} hint={body} action={action} />;
 }
 
 function PanelSkeleton() {
@@ -826,7 +819,7 @@ function budgetView(b: BudgetStatus) {
     usage: parts.join(" · ") || "No limit",
     periodLabel: b.period === "total" ? "All time" : `Per ${period}`,
     resets: b.resets_at ? `Resets ${relativeFuture(b.resets_at)}` : "Never resets",
-    resetsTitle: b.resets_at ? new Date(b.resets_at).toLocaleString() : undefined,
+    resetsTitle: b.resets_at ? formatDateTime(b.resets_at, { seconds: false }) : undefined,
     name: budgetName(b),
   };
 }

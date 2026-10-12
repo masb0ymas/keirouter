@@ -4,11 +4,12 @@
 /*
   KeiRouter design system — "precision instrument".
 
-  Cool neutral greys carry the interface; colour only ever means something.
+  Neutral greys carry the interface (warm "paper" in light mode, cool in
+  dark); colour only ever means something.
   Primary actions are monochrome (ink on light, paper on dark). The brand
   accent (blue by default, swappable through the white-label palette system)
   is reserved for data, links, focus and active state. Green / amber / red
-  are status only. Geist for UI, Geist Mono for every identifier (models,
+  are status only. IBM Plex Sans for UI, IBM Plex Mono for every identifier (models,
   keys, chains, endpoints) and tabular figures for every number.
 
   ── Radius scale (overrides Tailwind defaults) ─────────────────────
@@ -109,8 +110,8 @@
   --color-brand-gemini: #4285F4;
 
   /* ── Typography (self-hosted via @fontsource, works offline). */
-  --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* ── Radius: tighter than Tailwind's defaults. */
   --radius-md: 0.25rem;
@@ -151,31 +152,49 @@
 :root {
   color-scheme: light;
 
-  --bg: #f6f6f7;
-  --bg-elevated: #ffffff;
-  --bg-subtle: #fafafb;
-  --bg-hover: #f2f2f4;
-  --border: #e7e7ea;
-  --border-strong: #d6d6db;
-  --text: #17171a;
-  --text-muted: #5f5f69;
-  --text-faint: #6b6b75;
-  --primary: #17171a;
-  --primary-fg: #ffffff;
-  --track: #ececef;
+  /* Light mode is "paper", not "screen": a faintly warm, slightly dimmed
+     canvas with off-white cards and softened ink. Pure #fff cards on a
+     near-white canvas read as one glaring sheet, and near-black on pure
+     white (≈18:1) halates on long sessions. Everything below still clears
+     WCAG AA: body text ≈15:1, muted ≥ 6:1, faint ≥ 4.7:1 on every surface. */
+  --bg: #f1f0ec;
+  --bg-elevated: #fbfaf8;
+  --bg-subtle: #f6f5f2;
+  --bg-hover: #eeede8;
+  --border: #e2e0da;
+  --border-strong: #d0cdc5;
+  --text: #23221f;
+  --text-muted: #5b5953;
+  --text-faint: #6a6862;
+  --primary: #23221f;
+  --primary-fg: #fbfaf8;
+  --track: #e7e5df;
   --status-ok: #146d3b;
   --status-warn: #8c4b05;
   --status-bad: #b02e24;
   --series-alt: #ea7a3a;
   /* WCAG: form-control borders ≥ 3:1 against surface; link text ≥ 4.5:1. */
-  --border-input: #8a8a94;
+  --border-input: #8b8880;
   --link: var(--color-accent-600);
   /* Primary actions: brand blue (white text ≥ 6.5:1). */
   --action: var(--color-accent-600);
   --action-hover: var(--color-accent-700);
   --action-fg: #ffffff;
 
-  --shadow-card: 0 1px 2px rgba(16, 16, 20, 0.04);
+  /* Syntax highlighting (CodeBlock). Every colour clears 4.5:1 on --code-bg. */
+  --code-bg: #f6f5f2;
+  --code-fg: #23221f;
+  --code-key: #0b56b3;
+  --code-str: #116329;
+  --code-num: #a14a00;
+  --code-kw: #7034c9;
+  --code-com: #6a6862;
+  --code-var: #9a3c00;
+  --code-flag: #0b56b3;
+  --code-fn: #7034c9;
+  --code-punc: #6a6862;
+
+  --shadow-card: 0 1px 2px rgba(40, 32, 20, 0.05);
   --shadow-pop: 0 0 0 1px rgba(16, 16, 20, 0.04), 0 6px 16px -4px rgba(16, 16, 20, 0.1);
   --shadow-float: 0 0 0 1px rgba(16, 16, 20, 0.05), 0 18px 40px -12px rgba(16, 16, 20, 0.22);
 
@@ -213,6 +232,18 @@
   --color-warning: #e3a347;
   --color-danger: #f0675b;
 
+  --code-bg: #101013;
+  --code-fg: #e4e4e8;
+  --code-key: #7cb7ff;
+  --code-str: #7fd6a0;
+  --code-num: #f2a46b;
+  --code-kw: #c5a3ff;
+  --code-com: #8a8a94;
+  --code-var: #ffb37a;
+  --code-flag: #7cb7ff;
+  --code-fn: #c5a3ff;
+  --code-punc: #8a8a94;
+
   --shadow-card: none;
   --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 8px 24px -6px rgba(0, 0, 0, 0.6);
   --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 24px 48px -12px rgba(0, 0, 0, 0.7);
@@ -227,7 +258,6 @@ body {
   background-color: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -246,6 +276,17 @@ table th {
   font-variant-numeric: tabular-nums;
 }
 
+/* Syntax token colours, rendered by <CodeBlock> / <HighlightedCode>. */
+.tok-key { color: var(--code-key); }
+.tok-str { color: var(--code-str); }
+.tok-num { color: var(--code-num); }
+.tok-kw { color: var(--code-kw); }
+.tok-com { color: var(--code-com); font-style: italic; }
+.tok-var { color: var(--code-var); }
+.tok-flag { color: var(--code-flag); }
+.tok-fn { color: var(--code-fn); font-weight: 500; }
+.tok-punc { color: var(--code-punc); }
+
 /* Live indicator pulse (status dots on streaming data). */
 @keyframes live-pulse {
   0%, 100% { opacity: 1; }
@@ -258,7 +299,7 @@ table th {
 /* Thin scrollbars. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-ink-300) transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 /* Clickable elements get pointer cursor and a consistent tap target response. */
@@ -543,6 +584,12 @@ select:disabled,
 @layer base {
   :where(.overflow-auto, .overflow-x-auto, .overflow-x-scroll, .overflow-y-auto) {
     position: relative;
+  }
+  /* Tab strips scroll sideways only. overflow-x: auto turns overflow-y into
+     auto too, and the 1px active underline then shows a stray vertical
+     scrollbar at the end of the strip. */
+  :where([role="tablist"].overflow-x-auto) {
+    overflow-y: hidden;
   }
 }
 

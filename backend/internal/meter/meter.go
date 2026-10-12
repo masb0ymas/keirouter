@@ -156,6 +156,10 @@ type Event struct {
 	TerseActive    bool
 	HeadroomStats  *HeadroomSnapshot
 	PonytailActive bool
+
+	// Guardrail is what the guardrails did to the request (zero when no
+	// policy applied).
+	Guardrail core.GuardrailSummary
 }
 
 // SlimSnapshot captures the RTK slimmer's per-request compression results.
@@ -259,7 +263,10 @@ func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
 		UpstreamLatencyMS: int(ev.Latency.Milliseconds()), EndToEndLatencyMS: int(endToEnd.Milliseconds()),
 		TTFTMS: int(ev.TTFT.Milliseconds()), CavemanActive: ev.CavemanActive,
 		SlimActive: ev.SlimActive, TerseActive: ev.TerseActive, PonytailActive: ev.PonytailActive,
-		CreatedAt: recordedAt,
+		GuardrailAction: ev.Guardrail.Action, GuardrailDetector: ev.Guardrail.Detector,
+		GuardrailDirection: ev.Guardrail.Direction, GuardrailMidStream: ev.Guardrail.MidStream,
+		GuardrailMS: int(ev.Guardrail.Elapsed.Milliseconds()),
+		CreatedAt:   recordedAt,
 	}
 	if ev.SlimStats != nil {
 		rec.SlimBytesSaved, rec.SlimTokensSaved, rec.SlimRules = ev.SlimStats.BytesSaved, ev.SlimStats.TokensSaved, ev.SlimStats.Rules

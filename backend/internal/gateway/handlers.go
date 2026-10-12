@@ -46,53 +46,24 @@ func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte
 		return body, true
 	}
 
+	tr := s.traceOf(r)
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		message := fmt.Sprintf("request body exceeds maximum allowed size of %s", humanBytes(int(limit)))
-		if s.consoleLog != nil {
-			s.consoleLog.Log("WARN", "Request body too large", message)
-		}
+		tr.reject(http.StatusRequestEntityTooLarge, "Rejected · request body too large", message,
+			statusHint(http.StatusRequestEntityTooLarge))
 		writeError(w, http.StatusRequestEntityTooLarge, message)
 		return nil, false
 	}
 
-	if s.consoleLog != nil {
-		s.consoleLog.Log("ERROR", "Failed to read request body", err.Error())
+	if isClientDisconnect(err) || errors.Is(err, io.ErrUnexpectedEOF) {
+		tr.reject(499, "Client disconnected while sending the request", err.Error(),
+			"The connection closed before the full body arrived.")
+	} else {
+		tr.reject(http.StatusBadRequest, "Rejected · failed to read request body", err.Error(), "")
 	}
 	writeError(w, http.StatusBadRequest, "failed to read request body")
 	return nil, false
-}
-
-// logRequest logs a completed request to the console log buffer.
-func (s *Server) logRequest(keyName, provider, model string, tokens int, costMicros int64, latencyMs int, cacheHit bool, err error) {
-	if s.consoleLog == nil {
-		return
-	}
-
-	if err != nil {
-		detail := fmt.Sprintf("Key:      %s\nProvider: %s\nModel:    %s\nLatency:  %dms\n\n%v",
-			keyName, provider, model, latencyMs, err)
-		s.consoleLog.Log("ERROR",
-			fmt.Sprintf("Request failed · %s · %s", model, humanDuration(latencyMs)),
-			detail)
-		return
-	}
-
-	level := "INFO"
-	if latencyMs > 8000 {
-		level = "WARN"
-	}
-	cost := float64(costMicros) / 1_000_000
-	cacheNote := ""
-	if cacheHit {
-		cacheNote = " · cache hit"
-	}
-	msg := fmt.Sprintf("Request completed · %s · %s tokens · $%.4f · %s%s",
-		model, humanInt(tokens), cost, humanDuration(latencyMs), cacheNote)
-	detail := fmt.Sprintf(
-		"Key:      %s\nProvider: %s\nModel:    %s\nTokens:   %s\nCost:     $%.4f\nLatency:  %dms\nCache:    %v",
-		keyName, provider, model, humanInt(tokens), cost, latencyMs, cacheHit)
-	s.consoleLog.Log(level, msg, detail)
 }
 
 // handleOpenAIChat serves /v1/chat/completions in the OpenAI dialect.
@@ -156,15 +127,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 	key, _ := authedKey(r.Context())
 	tenantID := tenantOf(key)
 	client := detectClient(r)
-
-	s.consoleLog.Log("DEBUG",
-		fmt.Sprintf("New request from %q (%s API)", client, dialect),
-		fmt.Sprintf("Method: %s\nPath:   %s\nClient: %s\nDialect: %s\nKey:    %s (%s)",
-			r.Method, r.URL.Path, client, dialect, key.Name, key.ID))
+	tr := s.traceOf(r)
 
 	codec, err := s.codecs.Codec(dialect)
 	if err != nil {
-		s.consoleLog.Log("ERROR", fmt.Sprintf("Unsupported API dialect: %s", dialect), "")
+		tr.reject(http.StatusInternalServerError, fmt.Sprintf("Unsupported API dialect: %s", dialect), "", "")
 		writeError(w, http.StatusInternalServerError, "unsupported dialect")
 		return
 	}
@@ -173,14 +140,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 	if !ok {
 		return
 	}
-	s.consoleLog.Log("DEBUG", fmt.Sprintf("Read request body (%s)", humanBytes(len(body))), "")
+	bodySize := len(body)
 
 	req, err := codec.ParseRequest(body)
 	if err != nil {
-		s.consoleLog.Log("ERROR", "Failed to parse request body", err.Error())
+		tr.reject(http.StatusBadRequest, "Rejected · request body is not valid "+string(dialect)+" JSON", err.Error(),
+			"The client sent a body KeiRouter could not parse for this endpoint. Check that the client uses the matching API format.")
 		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
+	tr.setRequest(req.Model, req.Stream)
 
 	// Attach routing metadata.
 	req.Metadata = core.RequestMetadata{
@@ -193,24 +162,25 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		ClientBetas:   parseAnthropicBetaHeader(r.Header.Get("anthropic-beta")),
 	}
 
-	streamNote := ""
+	mode := "standard"
 	if req.Stream {
-		streamNote = " · streaming"
+		mode = "streaming"
 	}
-	s.consoleLog.Log("DEBUG",
-		fmt.Sprintf("Routing %q · %d message%s%s", req.Model, len(req.Messages), plural(len(req.Messages)), streamNote),
-		fmt.Sprintf("Model:    %s\nMessages: %d\nStream:   %v\nTenant:   %s\nKey:      %s (%s)",
-			req.Model, len(req.Messages), req.Stream, tenantID, key.Name, key.ID))
+	tr.step(
+		fmt.Sprintf("Received · %s · %d message%s · %s · %s", req.Model, len(req.Messages), plural(len(req.Messages)), mode, humanBytes(bodySize)),
+		fmt.Sprintf("Client: %s\nAPI format: %s\nMessages: %d\nTools: %d\nBody: %s\nTenant: %s",
+			client, dialect, len(req.Messages), len(req.Tools), humanBytes(bodySize), tenantID))
 
 	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, s.latencyReader(), tenantID, req.Model)
 	if err != nil {
 		var bad badModelError
 		if errors.As(err, &bad) {
-			s.consoleLog.Log("WARN", fmt.Sprintf("Unknown model %q", req.Model), bad.Error())
+			tr.reject(http.StatusBadRequest, fmt.Sprintf("Rejected · unknown model %q", req.Model), bad.Error(),
+				"No provider model, alias or chain has this name. Check the client's model setting against the Models page.")
 			writeError(w, http.StatusBadRequest, bad.Error())
 			return
 		}
-		s.consoleLog.Log("ERROR", fmt.Sprintf("Failed to resolve model %q", req.Model), err.Error())
+		tr.reject(http.StatusInternalServerError, fmt.Sprintf("Failed to resolve model %q", req.Model), err.Error(), "")
 		writeError(w, http.StatusInternalServerError, "failed to resolve model")
 		return
 	}
@@ -229,42 +199,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 	if len(resolved.Targets) > 0 {
 		filtered, ferr := s.filterAllowedTargets(r.Context(), key.ID, resolved.Targets)
 		if ferr != nil {
-			s.consoleLog.Log("ERROR", "Model access check failed", ferr.Error())
+			tr.reject(http.StatusInternalServerError, "Model access check failed", ferr.Error(), "")
 			writeError(w, http.StatusInternalServerError, "model access check failed")
 			return
 		}
 		if len(filtered) == 0 {
-			s.consoleLog.Log("WARN",
-				fmt.Sprintf("Access denied · key %q may not use %q", key.Name, req.Model),
-				fmt.Sprintf("Key:   %s (%s)\nModel: %s", key.Name, key.ID, req.Model))
+			tr.reject(http.StatusForbidden,
+				fmt.Sprintf("Rejected · key %q may not use %q", key.Name, req.Model), "",
+				"The key's model restrictions exclude every target of this model. Allow the model on the Keys page or use another key.")
 			writeError(w, http.StatusForbidden, "access denied: this API key is not permitted to use model "+req.Model)
 			return
 		}
 		resolved.Targets = filtered
 	}
 
-	if len(resolved.Targets) > 0 {
-		primary := resolved.Targets[0]
-		var tb strings.Builder
-		for i, t := range resolved.Targets {
-			if i > 0 {
-				tb.WriteByte('\n')
-			}
-			fmt.Fprintf(&tb, "%d. %s/%s", i+1, t.Provider, t.Model)
-		}
-		msg := fmt.Sprintf("Resolved to %s/%s", primary.Provider, primary.Model)
-		if len(resolved.Targets) > 1 {
-			msg = fmt.Sprintf("%s (+%d fallback%s)", msg, len(resolved.Targets)-1, plural(len(resolved.Targets)-1))
-		}
-		s.consoleLog.Log("DEBUG", msg, tb.String())
-	}
+	tr.routed(resolved.Targets)
 	affinityKey := requestAffinityKey(r, req)
 	req.Metadata.ContextAffinityKey = affinityKey
 	body = nil // release body for GC — no longer needed
 
 	effectiveLimits, err := s.effectiveLimits(r.Context(), key)
 	if err != nil {
-		s.consoleLog.Log("ERROR", "Failed to resolve rate limits", err.Error())
+		tr.reject(http.StatusInternalServerError, "Failed to resolve rate limits", err.Error(), "")
 		writeError(w, http.StatusInternalServerError, "limit resolution failed")
 		return
 	}
@@ -282,12 +238,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 	}
 
 	if req.Stream {
-		s.consoleLog.Log("DEBUG", "Dispatching as streaming response", "")
-		s.streamChat(w, r, codec, req, opts, key.Name)
+		s.streamChat(w, r, codec, req, opts)
 		return
 	}
-	s.consoleLog.Log("DEBUG", "Dispatching as standard response", "")
-	s.unaryChat(w, r, codec, req, opts, key.Name)
+	s.unaryChat(w, r, codec, req, opts)
 }
 
 func (s *Server) effectiveLimits(ctx context.Context, key store.APIKey) (limits.EffectiveLimits, error) {
@@ -310,30 +264,32 @@ func (s *Server) effectiveLimits(ctx context.Context, key store.APIKey) (limits.
 }
 
 // unaryChat runs a non-streaming request and renders the response.
-func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transform.Codec, req *core.ChatRequest, opts pipeline.Options, keyName string) {
-	start := time.Now()
-	s.consoleLog.Log("DEBUG", "Sending request to provider…", "")
+func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transform.Codec, req *core.ChatRequest, opts pipeline.Options) {
+	tr := s.traceOf(r)
+	tr.setRequest(req.Model, false)
 	result, err := s.pipeline.Chat(r.Context(), req, opts)
-	latency := int(time.Since(start).Milliseconds())
 	if err != nil {
-		s.consoleLog.Log("ERROR", fmt.Sprintf("Provider request failed after %s", humanDuration(latency)), err.Error())
-		s.logRequest(keyName, req.Model, req.Model, 0, 0, latency, false, err)
+		tr.complete(outcome{fallbacks: req.Metadata.FallbackCount, err: err})
 		s.writeProviderErrorAs(w, req.Metadata.SourceDialect, err)
 		return
 	}
 
 	out, err := codec.RenderResponse(result.Response)
 	if err != nil {
-		s.consoleLog.Log("ERROR", "Failed to render provider response", err.Error())
+		tr.complete(outcome{provider: result.Provider, model: result.Model,
+			err: &core.ProviderError{Kind: core.ErrInternal, Message: "failed to render provider response", Cause: err}})
 		writeError(w, http.StatusInternalServerError, "failed to render response")
 		return
 	}
-	tokens := result.Response.Usage.PromptTokens + result.Response.Usage.CompletionTokens
-	s.consoleLog.Log("DEBUG",
-		fmt.Sprintf("Response from %s/%s · %s tokens · %s", result.Provider, result.Model, humanInt(tokens), humanDuration(latency)),
-		fmt.Sprintf("Provider: %s\nModel:    %s\nTokens:   %s\nAccount:  %s\nCache:    %v\nLatency:  %dms",
-			result.Provider, result.Model, humanInt(tokens), result.AccountID, result.CacheHit, latency))
-	s.logRequest(keyName, result.Provider, result.Model, tokens, result.CostMicros, latency, result.CacheHit, nil)
+	tr.complete(outcome{
+		provider:   result.Provider,
+		model:      result.Model,
+		account:    result.AccountID,
+		tokens:     result.Response.Usage.PromptTokens + result.Response.Usage.CompletionTokens,
+		costMicros: result.CostMicros,
+		cacheHit:   result.CacheHit,
+		fallbacks:  req.Metadata.FallbackCount,
+	})
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-KeiRouter-Provider", result.Provider)
 	w.Header().Set("X-KeiRouter-Model", result.Model)
@@ -346,7 +302,9 @@ func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transfo
 
 // streamChat runs a streaming request and relays SSE events in the client's
 // dialect, honoring client disconnects and the configured stall timeout.
-func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transform.Codec, req *core.ChatRequest, opts pipeline.Options, keyName string) {
+func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transform.Codec, req *core.ChatRequest, opts pipeline.Options) {
+	tr := s.traceOf(r)
+	tr.setRequest(req.Model, true)
 	streamCodec, ok := codec.(transform.StreamCodec)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "dialect does not support streaming")
@@ -359,19 +317,19 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		return
 	}
 
-	start := time.Now()
-	s.consoleLog.Log("DEBUG", "Opening stream to provider…", "")
 	result, err := s.pipeline.Stream(r.Context(), req, opts)
 	if err != nil {
-		latency := int(time.Since(start).Milliseconds())
-		s.consoleLog.Log("ERROR", fmt.Sprintf("Stream failed to start after %s", humanDuration(latency)), err.Error())
-		s.logRequest(keyName, req.Model, req.Model, 0, 0, latency, false, err)
+		tr.complete(outcome{fallbacks: req.Metadata.FallbackCount, err: err})
 		s.writeProviderError(w, err)
 		return
 	}
-	s.consoleLog.Log("DEBUG",
-		fmt.Sprintf("Streaming from %s/%s", result.Provider, result.Model),
-		fmt.Sprintf("Provider: %s\nModel:    %s\nAccount:  %s", result.Provider, result.Model, result.AccountID))
+	streamPath := "translated"
+	if result.DirectBody != nil {
+		streamPath = "zero-copy passthrough"
+	}
+	tr.step(
+		fmt.Sprintf("Streaming from %s/%s · first response after %s", result.Provider, result.Model, humanDuration(tr.elapsedMs())),
+		fmt.Sprintf("Provider: %s\nModel: %s\nAccount: %s\nPath: %s", result.Provider, result.Model, result.AccountID, streamPath))
 
 	if req.Metadata.SourceDialect == core.DialectOllama {
 		w.Header().Set("Content-Type", "application/x-ndjson")
@@ -413,7 +371,6 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 			hw.stop()
 		}
 		if cpErr != nil && !isClientDisconnect(cpErr) {
-			s.consoleLog.Log("ERROR", fmt.Sprintf("Stream interrupted after %s", humanBytes(int(n))), cpErr.Error())
 			s.log.Warn("direct stream error", "bytes", n, "err", cpErr)
 			// The upstream read failed (stall, reset, truncated body). Tell the
 			// client in its own dialect instead of silently closing the
@@ -435,13 +392,13 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		if result.DirectCompleteFunc != nil {
 			result.DirectCompleteFunc(completionErr)
 		}
-		latency := int(time.Since(start).Milliseconds())
-		if cpErr != nil {
-			s.logRequest(keyName, result.Provider, result.Model, 0, 0, latency, false, cpErr)
-			return
+		o := outcome{provider: result.Provider, model: result.Model, account: result.AccountID,
+			bytes: n, fallbacks: req.Metadata.FallbackCount, err: cpErr}
+		if result.DirectStats != nil {
+			o.tokens = result.DirectStats.Tokens
+			o.costMicros = result.DirectStats.CostMicros
 		}
-		s.consoleLog.Log("DEBUG", fmt.Sprintf("Stream finished · %s · %s", humanBytes(int(n)), humanDuration(latency)), "")
-		s.logRequest(keyName, result.Provider, result.Model, 0, 0, latency, false, nil)
+		tr.complete(o)
 		return
 	}
 
@@ -456,9 +413,11 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 
 	state := &transform.StreamState{Model: result.Model}
 	transform.ResetStreamState(state)
-	streamStart := time.Now()
 	var totalTokens int
 	var chunkCount int
+	// clientGone is set on the first failed write so the rest of the stream
+	// is drained quietly instead of logging once per chunk.
+	var clientGone error
 
 	// ToolArgSanitizer buffers streaming tool call arguments and emits
 	// sanitized JSON when each tool call completes. This fixes malformed
@@ -493,7 +452,9 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 				}
 				for _, ev := range events {
 					if _, werr := bw.Write(ev); werr != nil {
-						s.consoleLog.Log("WARN", fmt.Sprintf("Client disconnected after %d chunks", chunkCount), "")
+						if clientGone == nil {
+							clientGone = &streamWriteError{err: werr}
+						}
 						return
 					}
 				}
@@ -507,7 +468,9 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		}
 		for _, ev := range events {
 			if _, werr := bw.Write(ev); werr != nil {
-				s.consoleLog.Log("WARN", fmt.Sprintf("Client disconnected after %d chunks", chunkCount), "")
+				if clientGone == nil {
+					clientGone = &streamWriteError{err: werr}
+				}
 				return
 			}
 		}
@@ -543,7 +506,6 @@ streamLoop:
 				if streamErr == nil {
 					streamErr = &core.ProviderError{Kind: core.ErrUpstream, Message: "provider stream failed"}
 				}
-				s.consoleLog.Log("ERROR", "Provider stream error", fmt.Sprintf("%v", streamErr))
 				s.log.Warn("stream error", "err", streamErr)
 				_, _ = bw.Write(streamErrorEvent(req.Metadata.SourceDialect, sanitizeUpstreamError(streamErr)))
 				// Emit terminal events so strict clients (Claude Code, Cline) see a
@@ -584,9 +546,15 @@ streamLoop:
 		}
 	}
 
-	latency := int(time.Since(streamStart).Milliseconds())
+	finish := func(err error) {
+		if err == nil && clientGone != nil {
+			err = clientGone
+		}
+		tr.complete(outcome{provider: result.Provider, model: result.Model, account: result.AccountID,
+			tokens: totalTokens, chunks: chunkCount, fallbacks: req.Metadata.FallbackCount, err: err})
+	}
 	if streamErr != nil {
-		s.logRequest(keyName, result.Provider, result.Model, totalTokens, 0, latency, false, streamErr)
+		finish(streamErr)
 		return
 	}
 
@@ -613,11 +581,7 @@ streamLoop:
 	bw.Flush()
 	flusher.Flush()
 
-	s.consoleLog.Log("DEBUG",
-		fmt.Sprintf("Stream complete · %d chunks · %s tokens · %s", chunkCount, humanInt(totalTokens), humanDuration(latency)),
-		fmt.Sprintf("Provider: %s\nModel:    %s\nChunks:   %d\nTokens:   %s\nLatency:  %dms",
-			result.Provider, result.Model, chunkCount, humanInt(totalTokens), latency))
-	s.logRequest(keyName, result.Provider, result.Model, totalTokens, 0, latency, false, nil)
+	finish(nil)
 }
 
 // providerStreamEventError keeps a late provider error available to internal

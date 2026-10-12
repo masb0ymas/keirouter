@@ -36,6 +36,9 @@ func (c *OpenAICompatible) baseURL(creds core.Credentials) string {
 	if creds.BaseURL != "" {
 		u = creds.BaseURL
 	}
+	if c.id == "snowflake" {
+		u = strings.ReplaceAll(u, "{snowflake_account}", snowflakeAccountHost(creds.Extra["snowflake_account"]))
+	}
 	// Resolve template placeholders like {accountId} from creds.Extra.
 	// Cloudflare Workers AI uses: /accounts/{accountId}/ai/v1/chat/completions
 	u = resolveURLPlaceholders(u, creds.Extra)
@@ -178,10 +181,14 @@ func (c *OpenAICompatible) chatCompletionsURL(creds core.Credentials, model stri
 		if apiVersion == "" {
 			apiVersion = "2024-10-01-preview"
 		}
+		// The v1 API takes the deployment as the body's model, not the path.
+		if apiVersion == "v1" || apiVersion == "preview" {
+			return endpoint + "/openai/v1/chat/completions"
+		}
 		return endpoint + "/openai/deployments/" + url.PathEscape(deployment) +
 			"/chat/completions?api-version=" + url.QueryEscape(apiVersion)
 	}
-	return joinURL(c.baseURL(creds), "chat/completions")
+	return c.endpointURL(creds, "chat/completions")
 }
 
 // providerRequiresStreaming reports whether the given provider only accepts
@@ -304,11 +311,15 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 	}
 
 	url := c.chatCompletionsURL(creds, req.Model)
+	headers, err := c.authHeaders(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
 
 	// Use streaming JSON decode when the codec supports it — avoids buffering
 	// the entire response body into a []byte before parsing.
 	if sc, ok := interface{}(c.codec).(transform.StreamingResponseCodec); ok {
-		_, respBody, decErr := doJSONDecode(ctx, c.id, req.Model, url, body, c.headers(creds))
+		_, respBody, decErr := doJSONDecode(ctx, c.id, req.Model, url, body, headers)
 		if decErr != nil {
 			// Auto-retry with streaming if the provider requires it.
 			if isStreamRequiredError(decErr) {
@@ -329,7 +340,7 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 	}
 
 	// Fallback: buffer the entire response body.
-	respBody, err := doJSON(ctx, c.id, req.Model, url, body, c.headers(creds))
+	respBody, err := doJSON(ctx, c.id, req.Model, url, body, headers)
 	if err != nil {
 		// Auto-retry with streaming if the provider requires it.
 		if isStreamRequiredError(err) {
@@ -352,17 +363,27 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 // Validate probes the upstream /models endpoint to confirm the credentials are
 // accepted. Returns nil on success.
 func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials) error {
-	if c.id == "azure" {
+	headers, err := c.authHeaders(ctx, creds)
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	switch c.id {
+	case "azure", "azure-ai":
 		body := []byte(`{"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
-		err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds))
-		if err != nil {
+		if err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, "validate"), body, headers); err != nil {
+			return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		}
+		return nil
+	case "databricks":
+		host := strings.TrimRight(extraValue(creds, "databricks_host"), "/")
+		if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", host+"/api/2.0/serving-endpoints", nil, headers); err != nil {
 			return fmt.Errorf("validation failed for %s: %w", c.id, err)
 		}
 		return nil
 	}
 
 	url := joinURL(c.baseURL(creds), "models")
-	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, c.headers(creds))
+	_, err = doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, headers)
 	// An HTML response means the base URL points at a web frontend, not the API
 	// (e.g. a custom base URL missing the "/v1" path). Fail hard rather than
 	// falling through to the chat probe, which is skipped for custom providers
@@ -437,7 +458,11 @@ func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credent
 		"max_tokens": 1,
 		"stream":     false,
 	})
-	return validateProbe(ctx, c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds))
+	headers, err := c.authHeaders(ctx, creds)
+	if err != nil {
+		return err
+	}
+	return validateProbe(ctx, c.id, c.chatCompletionsURL(creds, probeModel), body, headers)
 }
 
 func validateProbe(ctx context.Context, provider, endpoint string, body []byte, headers map[string]string) error {
@@ -472,7 +497,7 @@ func strictModelsValidation(provider string) bool {
 	switch provider {
 	case "openai", "openrouter", "vercel-ai-gateway",
 		"deepseek", "groq", "mistral", "perplexity", "together",
-		"fireworks", "cerebras", "cohere", "nebius", "siliconflow",
+		"fireworks", "cerebras", "nebius", "siliconflow",
 		"hyperbolic", "chutes", "nvidia", "xiaomi-mimo", "xiaomi-tokenplan":
 		return true
 	default:
@@ -491,27 +516,24 @@ type OpenAICompatibleModelSource struct {
 
 // ListModels fetches GET /models from the upstream and returns ModelSpecs.
 func (s *OpenAICompatibleModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
-	base := s.defaultBase
-	if creds.BaseURL != "" {
-		base = creds.BaseURL
+	// Resolve the endpoint and auth exactly as chat calls do (template
+	// placeholders, exchanged tokens, provider-specific key headers).
+	conn := &OpenAICompatible{id: s.provider, defaultBase: s.defaultBase}
+	headers, err := conn.authHeaders(ctx, creds)
+	if err != nil {
+		return nil, err
 	}
-	// Resolve template placeholders (e.g. cloudflare {accountId}).
-	base = resolveURLPlaceholders(base, creds.Extra)
-
-	url := joinURL(base, "models")
+	url := conn.endpointURL(creds, "models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case creds.AccessToken != "":
-		req.Header.Set("Authorization", bearer(creds.AccessToken))
-	case creds.APIKey != "":
-		req.Header.Set("Authorization", bearer(creds.APIKey))
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := sharedClient.Do(req)
+	resp, err := proxyDo(egressCtx(ctx, creds), req)
 	if err != nil {
 		return nil, err
 	}
@@ -557,7 +579,11 @@ func (c *OpenAICompatible) StreamRaw(ctx context.Context, req *core.ChatRequest,
 	}
 
 	url := c.chatCompletionsURL(creds, req.Model)
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
+	headers, err := c.authHeaders(ctx, creds)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := openStream(ctx, c.id, req.Model, url, body, headers)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -573,7 +599,11 @@ func (c *OpenAICompatible) Stream(ctx context.Context, req *core.ChatRequest, cr
 	}
 
 	url := c.chatCompletionsURL(creds, req.Model)
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
+	headers, err := c.authHeaders(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := openStream(ctx, c.id, req.Model, url, body, headers)
 	if err != nil {
 		return nil, err
 	}

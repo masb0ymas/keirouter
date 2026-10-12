@@ -6,7 +6,7 @@ import { api, type CLITool } from "../lib/api";
 import { cliConnection, cliConnectionRank, cliToolMeta, detectedViaLabel } from "../lib/cliTools";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { Badge, Button, ErrorBanner, IconTile, SectionTitle, Skeleton } from "../components/ui";
+import { Badge, Button, ErrorBanner, SectionTitle, Skeleton, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { cn } from "@/lib/utils";
 
@@ -57,13 +57,13 @@ export function CLIToolsPage() {
           message={`Couldn't load CLI tools. ${tools.error instanceof Error ? tools.error.message : ""} Reload the page to try again.`}
         />
       ) : list.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.cliTools} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[13px] font-semibold text-fg">No CLI tools available</h2>
-          <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">
-            This KeiRouter build doesn&apos;t ship any CLI tool integrations.
-          </p>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.cliTools}
+          title="No CLI tools available"
+          hint="This KeiRouter build doesn't ship any CLI tool integrations."
+        />
       ) : (
         <section aria-labelledby="cli-tools-heading" aria-busy={rescanning}>
           <div className="mb-3">

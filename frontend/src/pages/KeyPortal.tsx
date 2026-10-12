@@ -4,12 +4,13 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchKeyUsage, fetchKeyUsageById, APIError, type KeyUsageData, type PortalRecentRequest } from "../lib/api";
 import { useBranding } from "../contexts/BrandingContext";
 import { AlertCircle, AlertTriangle, CalendarDays, Key, Loader2, LogOut, RefreshCw, Send, type LucideIcon } from "lucide-react";
-import { Button, Input, Select, Badge, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination } from "../components/ui";
+import { Button, Input, Select, Badge, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { BrandMark } from "../components/BrandMark";
 import { ProviderLogo } from "../components/ProviderLogo";
 import { ChartCard, TimeBars, dayLabel, type TimeSeriesDef } from "../components/charts/TimeSeries";
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "../lib/format";
 
 // Public key portal: a key holder opens /portal with their API key (or a
 // shared portal ID) and sees that key's usage, spend and budget limits.
@@ -440,13 +441,7 @@ function Panel({ icon, title, count, className, children }: { icon: LucideIcon; 
 }
 
 function PanelEmpty({ icon, title, hint }: { icon: LucideIcon; title: string; hint?: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-1 px-6 py-10 text-center">
-      <IconTile icon={icon} size="lg" className="mb-2" />
-      <p className="text-[13px] font-medium text-fg">{title}</p>
-      {hint && <p className="max-w-sm text-[12.5px] text-fg-muted">{hint}</p>}
-    </div>
-  );
+  return <EmptyState icon={icon} title={title} hint={hint} size="sm" className="justify-center" />;
 }
 
 // ── Budget alert banner ──────────────────────────────────────────────────────
@@ -615,7 +610,7 @@ function LimitsCard({ budgets, allowedModels }: { budgets: Budget[]; allowedMode
                   <span className="min-w-0">
                     <span className="text-fg">{r.used}</span> of {r.limit} · {r.left}
                   </span>
-                  <span className="shrink-0" title={reset ? reset.toLocaleString() : undefined}>
+                  <span className="shrink-0" title={reset ? formatDateTime(reset, { seconds: false }) : undefined}>
                     {reset ? `Resets ${relativeFuture(reset)}` : "Never resets"}
                   </span>
                 </div>
@@ -802,7 +797,7 @@ function RecentRequestsCard({ recent }: { recent: PortalRecentRequest[] }) {
                     <span className="shrink-0 text-[13px] tabular-nums text-fg">{fmtUSD(r.cost_usd)}</span>
                   </div>
                   <p className="mt-1.5 text-[12px] tabular-nums text-fg-muted">
-                    <time dateTime={r.created_at} className="font-mono text-fg">{formatDateTime(r.created_at)}</time>
+                    <time dateTime={r.created_at} className="font-mono text-fg">{formatDateTime(r.created_at, { seconds: false })}</time>
                     {rel !== "—" && <> · {rel} ago</>}
                   </p>
                   <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] tabular-nums text-fg-muted">
@@ -839,7 +834,7 @@ function RecentRequestsCard({ recent }: { recent: PortalRecentRequest[] }) {
                   return (
                     <tr key={r.id} className="transition-colors hover:bg-hover">
                       <td className="whitespace-nowrap px-4 py-2" title={new Date(r.created_at).toLocaleString()}>
-                        <span className="font-mono text-[12px] text-fg">{formatDateTime(r.created_at)}</span>
+                        <span className="font-mono text-[12px] text-fg">{formatDateTime(r.created_at, { seconds: false })}</span>
                         {rel !== "—" && <span className="ml-2 text-[12px] text-fg-muted">{rel} ago</span>}
                       </td>
                       <td className="max-w-[320px] px-4 py-2">
@@ -1120,9 +1115,3 @@ function relTime(iso: string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function formatDateTime(iso: string): string {
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return "—";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
-}

@@ -31,6 +31,7 @@ import (
 // e2eHarness wires a full gateway against an in-memory store and a fake upstream.
 type e2eHarness struct {
 	server   *httptest.Server
+	handler  http.Handler
 	gateway  *Server
 	apiKey   string
 	upstream *httptest.Server
@@ -110,10 +111,11 @@ func newE2E(t *testing.T, upstreamHandler http.HandlerFunc, opts ...func(*e2eOpt
 	gwDeps.Pipeline = pipeline.New(pipeDeps)
 	gw := New(gwDeps)
 
-	srv := httptest.NewServer(gw.Handler())
+	handler := gw.Handler()
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	return &e2eHarness{server: srv, gateway: gw, apiKey: issued.Plaintext, upstream: upstream}
+	return &e2eHarness{server: srv, handler: handler, gateway: gw, apiKey: issued.Plaintext, upstream: upstream}
 }
 
 func (h *e2eHarness) post(t *testing.T, path, body, auth string) *http.Response {
@@ -127,6 +129,21 @@ func (h *e2eHarness) post(t *testing.T, path, body, auth string) *http.Response 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	return resp
+}
+
+// postFrom sends a request as if it came from remoteAddr ("ip:port"); the test
+// server itself is only reachable over loopback.
+func (h *e2eHarness) postFrom(t *testing.T, remoteAddr, path, body, auth string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", "Bearer "+auth)
+	}
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	return rec.Result()
 }
 
 // openAIUpstream returns a handler that responds as an OpenAI chat endpoint.

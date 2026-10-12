@@ -62,7 +62,7 @@ func (d *Detector) llmClassify(ctx context.Context, c guardrails.Completer, cfg 
 		meta = in.Source.Metadata
 	}
 	req := &core.ChatRequest{
-		Metadata:    guardrails.JudgeMetadata(meta, "guardrails-topics"),
+		Metadata:    guardrails.JudgeMetadata(meta, "topics"),
 		Model:       cfg.Model,
 		System:      llmSystemPrompt,
 		Messages:    []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: string(payload)}}}},

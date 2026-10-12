@@ -27,6 +27,16 @@ const (
 	DialectQoder       Dialect = "qoder"        // Qoder COSY-signed inference
 	DialectMimoFree    Dialect = "mimo_free"    // Xiaomi MiMo free tier (bootstrap JWT)
 	DialectWebCookie   Dialect = "web_cookie"   // browser-session cookie providers
+
+	// Enterprise cloud dialects: signed or token-exchanged APIs whose request
+	// shape differs from Chat Completions.
+	DialectBedrock   Dialect = "bedrock"   // AWS Bedrock Converse / InvokeModel (SigV4 or API key)
+	DialectSageMaker Dialect = "sagemaker" // AWS SageMaker endpoint invocations (SigV4)
+	DialectWatsonx   Dialect = "watsonx"   // IBM watsonx.ai text/chat (IAM token exchange)
+	DialectOCI       Dialect = "oci"       // Oracle Cloud Generative AI (HTTP request signing)
+	DialectSAP       Dialect = "sap"       // SAP AI Core orchestration (OAuth client credentials)
+	DialectReplicate Dialect = "replicate" // Replicate predictions API
+	DialectGigaChat  Dialect = "gigachat"  // Sber GigaChat (OAuth scope token)
 )
 
 // ChatRequest is the canonical, dialect-independent representation of a chat
@@ -156,4 +166,8 @@ type RequestMetadata struct {
 	// of the current turn look like a prompt injection, so the outbound pass
 	// can refuse tool calls the model makes under that influence.
 	UntrustedToolInput bool
+	// Guardrail collects the guardrail decisions taken on this request for
+	// the usage row. Attached by the guardrails engine when a policy applies;
+	// nil when guardrails never evaluated the request.
+	Guardrail *GuardrailOutcome
 }

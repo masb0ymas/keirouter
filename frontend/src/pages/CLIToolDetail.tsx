@@ -10,7 +10,9 @@ import { useToast } from "../components/Toast";
 import { ProviderLogo } from "../components/ProviderLogo";
 import { useModelCatalog } from "../components/ModelSelect";
 import { useConfirm } from "../components/ui/confirm-dialog";
-import { Badge, Button, IconTile, Input, SegmentedControl, Skeleton } from "../components/ui";
+import { Badge, Button, Input, SegmentedControl, Skeleton, EmptyState } from "../components/ui";
+import { HighlightedCode } from "../components/ui/code-block";
+import { detectLanguage } from "../lib/highlight";
 import { ICONS } from "../lib/icons";
 import { cn } from "@/lib/utils";
 
@@ -139,13 +141,13 @@ export function CLIToolDetailPage() {
 
   if (!tool) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.cliTools} size="lg" className="mx-auto mb-3" />
-        <h1 className="text-[13px] font-semibold text-fg">This CLI tool doesn&apos;t exist</h1>
-        <Link to="/cli-tools" className="mt-2 inline-block text-[13px] font-medium text-link hover:underline">
-          Back to CLI tools
-        </Link>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h1"
+        icon={ICONS.cliTools}
+        title="This CLI tool doesn't exist"
+        action={<Link to="/cli-tools" className="rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">Back to CLI tools</Link>}
+      />
     );
   }
 
@@ -797,7 +799,11 @@ function SnippetWell({ files, fullText }: { files: SnippetFile[]; fullText: stri
         {file.notes.length > 0 && (
           <p className="border-b border-line px-3.5 py-1.5 text-[12px] text-fg-muted">{file.notes.join(" ")}</p>
         )}
-        <pre className="max-h-[60vh] overflow-auto px-3.5 py-3 sm:max-h-[420px] font-mono text-[12px] leading-5 text-fg">{file.body}</pre>
+        <pre className="max-h-[60vh] overflow-auto bg-[var(--code-bg)] px-3.5 py-3 font-mono text-[12.5px] leading-[1.65] text-[var(--code-fg)] sm:max-h-[420px]">
+          <code>
+            <HighlightedCode code={file.body} language={detectLanguage(file.body, file.path)} />
+          </code>
+        </pre>
       </div>
     </div>
   );
@@ -814,9 +820,11 @@ function CodeWell({ code, label, copyLabel }: { code: string; label: string; cop
         tabIndex={0}
         role="region"
         aria-label={`${label} command`}
-        className="overflow-x-auto px-3.5 py-2.5 font-mono text-[12px] leading-5 text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
+        className="overflow-x-auto bg-[var(--code-bg)] px-3.5 py-2.5 font-mono text-[12.5px] leading-[1.65] text-[var(--code-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500"
       >
-        {code}
+        <code>
+          <HighlightedCode code={code} language="bash" />
+        </code>
       </pre>
     </div>
   );

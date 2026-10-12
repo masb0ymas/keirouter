@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, FileSearch, Gift, LogIn, Plug, Plus, Search, SearchX, X, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, FileSearch, Gift, LogIn, Plug, Plus, Search, SearchX, X, type LucideIcon } from "lucide-react";
 import { api, type Account, type HealthTimelineProvider, type Provider } from "../lib/api";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { Badge, Button, ErrorBanner, IconTile, SectionTitle, Select, Skeleton } from "../components/ui";
+import { Badge, Button, ErrorBanner, IconTile, SectionTitle, Select, Skeleton, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useToast } from "../components/Toast";
 import { ConnectDialog, FormError, PrimaryAction, SecondaryAction, SelectField, TextField } from "../components/connect/ConnectKit";
@@ -203,6 +203,9 @@ export function ProvidersPage() {
   const listed = useMemo(() => (providers.data?.providers ?? []).filter((p) => !p.hidden), [providers.data]);
   const allConnected = useMemo(() => sortByPopularity(listed.filter((p) => accountsByProvider.has(p.id))), [listed, accountsByProvider]);
   const available = useMemo(() => sortByPopularity(listed.filter((p) => !accountsByProvider.has(p.id))), [listed, accountsByProvider]);
+  // The picker lists every provider, connected ones included, so another
+  // account can be added to a provider that already has one.
+  const catalog = useMemo(() => sortByPopularity(listed), [listed]);
   const q = searchQuery.trim().toLowerCase();
   const connected = allConnected.filter((p) => matches(p, filter, q));
   const filtering = !!q || filter !== "all";
@@ -231,15 +234,19 @@ export function ProvidersPage() {
       ) : providers.isError ? (
         <ErrorBanner message="Couldn't load providers. Check that the gateway is running, then reload." />
       ) : noneConnected ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.providers} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[14px] font-semibold text-fg">No providers connected</h2>
-          <p className="mx-auto mt-1 max-w-sm text-[13px] text-fg-muted">Connect one to start routing requests.</p>
-          <Button className="mt-4" onClick={() => setPickerOpen(true)}>
-            <Plug aria-hidden="true" />
-            Connect provider
-          </Button>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.providers}
+          title="No providers connected"
+          hint="Connect one to start routing requests."
+          action={
+            <Button onClick={() => setPickerOpen(true)}>
+              <Plug aria-hidden="true" />
+              Connect provider
+            </Button>
+          }
+        />
       ) : (
         <section aria-labelledby="connected-heading" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
           <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
@@ -307,7 +314,8 @@ export function ProvidersPage() {
 
       {pickerOpen && (
         <ProviderPicker
-          providers={available}
+          providers={catalog}
+          accountsByProvider={accountsByProvider}
           onClose={() => setPickerOpen(false)}
           onCustom={() => {
             setPickerOpen(false);
@@ -480,7 +488,18 @@ function fmtLatency(ms: number): string {
 
 // ProviderPicker is the "Connect provider" dialog: search, filter by
 // capability, then pick a provider to open its page and connect it there.
-function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[]; onClose: () => void; onCustom: () => void }) {
+// Connected providers stay listed (tagged) so more accounts can be added.
+function ProviderPicker({
+  providers,
+  accountsByProvider,
+  onClose,
+  onCustom,
+}: {
+  providers: Provider[];
+  accountsByProvider: ReadonlyMap<string, Account[]>;
+  onClose: () => void;
+  onCustom: () => void;
+}) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -571,7 +590,7 @@ function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[
               <ul className="grid grid-cols-1 gap-x-2 sm:grid-cols-2">
                 {g.items.map((p) => (
                   <li key={p.id}>
-                    <CatalogItem provider={p} />
+                    <CatalogItem provider={p} accountCount={accountsByProvider.get(p.id)?.length ?? 0} />
                   </li>
                 ))}
               </ul>
@@ -583,14 +602,20 @@ function ProviderPicker({ providers, onClose, onCustom }: { providers: Provider[
   );
 }
 
-function CatalogItem({ provider: p }: { provider: Provider }) {
-  const tag = p.deprecated
-    ? { label: "Unofficial", tone: "warning" as const }
-    : !p.drivable
-      ? { label: "Coming soon", tone: "neutral" as const }
-      : p.auth_kind === "none"
-        ? { label: "Free", tone: "success" as const }
-        : null;
+function CatalogItem({ provider: p, accountCount }: { provider: Provider; accountCount: number }) {
+  const connected = accountCount > 0;
+  const tag = connected
+    ? { label: "Connected", tone: "success" as const }
+    : p.deprecated
+      ? { label: "Unofficial", tone: "warning" as const }
+      : !p.drivable
+        ? { label: "Coming soon", tone: "neutral" as const }
+        : p.auth_kind === "none"
+          ? { label: "Free", tone: "success" as const }
+          : null;
+  // Connected providers explain why they are still listed: picking one adds
+  // another account rather than reconnecting the existing ones.
+  const subtitle = connected ? `${accountCount} account${accountCount === 1 ? "" : "s"} · add another` : p.id;
   return (
     <Link
       to={`/providers/${p.id}`}
@@ -599,11 +624,11 @@ function CatalogItem({ provider: p }: { provider: Provider }) {
       <ProviderLogo icon={p.icon} name={p.display_name} size={24} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-fg">{p.display_name}</span>
-        <span className="block truncate font-mono text-[11.5px] text-fg-faint">{p.id}</span>
+        <span className={cn("block truncate text-[11.5px] text-fg-faint", !connected && "font-mono")}>{subtitle}</span>
       </span>
       {tag && (
         <Badge tone={tag.tone}>
-          {p.deprecated && <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
+          {connected ? <Check className="h-3 w-3" aria-hidden="true" /> : p.deprecated && <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
           {tag.label}
         </Badge>
       )}

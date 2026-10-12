@@ -116,3 +116,22 @@ func TestApplyPrependsAndIsIdempotent(t *testing.T) {
 func TestApplyNilRequest(t *testing.T) {
 	Apply(nil, Config{Block: "x"})
 }
+
+func TestRenderFillsKnownPlaceholders(t *testing.T) {
+	vars := map[string]string{"company": "Acme", "support.email": "help@acme.test", "blank": ""}
+	got := Render("Hi from {{company}} ({{ company }}). Mail {{support.email}}. {{blank}} {{missing}} {{bad name}}", vars)
+	want := "Hi from Acme (Acme). Mail help@acme.test. {{blank}} {{missing}} {{bad name}}"
+	if got != want {
+		t.Fatalf("Render = %q, want %q", got, want)
+	}
+	if got := Render("{{company}}", nil); got != "{{company}}" {
+		t.Fatalf("Render without vars = %q", got)
+	}
+}
+
+func TestCompileRendersVariables(t *testing.T) {
+	set := Compile([]Skill{{Prompt: "You work for {{company}}.", Enabled: true, Variables: map[string]string{"company": "Acme"}}})
+	if got := set.Block(Request{}); got != "You work for Acme." {
+		t.Fatalf("Block = %q", got)
+	}
+}

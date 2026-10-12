@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -149,8 +150,10 @@ var retryClient = &http.Client{
 var proxyTransports = newTransportCache(64)
 
 type transportPair struct {
-	pooled *http.Transport
-	fresh  *http.Transport
+	pooled http.RoundTripper
+	fresh  http.RoundTripper
+	// closers are the underlying transports, closed on eviction.
+	closers []*http.Transport
 }
 
 // transportCache is a small LRU of proxy transports. Proxy pools can rotate
@@ -182,8 +185,9 @@ func (c *transportCache) get(key string, build func() transportPair) transportPa
 		c.order = c.order[1:]
 		if old, ok := c.items[victim]; ok {
 			delete(c.items, victim)
-			old.pooled.CloseIdleConnections()
-			old.fresh.CloseIdleConnections()
+			for _, t := range old.closers {
+				t.CloseIdleConnections()
+			}
 		}
 	}
 	return tp
@@ -214,8 +218,58 @@ func proxyTransportsFor(creds core.Credentials) transportPair {
 				}
 			}
 		}
-		return transportPair{pooled: newTransport(proxy), fresh: newFreshConnTransport(proxy)}
+		pooled, fresh := newTransport(proxy), newFreshConnTransport(proxy)
+		pooled.OnProxyConnectResponse = rejectFailedProxyConnect
+		fresh.OnProxyConnectResponse = rejectFailedProxyConnect
+		tp := transportPair{pooled: pooled, fresh: fresh, closers: []*http.Transport{pooled, fresh}}
+		if creds.RelayURL != "" {
+			relay, err := url.Parse(creds.RelayURL)
+			if err != nil || relay.Host == "" {
+				relay = nil
+			}
+			tp.pooled = &relayTransport{base: pooled, relay: relay}
+			tp.fresh = &relayTransport{base: fresh, relay: relay}
+		}
+		return tp
 	})
+}
+
+// errProxyRejected marks a CONNECT the proxy answered with a non-200 status
+// (auth required, upstream unreachable, ...). net/http reports it as a bare
+// string error; the typed wrapper lets sendRequest recognise it as an egress
+// failure that never reached the provider.
+type errProxyRejected struct{ status string }
+
+func (e *errProxyRejected) Error() string { return "proxy rejected CONNECT: " + e.status }
+
+func rejectFailedProxyConnect(_ context.Context, _ *url.URL, _ *http.Request, resp *http.Response) error {
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return &errProxyRejected{status: resp.Status}
+}
+
+// relayTransport sends every request through a relay (vercel / cloudflare /
+// deno), which forwards it to the origin named by x-relay-target. Doing the
+// rewrite at the transport layer means every client built from the account's
+// egress context — chat, model discovery, quota, token bootstrap, redirects —
+// goes through the relay without each call site remembering to rewrite.
+type relayTransport struct {
+	base  http.RoundTripper
+	relay *url.URL
+}
+
+func (t *relayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.relay == nil {
+		if req.Body != nil {
+			req.Body.Close()
+		}
+		// Fail closed, as for an unparseable proxy URL.
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("invalid relay URL")}
+	}
+	out := req.Clone(req.Context())
+	httputil.RelayRequest(out, t.relay)
+	return t.base.RoundTrip(out)
 }
 
 // clientFor returns an http.Client configured with proxy settings from creds.
@@ -225,21 +279,6 @@ func clientFor(creds core.Credentials) *http.Client {
 		return sharedClient
 	}
 	return &http.Client{Transport: proxyTransportsFor(creds).pooled}
-}
-
-// relayRequest rewrites a request to go through a relay proxy. The relay
-// protocol uses x-relay-target (origin) and x-relay-path (path+query) headers.
-func relayRequest(req *http.Request, relayURL string) {
-	origOrigin := req.URL.Scheme + "://" + req.URL.Host
-	origPath := req.URL.Path
-	if req.URL.RawQuery != "" {
-		origPath += "?" + req.URL.RawQuery
-	}
-	req.Header.Set("x-relay-target", origOrigin)
-	req.Header.Set("x-relay-path", origPath)
-	relay, _ := url.Parse(relayURL)
-	req.URL = relay
-	req.Host = relay.Host
 }
 
 // requestBuilder constructs a fresh *http.Request. sendRequest may call it
@@ -286,12 +325,91 @@ func headerBudget(ctx context.Context) time.Duration {
 //     exactly once on a fresh connection. Replays are safe
 //     here because nothing reached the provider.
 //   - Transport failures are mapped to ProviderErrors via transportError.
+//   - When the account's proxy/relay itself is unreachable and its pool is
+//     not strict, the request is sent once more directly; a strict pool
+//     fails instead, so traffic never leaves from the server's own IP.
 func sendRequest(ctx context.Context, provider, model string, build requestBuilder) (*http.Response, error) {
 	resp, err := sendOnce(ctx, provider, model, build, proxyClient(ctx))
-	if err == nil || !shouldRetryFreshConnection(ctx, err) {
-		return resp, err
+	if err == nil {
+		return resp, nil
 	}
-	return sendOnce(ctx, provider, model, build, proxyClientForRetry(ctx))
+	if shouldRetryFreshConnection(ctx, err) {
+		resp, err = sendOnce(ctx, provider, model, build, proxyClientForRetry(ctx))
+		if err == nil {
+			return resp, nil
+		}
+	}
+	creds, _ := core.ProxyFromContext(ctx)
+	if !shouldFallBackDirect(ctx, creds, err) {
+		return nil, egressError(ctx, creds, provider, model, err)
+	}
+	slog.Warn("proxy pool unreachable; sending request directly (pool is not strict)",
+		"provider", provider, "model", model, "account", creds.AccountID, "error", err)
+	return sendOnce(core.WithProxy(ctx, core.Credentials{}), provider, model, build, sharedClient)
+}
+
+// egressError re-scopes a failure of the proxy/relay hop itself. Nothing
+// reached the provider, so it must not cool down the account, model or
+// provider (that would keep the account parked — reported as a rate limit —
+// even after the proxy is fixed). Request scope lets the chain move on to
+// other accounts while this one is retried on the next request.
+func egressError(ctx context.Context, creds core.Credentials, provider, model string, err error) error {
+	if ctx.Err() != nil || (creds.ProxyURL == "" && creds.RelayURL == "") {
+		return err
+	}
+	pe := core.AsProviderError(err)
+	if pe == nil || pe.StatusCode != 0 || pe.Cause == nil || !isEgressFailure(pe.Cause, creds.RelayURL != "") {
+		return err
+	}
+	hop := "proxy"
+	if creds.ProxyURL == "" {
+		hop = "relay"
+	}
+	slog.Warn("proxy pool unreachable; request failed (strict mode, no direct fallback)",
+		"provider", provider, "model", model, "account", creds.AccountID, "hop", hop, "error", pe.Cause)
+	return &core.ProviderError{
+		Kind: core.ErrUpstream, Scope: core.FailureScopeRequest, Provider: provider, Model: model,
+		Message: hop + " unreachable (strict proxy pool): " + pe.Cause.Error(),
+		Cause:   pe.Cause,
+	}
+}
+
+// shouldFallBackDirect reports whether a failed proxied request may be replayed
+// without the proxy: the account's pool is non-strict and the failure happened
+// while reaching the proxy or relay, so nothing was delivered to the provider.
+func shouldFallBackDirect(ctx context.Context, creds core.Credentials, err error) bool {
+	if ctx.Err() != nil || creds.StrictProxy || (creds.ProxyURL == "" && creds.RelayURL == "") {
+		return false
+	}
+	pe := core.AsProviderError(err)
+	if pe.StatusCode != 0 || pe.Cause == nil {
+		return false
+	}
+	return isEgressFailure(pe.Cause, creds.RelayURL != "")
+}
+
+// isEgressFailure reports whether err came from the proxy or relay hop rather
+// than from the provider.
+func isEgressFailure(err error, relay bool) bool {
+	var rejected *errProxyRejected
+	if errors.As(err, &rejected) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Op == "proxyconnect" {
+			return true
+		}
+		// In relay mode every dial goes to the relay host.
+		if relay && opErr.Op == "dial" {
+			return true
+		}
+	}
+	var dnsErr *net.DNSError
+	if relay && errors.As(err, &dnsErr) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "socks connect")
 }
 
 func sendOnce(ctx context.Context, provider, model string, build requestBuilder, client *http.Client) (*http.Response, error) {
@@ -299,8 +417,6 @@ func sendOnce(ctx context.Context, provider, model string, build requestBuilder,
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
 	}
-	proxyRewrite(ctx, req)
-
 	budget := headerBudget(ctx)
 	if budget <= 0 {
 		resp, err := client.Do(req)
@@ -1001,13 +1117,30 @@ func proxyClientForRetry(ctx context.Context) *http.Client {
 	return &http.Client{Transport: proxyTransportsFor(creds).fresh}
 }
 
-// proxyRewrite applies relay header rewriting to req if ctx carries a RelayURL.
-func proxyRewrite(ctx context.Context, req *http.Request) {
-	creds, ok := core.ProxyFromContext(ctx)
-	if !ok || creds.RelayURL == "" {
-		return
+// proxyDo sends a request built outside sendRequest through the account's
+// egress route from ctx (proxy pool, relay or global proxy).
+func proxyDo(ctx context.Context, req *http.Request) (*http.Response, error) {
+	return proxyClient(ctx).Do(req)
+}
+
+// EgressClient returns a client that sends through the egress route carried
+// by ctx (core.WithProxy), for account-scoped calls made outside connectors.
+// timeout bounds each request like http.Client.Timeout; zero means none.
+func EgressClient(ctx context.Context, timeout time.Duration) *http.Client {
+	base := proxyClient(ctx)
+	return &http.Client{Transport: base.Transport, Timeout: timeout}
+}
+
+// egressCtx returns ctx carrying creds' egress route when the caller has not
+// already put one there (e.g. model discovery called with bare credentials).
+func egressCtx(ctx context.Context, creds core.Credentials) context.Context {
+	if existing, ok := core.ProxyFromContext(ctx); ok && (existing.ProxyURL != "" || existing.RelayURL != "") {
+		return ctx
 	}
-	relayRequest(req, creds.RelayURL)
+	if creds.ProxyURL == "" && creds.RelayURL == "" {
+		return ctx
+	}
+	return core.WithProxy(ctx, creds)
 }
 
 // mergeHeaders combines connector defaults with credential-supplied headers.

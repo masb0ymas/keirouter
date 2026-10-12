@@ -4,6 +4,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -166,12 +167,35 @@ func (s *Server) loginRateLimiter(next http.Handler) http.Handler {
 	})
 }
 
-// authFailureBlocked rejects an IP that has sent too many invalid API keys
-// (limits.auth_failures_per_minute) before its next key is verified, so a
-// key-guessing client cannot keep burning hash verifications. It reports
-// whether the request was rejected.
+// authFailureIP returns the IP that invalid API keys are counted against, or
+// false for loopback clients: those are the operator's own tools (or a
+// reverse proxy on the same host, which would merge every client into one
+// bucket), not a remote key-guessing client.
+func authFailureIP(r *http.Request) (string, bool) {
+	ip := extractIP(r)
+	if addr, err := netip.ParseAddr(ip); err == nil && addr.IsLoopback() {
+		return "", false
+	}
+	return ip, true
+}
+
+// recordAuthFailure counts an invalid API key against the client IP.
+func (s *Server) recordAuthFailure(r *http.Request) {
+	if ip, ok := authFailureIP(r); ok {
+		s.authFailures.Record(ip)
+	}
+}
+
+// authFailureBlocked rejects an invalid API key from an IP that has already
+// sent too many (limits.auth_failures_per_minute), so a key-guessing client is
+// slowed down. Callers check it only after a key fails verification; valid
+// keys are never refused here. It reports whether the request was rejected.
 func (s *Server) authFailureBlocked(w http.ResponseWriter, r *http.Request) bool {
-	blocked, retryAfter := s.authFailures.Exceeded(extractIP(r))
+	ip, ok := authFailureIP(r)
+	if !ok {
+		return false
+	}
+	blocked, retryAfter := s.authFailures.Exceeded(ip)
 	if !blocked {
 		return false
 	}
@@ -187,7 +211,9 @@ func (s *Server) authFailureBlocked(w http.ResponseWriter, r *http.Request) bool
 //
 // maxConcurrent is tuned for typical AI gateway workloads: long-lived
 // streaming connections that hold resources for seconds to minutes.
-func concurrencyLimiter(maxConcurrent int) func(http.Handler) http.Handler {
+//
+// onReject, when non-nil, is called for every request turned away.
+func concurrencyLimiter(maxConcurrent int, onReject func(*http.Request)) func(http.Handler) http.Handler {
 	sem := make(chan struct{}, maxConcurrent)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +222,9 @@ func concurrencyLimiter(maxConcurrent int) func(http.Handler) http.Handler {
 				defer func() { <-sem }()
 				next.ServeHTTP(w, r)
 			default:
+				if onReject != nil {
+					onReject(r)
+				}
 				writeError(w, http.StatusServiceUnavailable,
 					"server is at capacity, please retry shortly")
 			}

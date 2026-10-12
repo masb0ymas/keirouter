@@ -338,6 +338,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			rlRetries++
 			p.log.Warn("all chat attempts hit rate-limit, waiting to retry",
 				"wait", wait, "retry", rlRetries, "of", maxRateLimitRetries)
+			noteRateLimitWait(ctx, wait, rlRetries, maxRateLimitRetries)
 			waitedAt := time.Now()
 			if !sleepCtx(ctx, wait) {
 				break
@@ -468,6 +469,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			req.Metadata.FallbackCount++
 			p.log.Warn("chat attempt failed, falling back",
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+			noteAttemptFailed(ctx, attempt.Target.Provider, attempt.Target.Model, pe)
 			attempt = nextAttempt
 			continue
 		}
@@ -570,6 +572,15 @@ type StreamResult struct {
 	// DirectBody stream terminates. A nil error records successful usage; a
 	// provider/stall error updates cooldown and failure telemetry instead.
 	DirectCompleteFunc func(error)
+	// DirectStats is filled in by DirectCompleteFunc with the usage and cost
+	// parsed from the relayed stream, for the gateway's request log.
+	DirectStats *DirectStats
+}
+
+// DirectStats summarizes a completed zero-copy stream.
+type DirectStats struct {
+	Tokens     int
+	CostMicros int64
 }
 
 // maxRateLimitRetries bounds re-dispatch after every candidate was temporarily
@@ -667,6 +678,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		rlRetries++
 		p.log.Warn("all stream attempts hit rate-limit, waiting to retry",
 			"wait", wait, "retry", rlRetries, "of", maxRateLimitRetries)
+		noteRateLimitWait(ctx, wait, rlRetries, maxRateLimitRetries)
 		waitedAt := time.Now()
 		select {
 		case <-time.After(wait):
@@ -812,6 +824,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 					req.Metadata.FallbackCount++
 					p.log.Warn("direct stream attempt failed, falling back",
 						"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+					noteAttemptFailed(ctx, attempt.Target.Provider, attempt.Target.Model, pe)
 					attempt = nextAttempt
 					continue
 				}
@@ -840,6 +853,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 				saveCopy := save
 				budgetScope := scope
 				var completeOnce sync.Once
+				stats := &DirectStats{}
 				completeFunc := func(streamErr error) {
 					completeOnce.Do(func() {
 						var settled int64
@@ -847,6 +861,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 						recordCtx := context.WithoutCancel(ctx)
 						usage := capturedStreamUsage(req, capture.Bytes())
 						settled = usageTokens(usage)
+						stats.Tokens = int(settled)
 						if errors.Is(streamErr, context.Canceled) {
 							usage = partialStreamUsage(req, usage, 0)
 							settled = usageTokens(usage)
@@ -868,6 +883,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 						p.dispatcher.NoteSuccessAt(recordCtx, acc.Target.Provider, acc.Account.ID, acc.Target.Model, started)
 						cost := p.recordWithTTFT(recordCtx, meta, acc, usage, false,
 							totalLatency, time.Since(requestStarted), ttft, saveCopy, fellBack)
+						stats.CostMicros = cost
 						p.budgetConfirm(budgetScope, cost)
 					})
 				}
@@ -877,6 +893,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 					Model:              attempt.Target.Model,
 					AccountID:          attempt.Account.ID,
 					DirectCompleteFunc: completeFunc,
+					DirectStats:        stats,
 				}, nil, false, attempt, 0, fellBack
 			}
 		}
@@ -919,6 +936,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			req.Metadata.FallbackCount++
 			p.log.Warn("stream attempt failed, falling back",
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+			noteAttemptFailed(ctx, attempt.Target.Provider, attempt.Target.Model, pe)
 			attempt = nextAttempt
 			continue
 		}
@@ -952,6 +970,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			req.Metadata.FallbackCount++
 			p.log.Warn("stream rejected before output, falling back",
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+			noteAttemptFailed(ctx, attempt.Target.Provider, attempt.Target.Model, pe)
 			attempt = nextAttempt
 			continue
 		}
@@ -1078,11 +1097,21 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 	// blocked before any of it reaches the client, including matches split
 	// across chunks. It is nil when no outbound detector is enabled.
 	guard := p.guardrails.NewStreamGuard(ctx, req)
+	// meta was copied before the guard existed; pick up an outcome the guard
+	// may have attached so the usage row records it.
+	meta.Guardrail = req.Metadata.Guardrail
+
+	// delivered reports whether any output chunk already reached the client,
+	// which makes a later guardrail block a mid-stream cut.
+	delivered := false
 
 	// blockStream ends the stream with a policy refusal and settles usage
 	// for the output generated so far.
 	blockStream := func(reason string) {
 		p.log.Debug("guardrails blocked streaming output", "reason", reason)
+		if delivered {
+			meta.Guardrail.MarkMidStream()
+		}
 		select {
 		case out <- core.StreamChunk{
 			Type: core.ChunkError,
@@ -1125,6 +1154,7 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 		}
 		select {
 		case out <- core.StreamChunk{Type: core.ChunkText, Delta: text}:
+			delivered = true
 			return true
 		case <-ctx.Done():
 			settleClientCancellation()
@@ -1267,6 +1297,9 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 
 			select {
 			case out <- chunk:
+				if chunk.Type != core.ChunkUsage {
+					delivered = true
+				}
 			case <-ctx.Done():
 				settleClientCancellation()
 				return
@@ -1910,6 +1943,7 @@ func (p *Pipeline) recordOutcomeWithTTFT(ctx context.Context, meta core.RequestM
 		Latency:         upstreamLatency,
 		EndToEndLatency: endToEndLatency,
 		TTFT:            ttft,
+		Guardrail:       meta.Guardrail.Summary(),
 	}
 	if save != nil {
 		ev.SlimStats = save.slimSnap

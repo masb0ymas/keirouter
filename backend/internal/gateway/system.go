@@ -153,9 +153,9 @@ func (h *systemHistory) samples() []SystemSample {
 // Global; shared between the background collector and HTTP handlers.
 var sysHistory = newSystemHistory()
 
-// sysMonitor owns the CPU counters and the latest snapshot. Only the
-// collector goroutine calls collect, so the previous-counter fields need no
-// lock; latest is guarded because handlers read it.
+// sysMonitor owns the CPU counters and the latest snapshot. collectMu
+// serializes collect, which owns the previous-counter fields; latest is
+// guarded separately because handlers read it.
 //
 // CPU percentages are computed from our own counter deltas instead of
 // gopsutil's Percent(0) helpers: those keep one package-global "last call"
@@ -171,6 +171,7 @@ type sysMonitor struct {
 	hostName, osName, arch, cpuModel string
 	bootTime                         uint64
 
+	collectMu sync.Mutex
 	prevHost  cpu.TimesStat
 	prevCores []cpu.TimesStat
 	prevProc  float64 // process user+system CPU seconds
@@ -254,6 +255,8 @@ func (m *sysMonitor) snapshot() SystemSnapshot {
 // collect reads every counter once, computes CPU usage over the time since
 // the previous call, stores the snapshot and returns it.
 func (m *sysMonitor) collect() SystemSnapshot {
+	m.collectMu.Lock()
+	defer m.collectMu.Unlock()
 	now := time.Now()
 	s := SystemSnapshot{
 		SampledAt: now.Unix(),
@@ -426,11 +429,21 @@ func sampleFromSnapshot(s SystemSnapshot) SystemSample {
 	}
 }
 
+var sysCollectorOnce sync.Once
+
 // startSystemCollector launches the background goroutine that samples system
 // metrics every 5 seconds into the ring buffer. If resRepo is non-nil, every
 // 15 seconds it also writes a resource row (CPU averaged over the ticks since
 // the previous row) and hourly prunes rows older than 7 days.
+//
+// The monitor and ring buffer are process-wide, so only the first call starts
+// a collector (later calls, e.g. extra Servers in tests, are no-ops): a second
+// collector would push duplicate samples and halve the CPU window.
 func startSystemCollector(resRepo *store.ResourceRepo) {
+	sysCollectorOnce.Do(func() { runSystemCollector(resRepo) })
+}
+
+func runSystemCollector(resRepo *store.ResourceRepo) {
 	mon := sysMon()
 	// Prime the CPU counters; the first real sample follows after a short
 	// window so the page isn't empty (or showing 0% CPU) right after boot.

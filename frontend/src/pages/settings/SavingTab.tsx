@@ -4,6 +4,7 @@ import { CheckCircle2, ExternalLink, Minimize2, RefreshCw, Scissors, XCircle } f
 import { ICONS } from "../../lib/icons";
 import { api, type EndpointSettings, type HeadroomTestResult } from "../../lib/api";
 import { Button } from "../../components/ui";
+import { CodeBlock } from "../../components/ui/code-block";
 import {
   Code,
   Disclosure,
@@ -331,16 +332,16 @@ function HeadroomHelp() {
               Install the <Code>headroom</Code> CLI from the Python package (the npm package is a library only), then start
               it:
             </p>
-            <pre
-              tabIndex={0}
+            <CodeBlock
+              className="mt-2"
+              language="bash"
               aria-label="Headroom install commands"
-              className="mt-2 overflow-x-auto rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12px] leading-5 text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-            >
-              <code>{`pipx install "headroom-ai[all]"   # needs Python 3.10+ (or: pip install --user)
+              copyToast="Commands copied"
+              code={`pipx install "headroom-ai[all]"   # needs Python 3.10+ (or: pip install --user)
 pipx ensurepath                   # add headroom to PATH, then restart your shell
 headroom proxy --port 8787
-headroom doctor                   # verify it's working`}</code>
-            </pre>
+headroom doctor                   # verify it's working`}
+            />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span>

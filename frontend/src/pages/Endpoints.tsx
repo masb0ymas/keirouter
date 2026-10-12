@@ -6,6 +6,8 @@ import { ICONS } from "../lib/icons";
 import { api, type TailscaleEnableResult } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
+import { CodeBlock, CopyButton } from "../components/ui/code-block";
+import type { CodeLanguage } from "../lib/highlight";
 import {
   Card,
   Button,
@@ -26,8 +28,6 @@ const REACHABLE_MISS_THRESHOLD = 5;
 
 const LINK_BUTTON =
   "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-[13px] font-medium text-fg transition-colors duration-150 hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 [&_svg]:size-4 [&_svg]:shrink-0";
-const ICON_BUTTON =
-  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-fg-faint transition-colors hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 sm:h-7 sm:w-7";
 
 // ---------------------------------------------------------------------------
 // Brand SVG logos (monochrome; colour is reserved for meaning)
@@ -72,19 +72,7 @@ function useCopy() {
 }
 
 function CopyIconButton({ value, title, label }: { value: string; title: string; label: string }) {
-  const copy = useCopy();
-  return (
-    <button
-      type="button"
-      className={ICON_BUTTON}
-      disabled={!value}
-      aria-label={label}
-      title={label}
-      onClick={() => value && void copy(value, title, value.length < 120 ? value : undefined)}
-    >
-      <Copy className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-    </button>
-  );
+  return <CopyButton value={value} label={label} toast={title} className="text-fg-faint" />;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,13 +293,14 @@ const SNIPPET_TABS: { value: SnippetId; label: string; icon: LucideIcon }[] = [
   { value: "env", label: "Environment", icon: Variable },
 ];
 
-function buildSnippet(id: SnippetId, apiBase: string): { code: string; note: string } {
+function buildSnippet(id: SnippetId, apiBase: string): { code: string; note: string; language: CodeLanguage; filename?: string } {
   const base = apiBase || "http://localhost:PORT/v1";
   const origin = originOf(base);
   switch (id) {
     case "curl":
       return {
         note: "Use any model ID from GET /v1/models.",
+        language: "bash",
         code: `curl ${base}/chat/completions \\
   -H "Authorization: Bearer $KEIROUTER_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -323,6 +312,7 @@ function buildSnippet(id: SnippetId, apiBase: string): { code: string; note: str
     case "python":
       return {
         note: "Any OpenAI-compatible SDK takes the same base URL.",
+        language: "python",
         code: `import os
 from openai import OpenAI
 
@@ -340,6 +330,7 @@ print(resp.choices[0].message.content)`,
     case "node":
       return {
         note: "Works in Node.js, Deno and Bun.",
+        language: "js",
         code: `import OpenAI from "openai";
 
 const client = new OpenAI({
@@ -356,8 +347,9 @@ console.log(resp.choices[0].message.content);`,
     case "claude":
       return {
         note: "Anthropic clients add /v1 themselves, so omit it.",
-        code: `# ~/.claude/settings.json
-{
+        language: "json",
+        filename: "~/.claude/settings.json",
+        code: `{
   "env": {
     "ANTHROPIC_BASE_URL": "${origin}",
     "ANTHROPIC_AUTH_TOKEN": "<your KeiRouter key>"
@@ -367,6 +359,7 @@ console.log(resp.choices[0].message.content);`,
     case "env":
       return {
         note: "OpenAI clients expect /v1; Anthropic clients don't.",
+        language: "bash",
         code: `export KEIROUTER_API_KEY="<your KeiRouter key>"
 export OPENAI_BASE_URL="${base}"
 export OPENAI_API_KEY="$KEIROUTER_API_KEY"
@@ -426,14 +419,13 @@ function QuickStartCard({ apiBase, action }: { apiBase: string; action: ReactNod
         })}
       </div>
       <div id={panelId} role="tabpanel" aria-labelledby={tabId(tab)} className="p-4">
-        <div className="relative rounded-lg border border-line bg-subtle">
-          <div className="absolute right-1.5 top-1.5">
-            <CopyIconButton value={snippet.code} title={`${label} snippet copied`} label={`Copy ${label} snippet`} />
-          </div>
-          <pre className="overflow-x-auto px-4 py-3 pr-12 font-mono text-[12.5px] leading-relaxed text-fg" tabIndex={0} aria-label={`${label} snippet`}>
-            <code>{snippet.code}</code>
-          </pre>
-        </div>
+        <CodeBlock
+          code={snippet.code}
+          language={snippet.language}
+          title={snippet.filename ? <span className="font-mono">{snippet.filename}</span> : label}
+          copyToast={`${label} snippet copied`}
+          aria-label={`${label} snippet`}
+        />
         <div className="mt-2 flex flex-col gap-1 text-[12px] text-fg-muted sm:flex-row sm:items-center sm:justify-between">
           <p className="text-pretty">{snippet.note}</p>
           <Link

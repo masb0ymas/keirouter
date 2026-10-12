@@ -361,7 +361,7 @@ function Sidebar() {
 
       <nav aria-label="Primary" className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 pb-4 pt-2">
         {navGroups.map((group, gi) => (
-          <div key={gi} data-tone={group.tone} className={gi > 0 ? "mt-5" : undefined}>
+          <div key={gi} data-tone={group.tone} className={gi > 0 ? "mt-4" : undefined}>
             {group.heading && (
               <h2 id={`${navId}-group-${gi}`} className="px-2.5 pb-1.5 text-[11.5px] font-medium text-fg-faint">
                 {group.heading}
@@ -447,24 +447,22 @@ function GatewayStatus() {
   // The state is always written out; the dot only repeats it.
   const label = info.isError ? "Gateway unreachable" : data ? "Gateway running" : "Checking gateway…";
   return (
-    <section aria-label="Gateway status" className="m-2.5 mt-0 rounded-2xl border border-line bg-subtle px-3 py-2.5">
+    <section aria-label="Gateway status" className="m-2.5 mt-0 rounded-xl border border-line bg-subtle px-3 py-2">
       <div className="flex items-center gap-2 text-[12px] font-medium text-fg" role="status">
         <span
-          className={cn("h-1.5 w-1.5 rounded-full", info.isError ? "bg-bad" : data ? "live-dot bg-ok" : "bg-fg-faint")}
+          className={cn("h-1.5 w-1.5 shrink-0 rounded-full", info.isError ? "bg-bad" : data ? "live-dot bg-ok" : "bg-fg-faint")}
           aria-hidden="true"
         />
-        {label}
+        <span className="truncate">{label}</span>
+        {data && <span className="ml-auto shrink-0 text-[11.5px] font-normal tabular-nums text-fg-faint">Up {formatUptime(data.uptime_s)}</span>}
       </div>
       {data && (
-        <>
-          <p className="mt-1 truncate font-mono text-[11.5px] text-fg-muted" title={data.listen_addr}>
+        <div className="mt-0.5 flex items-center justify-between gap-2 text-[11.5px]">
+          <span className="truncate font-mono text-fg-muted" title={data.listen_addr}>
             {data.listen_addr}
-          </p>
-          <div className="mt-1 flex justify-between text-[11.5px] text-fg-faint">
-            <span>Up {formatUptime(data.uptime_s)}</span>
-            <span>{data.dialect === "postgres" ? "Postgres" : "SQLite"}</span>
-          </div>
-        </>
+          </span>
+          <span className="shrink-0 text-fg-faint">{data.dialect === "postgres" ? "Postgres" : "SQLite"}</span>
+        </div>
       )}
     </section>
   );

@@ -1,9 +1,20 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, Copy, Check, MoreHorizontal, ExternalLink, AlertCircle, BookOpen, Binary, AudioLines, Mic, Search, Pencil, NotebookPen, Info, type LucideIcon } from "lucide-react";
+import { Plus, Trash2, Copy, Check, MoreHorizontal, ExternalLink, AlertCircle, BookOpen, Binary, AudioLines, Mic, Search, Pencil, NotebookPen, Info, LayoutTemplate, ArrowRight, type LucideIcon } from "lucide-react";
 import { ICONS } from "../lib/icons";
 import { api, type APIKey, type Plan, type Skill, type SkillScope } from "../lib/api";
+import {
+  SKILL_TEMPLATE_CATEGORIES,
+  SKILL_TEMPLATES,
+  placeholderNames,
+  renderPrompt,
+  templateById,
+  variableExample,
+  variableLabel,
+  type SkillTemplate,
+  type SkillTemplateCategory,
+} from "../lib/skillTemplates";
 import { ModelMultiSelect } from "../components/ModelSelect";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
@@ -50,6 +61,7 @@ const ENDPOINT_SKILLS = REFERENCE_SKILLS.filter((skill) => skill.group !== "entr
 
 // Mirrors the gateway's limit in backend/internal/gateway/skills.go.
 const MAX_PROMPT_CHARS = 20000;
+const MAX_VARIABLE_CHARS = 1000;
 // Above this many injected tokens every request pays a noticeable tax.
 const HEAVY_TOKENS = 2000;
 
@@ -74,8 +86,12 @@ type Draft = {
   keys: string[];
   modelMode: Mode;
   models: string[];
+  /** Values for the prompt's {{placeholders}}. */
+  variables: Record<string, string>;
+  /** Template the draft started from; drives the scope tip in the editor. */
+  template?: string;
 };
-const EMPTY_DRAFT: Draft = { name: "", description: "", prompt: "", optional: false, audience: "all", plans: [], keys: [], modelMode: "all", models: [] };
+const EMPTY_DRAFT: Draft = { name: "", description: "", prompt: "", optional: false, audience: "all", plans: [], keys: [], modelMode: "all", models: [], variables: {} };
 
 const draftFromSkill = (sk: Skill): Draft => {
   const plans = sk.scope?.plans ?? [];
@@ -92,8 +108,28 @@ const draftFromSkill = (sk: Skill): Draft => {
     keys,
     modelMode: models.length ? "specific" : "all",
     models,
+    variables: { ...sk.variables },
   };
 };
+
+// draftFromTemplate pre-fills the template's variables with values already
+// used by other skills, so e.g. the company name is typed only once.
+const draftFromTemplate = (t: SkillTemplate, known: Record<string, string>): Draft => ({
+  ...EMPTY_DRAFT,
+  name: t.name,
+  description: t.description,
+  prompt: t.prompt,
+  optional: t.optional,
+  variables: Object.fromEntries(placeholderNames(t.prompt).filter((n) => known[n]).map((n) => [n, known[n]])),
+  template: t.id,
+});
+
+// Only variables the prompt still uses, with a value, are saved.
+const draftVariables = (d: Draft) =>
+  Object.fromEntries(placeholderNames(d.prompt).map((n) => [n, d.variables[n]?.trim() ?? ""]).filter(([, v]) => v));
+
+// What the model receives: the prompt with its variables filled in.
+const renderedPrompt = (sk: Pick<Skill, "prompt" | "variables">) => renderPrompt(sk.prompt, sk.variables ?? {});
 
 const draftScope = (d: Draft): SkillScope => ({
   plans: d.audience === "specific" ? d.plans : [],
@@ -124,7 +160,7 @@ export function SkillsPage() {
 
   const save = useMutation({
     mutationFn: (d: Draft) => {
-      const body = { name: d.name.trim(), description: d.description.trim(), prompt: d.prompt.trim(), optional: d.optional, scope: draftScope(d) };
+      const body = { name: d.name.trim(), description: d.description.trim(), prompt: d.prompt.trim(), optional: d.optional, scope: draftScope(d), variables: draftVariables(d) };
       return d.id ? api.updateSkill(d.id, body) : api.createSkill(body);
     },
     onSuccess: (_, d) => {
@@ -177,8 +213,10 @@ export function SkillsPage() {
 
   const custom = skills.data?.skills ?? [];
   const active = custom.filter((sk) => sk.enabled && sk.prompt.trim());
-  const everyTokens = active.filter(isGlobal).reduce((sum, sk) => sum + estimateTokens(sk.prompt), 0);
-  const maxTokens = active.reduce((sum, sk) => sum + estimateTokens(sk.prompt), 0);
+  const everyTokens = active.filter(isGlobal).reduce((sum, sk) => sum + estimateTokens(renderedPrompt(sk)), 0);
+  const maxTokens = active.reduce((sum, sk) => sum + estimateTokens(renderedPrompt(sk)), 0);
+  // Variable values already in use, offered to new skills from templates.
+  const knownVariables = useMemo(() => Object.assign({}, ...custom.map((sk) => sk.variables ?? {})) as Record<string, string>, [custom]);
   const isEmpty = !skills.isLoading && !skills.isError && custom.length === 0;
 
   return (
@@ -248,6 +286,12 @@ export function SkillsPage() {
                   Create skill
                 </Button>
               )}
+              secondaryAction={(
+                <Button variant="ghost" onClick={() => document.getElementById("skill-templates")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                  Or start from a template
+                  <ArrowRight aria-hidden="true" />
+                </Button>
+              )}
             />
           ) : (
             <ul className="divide-y divide-line">
@@ -259,12 +303,15 @@ export function SkillsPage() {
                   onToggle={(enabled) => toggle.mutate({ id: sk.id, enabled })}
                   onEdit={() => openEditor(draftFromSkill(sk))}
                   onDelete={() => deleteSkill(sk)}
-                  onCopyPrompt={() => copyText(sk.prompt, `Prompt for ${sk.name}`)}
+                  onCopyPrompt={() => copyText(renderedPrompt(sk), `Prompt for ${sk.name}`)}
                 />
               ))}
             </ul>
           )}
         </section>
+
+        {/* Templates */}
+        <SkillTemplates onUse={(t) => openEditor(draftFromTemplate(t, knownVariables))} />
 
         {/* Reference skills */}
         <ReferenceSkills />
@@ -336,10 +383,15 @@ function SkillEditor({
 }) {
   const d = draft ?? EMPTY_DRAFT;
   const editing = !!d.id;
-  const chars = d.prompt.trim().length;
-  const over = chars > MAX_PROMPT_CHARS;
   const audienceMissing = d.audience === "specific" && d.plans.length + d.keys.length === 0;
   const modelsMissing = d.modelMode === "specific" && d.models.length === 0;
+  const template = editing ? undefined : templateById(d.template);
+  const variableNames = placeholderNames(d.prompt);
+  const emptyVariables = variableNames.filter((n) => !d.variables[n]?.trim());
+  const rendered = renderPrompt(d.prompt, d.variables);
+  // The gateway limits both the stored and the filled-in prompt.
+  const chars = Math.max(d.prompt.trim().length, rendered.trim().length);
+  const over = chars > MAX_PROMPT_CHARS;
   const canSave = !!d.name.trim() && !over && !audienceMissing && !modelsMissing && !pending;
   const toggleIn = (list: string[], id: string) => (list.includes(id) ? list.filter((v) => v !== id) : [...list, id]);
 
@@ -359,6 +411,15 @@ function SkillEditor({
         aria-busy={pending || undefined}
       >
         <div className="max-h-[calc(100dvh-15rem)] space-y-4 overflow-y-auto px-4 py-4 sm:max-h-[70vh] sm:px-5">
+          {template && (
+            <div className="flex items-start gap-2 rounded-lg border border-line bg-subtle px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+              <LayoutTemplate className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+              <p>
+                Started from the <span className="font-medium text-fg">{template.name}</span> template — adjust it to your use case before saving.
+                {template.scopeTip && <> {template.scopeTip}</>}
+              </p>
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Name" required>
               <Input value={d.name} onChange={(e) => onChange({ ...d, name: e.target.value })} placeholder="Concise reviewer" maxLength={80} autoFocus />
@@ -371,9 +432,11 @@ function SkillEditor({
             label="Prompt"
             hint={(
               <span className="flex justify-between gap-3">
-                <span>Write it as a direct instruction to the model.</span>
+                <span>
+                  Write it as a direct instruction. Use <code className="font-mono text-[11.5px]">{"{{name}}"}</code> for values you fill in below.
+                </span>
                 <span className={`shrink-0 tabular-nums ${over ? "text-bad" : ""}`}>
-                  {chars.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()} · {formatTokens(estimateTokens(d.prompt))}
+                  {chars.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()} · {formatTokens(estimateTokens(rendered))}
                 </span>
               </span>
             )}
@@ -388,6 +451,42 @@ function SkillEditor({
               className="font-mono text-[12px]"
             />
           </Field>
+          {variableNames.length > 0 && (
+            <fieldset className="space-y-3 rounded-xl border border-line p-4 pt-1 [&>legend]:mb-0">
+              <legend className="px-1 text-[12.5px] font-semibold text-fg">Variables</legend>
+              <p className="text-[12px] leading-5 text-fg-muted">
+                Filled into the prompt's placeholders on every request — change a value here instead of editing the text.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {variableNames.map((name) => {
+                  const example = variableExample(name);
+                  return (
+                    <Field key={name} label={variableLabel(name)} hint={<code className="font-mono text-[11.5px]">{`{{${name}}}`}</code>}>
+                      <Input
+                        value={d.variables[name] ?? ""}
+                        onChange={(e) => onChange({ ...d, variables: { ...d.variables, [name]: e.target.value } })}
+                        placeholder={example ? `e.g. ${example}` : undefined}
+                        maxLength={MAX_VARIABLE_CHARS}
+                        aria-label={variableLabel(name)}
+                      />
+                    </Field>
+                  );
+                })}
+              </div>
+              {emptyVariables.length > 0 && (
+                <p className="flex items-start gap-1.5 text-[12px] leading-5 text-warn">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+                  {emptyVariables.length === 1 ? "1 variable is empty" : `${emptyVariables.length} variables are empty`} — the model receives the raw placeholder until you fill {emptyVariables.length === 1 ? "it" : "them"} in.
+                </p>
+              )}
+              <details className="group rounded-lg border border-line">
+                <summary className={`cursor-pointer select-none rounded-lg px-3 py-2 text-[12.5px] font-medium text-fg-muted hover:text-fg ${focusRing}`}>
+                  Preview what the model receives
+                </summary>
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-line px-3 py-2.5 font-mono text-[12px] leading-5 text-fg">{rendered || "—"}</pre>
+              </details>
+            </fieldset>
+          )}
 
           <fieldset className="space-y-4 rounded-xl border border-line p-4 pt-1 [&>legend]:mb-0">
             <legend className="px-1 text-[12.5px] font-semibold text-fg">Applies to</legend>
@@ -589,7 +688,7 @@ function SkillRow({
   onDelete: () => void;
   onCopyPrompt: () => void;
 }) {
-  const tokens = estimateTokens(skill.prompt);
+  const tokens = estimateTokens(renderedPrompt(skill));
   const updated = new Date(skill.updated_at || skill.created_at);
   const updatedLabel = Number.isNaN(updated.getTime())
     ? undefined
@@ -605,7 +704,7 @@ function SkillRow({
             {skill.description && <span className="truncate text-[12px] text-fg-muted">{skill.description}</span>}
           </span>
           {skill.prompt ? (
-            <span className="mt-1 line-clamp-2 font-mono text-[12px] leading-5 text-fg-muted">{skill.prompt}</span>
+            <span className="mt-1 line-clamp-2 font-mono text-[12px] leading-5 text-fg-muted">{renderedPrompt(skill)}</span>
           ) : (
             <span className="mt-1 block text-[12px] italic text-fg-faint">No prompt — adds nothing to requests</span>
           )}
@@ -645,6 +744,94 @@ function SkillRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </span>
+    </li>
+  );
+}
+
+// TEMPLATES_PREVIEW is how many templates "All" shows before "Show all".
+const TEMPLATES_PREVIEW = 6;
+const CATEGORY = new Map(SKILL_TEMPLATE_CATEGORIES.map((c) => [c.value, c]));
+
+// SkillTemplates is a gallery of starter skills and personas. Picking one only
+// pre-fills the editor; nothing is saved until the operator creates it.
+function SkillTemplates({ onUse }: { onUse: (t: SkillTemplate) => void }) {
+  const [category, setCategory] = useState<SkillTemplateCategory | "all">("all");
+  const [expanded, setExpanded] = useState(false);
+  const filtered = category === "all" ? SKILL_TEMPLATES : SKILL_TEMPLATES.filter((t) => t.category === category);
+  const collapsed = category === "all" && !expanded && filtered.length > TEMPLATES_PREVIEW;
+  const shown = collapsed ? filtered.slice(0, TEMPLATES_PREVIEW) : filtered;
+
+  return (
+    <section id="skill-templates" aria-labelledby="skill-templates-heading" className="scroll-mt-4 overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
+      <div className="space-y-3 border-b border-line px-4 py-3">
+        <SectionTitle
+          id="skill-templates-heading"
+          icon={LayoutTemplate}
+          title={(
+            <>
+              Templates
+              <span className="ml-2 text-[12px] font-normal tabular-nums text-fg-muted">{SKILL_TEMPLATES.length}</span>
+            </>
+          )}
+          subtitle="Ready-made skills and personas for common use cases — pick one, then tailor it in the editor"
+        />
+        <SegmentedControl
+          label="Template category"
+          value={category}
+          onChange={setCategory}
+          options={[{ value: "all", label: "All" }, ...SKILL_TEMPLATE_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))]}
+          className="max-w-full"
+        />
+      </div>
+
+      <ul aria-label="Skill templates" className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-3">
+        {shown.map((t) => (
+          <TemplateCard key={t.id} template={t} onUse={() => onUse(t)} />
+        ))}
+      </ul>
+
+      {category === "all" && filtered.length > TEMPLATES_PREVIEW && (
+        <div className="border-t border-line px-4 py-2">
+          <Button variant="ghost" onClick={() => setExpanded((v) => !v)} aria-expanded={!collapsed} className="w-full sm:w-auto">
+            {collapsed ? `Show all ${filtered.length} templates` : "Show fewer"}
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TemplateCard({ template: t, onUse }: { template: SkillTemplate; onUse: () => void }) {
+  const cat = CATEGORY.get(t.category);
+  return (
+    <li className="flex bg-surface">
+      <button
+        type="button"
+        onClick={onUse}
+        aria-label={`Use the ${t.name} template`}
+        className={`group flex w-full flex-col gap-2 px-4 py-3 text-left transition-colors hover:bg-hover focus-visible:ring-inset ${focusRing}`}
+      >
+        <span className="flex items-start gap-2.5">
+          <IconTile icon={t.icon} size="sm" tone={cat?.tone} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="text-[13px] font-medium text-fg">{t.name}</span>
+              <span className="shrink-0 text-[11.5px] text-fg-faint">{cat?.label}</span>
+            </span>
+            <span className="block text-[12px] leading-5 text-fg-muted">{t.description}</span>
+          </span>
+        </span>
+        <span className="mt-auto flex items-center justify-between gap-2 pl-[38px] text-[11.5px]">
+          <span className="tabular-nums text-fg-faint">
+            {formatTokens(estimateTokens(t.prompt))}
+            {t.optional ? " · optional" : ""}
+          </span>
+          <span className="inline-flex items-center gap-1 font-medium text-link opacity-80 transition-opacity group-hover:opacity-100">
+            Use template
+            <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+          </span>
+        </span>
+      </button>
     </li>
   );
 }

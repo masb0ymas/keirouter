@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import type { OAuthProvider, Provider } from "../../lib/api";
 import { ApiKeyConnect, BulkKeyImport } from "./ApiKeyConnect";
+import { hasComplexAuth } from "./CredentialFields";
 import { OAuthConnect } from "./OAuthConnect";
 import {
   CodebuddyConnect,
@@ -45,12 +46,20 @@ export function connectOptions(provider: Provider, oauth?: OAuthProvider): Conne
   const manual = !vendor && (supportsKey || provider.auth_modes.includes("none") || !oauth);
   const signIn = vendor || !!oauth;
   return {
-    primaryLabel: signIn ? `Connect ${provider.display_name}` : provider.auth_kind === "none" ? "Enable provider" : "Add API key",
+    primaryLabel: signIn
+      ? `Connect ${provider.display_name}`
+      : provider.auth_kind === "none"
+        ? "Enable provider"
+        : hasComplexAuth(provider)
+          ? "Add credentials"
+          : `Add ${provider.api_key_label ?? "API key"}`,
     primaryIsSignIn: signIn,
     alsoApiKey: !vendor && !!oauth && manual,
     // Qoder's PATs bulk-import through the shared endpoint even though it has
     // a vendor dialog; Azure keys each need their own endpoint + deployment.
-    bulk: (manual || provider.id === "qoder") && supportsKey && provider.id !== "azure",
+    // Providers with multi-part credentials (cloud keys, service principals)
+    // are connected one account at a time.
+    bulk: (manual || provider.id === "qoder") && supportsKey && provider.id !== "azure" && !hasComplexAuth(provider),
   };
 }
 

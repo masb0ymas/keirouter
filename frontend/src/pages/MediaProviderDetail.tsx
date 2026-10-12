@@ -37,24 +37,9 @@ import { api, type Account, type Provider, type ProviderModel } from "../lib/api
 import { cn } from "@/lib/utils";
 import { ProviderLogo } from "../components/ProviderLogo";
 import { useToast } from "../components/Toast";
+import { CodeBlock } from "../components/ui/code-block";
 import { useConfirm } from "../components/ui/confirm-dialog";
-import {
-  Badge,
-  Button,
-  ErrorBanner,
-  IconTile,
-  Input,
-  Kpi,
-  KpiGrid,
-  Modal,
-  ModalFooter,
-  SectionTitle,
-  Select,
-  Skeleton,
-  TablePagination,
-  Toggle,
-  useClientPagination,
-} from "../components/ui";
+import { Badge, Button, ErrorBanner, IconTile, Input, Kpi, KpiGrid, Modal, ModalFooter, SectionTitle, Select, Skeleton, TablePagination, Toggle, useClientPagination, EmptyState } from "../components/ui";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Segmented } from "./settings/shared";
 import { ICONS } from "../lib/icons";
@@ -137,13 +122,13 @@ export function MediaProviderDetailPage() {
 
   if (!provider) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.media} size="lg" className="mx-auto mb-3" />
-        <h1 className="text-[13px] font-semibold text-fg">This provider doesn&apos;t exist</h1>
-        <Link to={`/media/${kind}`} className="mt-2 inline-block text-[13px] font-medium text-link hover:underline">
-          Back to {meta.label.toLowerCase()}
-        </Link>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h1"
+        icon={ICONS.media}
+        title="This provider doesn't exist"
+        action={<Link to={`/media/${kind}`} className="rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">Back to {meta.label.toLowerCase()}</Link>}
+      />
     );
   }
 
@@ -287,23 +272,25 @@ export function MediaProviderDetailPage() {
         (canPlay ? (
           <Playground provider={provider} initial={metaKind} models={modelList} />
         ) : (
-          <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-            <IconTile icon={Play} size="lg" className="mx-auto mb-3" />
-            <h2 className="text-[13px] font-semibold text-fg">
-              {provider.drivable ? "Connect an account to use the playground" : "The playground isn't available yet"}
-            </h2>
-            <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">
-              {provider.drivable
+          <EmptyState
+            variant="card"
+            titleAs="h2"
+            icon={Play}
+            title={provider.drivable ? "Connect an account to use the playground" : "The playground isn't available yet"}
+            hint={
+              provider.drivable
                 ? `Test requests run through one of your ${provider.display_name} accounts.`
-                : `Routing to ${provider.display_name} isn't supported yet.`}
-            </p>
-            {provider.drivable && (
-              <Button variant="secondary" className="mt-4" onClick={() => setAddOpen(true)}>
-                <Plug aria-hidden="true" />
-                {connectLabel}
-              </Button>
-            )}
-          </div>
+                : `Routing to ${provider.display_name} isn't supported yet.`
+            }
+            action={
+              provider.drivable && (
+                <Button variant="secondary" onClick={() => setAddOpen(true)}>
+                  <Plug aria-hidden="true" />
+                  {connectLabel}
+                </Button>
+              )
+            }
+          />
         ))}
       </div>
 
@@ -571,21 +558,21 @@ function AccountsPanel({
 
   if (accounts.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.account} size="lg" className="mx-auto mb-3" />
-        <h2 className="text-[13px] font-semibold text-fg">No {provider.display_name} accounts yet</h2>
-        <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">
-          {provider.drivable
-            ? "Add an account to start routing requests here."
-            : "Routing to this provider isn't available yet, so accounts can't be added."}
-        </p>
-        {provider.drivable && (
-          <Button variant="secondary" className="mt-4" onClick={onConnect}>
-            <Plug aria-hidden="true" />
-            {connectLabel}
-          </Button>
-        )}
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h2"
+        icon={ICONS.account}
+        title={`No ${provider.display_name} accounts yet`}
+        hint={provider.drivable ? "Add an account to start routing requests here." : "Routing to this provider isn't available yet, so accounts can't be added."}
+        action={
+          provider.drivable && (
+            <Button variant="secondary" onClick={onConnect}>
+              <Plug aria-hidden="true" />
+              {connectLabel}
+            </Button>
+          )
+        }
+      />
     );
   }
 
@@ -672,13 +659,13 @@ function ModelsPanel({ provider, models, loading, label }: { provider: Provider;
 
   if (models.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.model} size="lg" className="mx-auto mb-3" />
-        <h2 className="text-[13px] font-semibold text-fg">No models listed</h2>
-        <p className="mt-1 text-[12.5px] text-fg-muted">
-          {provider.display_name} has no {label.toLowerCase()} model catalog. You can still route by model id.
-        </p>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h2"
+        icon={ICONS.model}
+        title="No models listed"
+        hint={`${provider.display_name} has no ${label.toLowerCase()} model catalog. You can still route by model id.`}
+      />
     );
   }
 
@@ -967,16 +954,20 @@ function RunButton({ onClick, disabled, loading, idle, busy }: { onClick: () => 
   );
 }
 
-function JsonBlock({ value, limit }: { value: unknown; limit?: number }) {
+function JsonBlock({ value, limit, title = "Response" }: { value: unknown; limit?: number; title?: string }) {
   const text = JSON.stringify(value, null, 2);
+  const shown = limit && text.length > limit ? `${text.slice(0, limit)}\n…` : text;
   return (
-    <pre
-      tabIndex={0}
-      aria-label="Response JSON"
-      className="max-h-[420px] flex-1 overflow-auto rounded-lg border border-line bg-subtle p-3 font-mono text-[12px] leading-5 text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-    >
-      {limit ? text.slice(0, limit) : text}
-    </pre>
+    <CodeBlock
+      code={shown}
+      language="json"
+      title={title}
+      aria-label={`${title} JSON`}
+      copyToast="Response copied"
+      copyValue={text}
+      className="flex-1"
+      bodyClassName="max-h-[420px]"
+    />
   );
 }
 
@@ -1278,8 +1269,7 @@ function SttPlayground({ provider, models }: { provider: Provider; models: Model
           </div>
         )}
         <div className="flex flex-1 flex-col">
-          {typeof transcript === "string" && <p className="mb-1.5 text-[12px] font-medium text-fg-muted">Raw response</p>}
-          <JsonBlock value={state.result} />
+          <JsonBlock value={state.result} title={typeof transcript === "string" ? "Raw response" : "Response"} />
         </div>
       </div>
     </PlaygroundLayout>

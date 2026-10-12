@@ -60,9 +60,13 @@ func TestProxyTransportRouting(t *testing.T) {
 		t.Fatalf("account proxy should win over global: got %q", got)
 	}
 
-	relayCtx := core.WithProxy(context.Background(), core.Credentials{RelayURL: "https://relay.example.com"})
-	if got := fetchVia(t, relayCtx, target.URL); got != "global" {
-		t.Fatalf("relay-only account should use global proxy: got %q", got)
+	relaySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "relay:"+r.Header.Get("x-relay-target")+r.Header.Get("x-relay-path"))
+	}))
+	t.Cleanup(relaySrv.Close)
+	relayCtx := core.WithProxy(context.Background(), core.Credentials{RelayURL: relaySrv.URL})
+	if got, want := fetchVia(t, relayCtx, target.URL+"/token?x=1"), "relay:"+target.URL+"/token?x=1"; got != want {
+		t.Fatalf("relay-bound account should refresh through its relay: got %q want %q", got, want)
 	}
 
 	SetGlobalProxy(staticProxy{url: globalSrv.URL, noProxy: "127.0.0.1"})

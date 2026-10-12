@@ -56,6 +56,9 @@ func (e *Engine) NewStreamGuard(ctx context.Context, req *core.ChatRequest) *Str
 	if !policy.IsActive() || !policy.scansOutput() {
 		return nil
 	}
+	// Inbound normally attached the outcome already; this covers callers
+	// that stream without an inbound pass.
+	attachOutcome(req)
 	return &StreamGuard{e: e, ctx: ctx, req: req, policy: policy, once: map[string]bool{}}
 }
 

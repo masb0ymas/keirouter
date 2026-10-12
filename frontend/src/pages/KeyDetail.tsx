@@ -24,25 +24,15 @@ import {
   type KeyUsageData,
   type Plan,
 } from "../lib/api";
-import { microsToUSD, formatTokens } from "../lib/format";
+import { microsToUSD, formatTokens, formatDateTime } from "../lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "../components/Toast";
+import { CodeBlock } from "../components/ui/code-block";
 import { GuardrailEditor } from "../components/GuardrailEditor";
+import { GuardrailKeyStats } from "../components/GuardrailMonitor";
 import { useModelCatalog, type ModelCatalogOption } from "../components/ModelSelect";
 import { ProviderLogo } from "../components/ProviderLogo";
-import {
-  Badge,
-  Button,
-  IconTile,
-  Kpi,
-  KpiGrid,
-  SectionTitle,
-  Select,
-  Skeleton,
-  TablePagination,
-  Toggle,
-  useClientPagination,
-} from "../components/ui";
+import { Badge, Button, IconTile, Kpi, KpiGrid, SectionTitle, Select, Skeleton, TablePagination, Toggle, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -246,12 +236,14 @@ export function KeyDetailPage() {
   }
   if (!key) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.keys} size="lg" className="mx-auto mb-3" />
-        <h1 className="text-[14px] font-semibold text-fg">API key not found</h1>
-        <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">It may have been revoked.</p>
-        <Button className="mt-4" onClick={() => navigate("/keys")}>Back to API keys</Button>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h1"
+        icon={ICONS.keys}
+        title="API key not found"
+        hint="It may have been revoked."
+        action={<Button onClick={() => navigate("/keys")}>Back to API keys</Button>}
+      />
     );
   }
 
@@ -438,20 +430,22 @@ function GeneralTab({
   const rows = limitRows(usage.data?.budgets ?? []);
   const dash = usage.isLoading ? "…" : usage.isError ? "—" : null;
 
-  const kpis: { label: string; icon: LucideIcon; value: string; hint?: string; title?: string }[] = [
-    { label: "Requests", icon: ICONS.requests, value: dash ?? totals.requests.toLocaleString() },
-    { label: "Spend", icon: ICONS.spend, value: dash ?? fmtUSD(totals.cost) },
+  const daily = usage.data?.daily ?? [];
+  const kpis: { label: string; icon: LucideIcon; value: string; hint?: string; title?: string; trend?: number[] }[] = [
+    { label: "Requests", icon: ICONS.requests, value: dash ?? totals.requests.toLocaleString(), trend: daily.map((d) => d.requests) },
+    { label: "Spend", icon: ICONS.spend, value: dash ?? fmtUSD(totals.cost), trend: daily.map((d) => d.cost_usd) },
     {
       label: "Tokens",
       icon: ICONS.tokens,
       value: dash ?? formatTokens(totals.prompt + totals.completion),
       hint: dash ? undefined : `${formatTokens(totals.prompt)} in · ${formatTokens(totals.completion)} out`,
+      trend: daily.map((d) => d.prompt_tokens + d.completion_tokens),
     },
     {
       label: "Last used",
       icon: History,
       value: relativeTime(apiKey.last_used_at),
-      title: lastUsed ? new Date(lastUsed).toLocaleString() : undefined,
+      title: lastUsed ? formatDateTime(lastUsed) : undefined,
     },
   ];
 
@@ -480,6 +474,7 @@ function GeneralTab({
                 label={k.label}
                 value={<span title={k.title}>{k.value}</span>}
                 hint={k.hint}
+                trend={k.trend}
               />
             ))}
           </KpiGrid>
@@ -1048,12 +1043,15 @@ function GuardrailsTab({ apiKey }: { apiKey: APIKey }) {
   }
   if (policies.isError) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.errors} size="lg" tone="bad" className="mx-auto mb-3" />
-        <h2 className="text-[14px] font-semibold text-fg">Couldn't load key guardrails</h2>
-        <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">Retry before making changes.</p>
-        <Button variant="secondary" className="mt-4" onClick={() => policies.refetch()}>Retry</Button>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h2"
+        icon={ICONS.errors}
+        tone="bad"
+        title="Couldn't load key guardrails"
+        hint="Retry before making changes."
+        action={<Button variant="secondary" onClick={() => policies.refetch()}>Retry</Button>}
+      />
     );
   }
 
@@ -1074,6 +1072,7 @@ function GuardrailsTab({ apiKey }: { apiKey: APIKey }) {
 
   return (
     <div className="space-y-4">
+      <GuardrailKeyStats apiKeyId={apiKey.id} />
       <PanelCard
         icon={ICONS.guardrails}
         title="Per-key override"
@@ -1144,7 +1143,9 @@ function GuardrailsTab({ apiKey }: { apiKey: APIKey }) {
               <ChevronDown className={cn("h-4 w-4 text-fg-faint transition-transform", showMerged && "rotate-180")} strokeWidth={1.75} aria-hidden="true" />
             </button>
             {showMerged && (
-              <pre id={mergedId} tabIndex={0} role="region" aria-label="Merged configuration" className={cn("max-h-72 overflow-auto border-t border-line bg-subtle px-4 py-3 font-mono text-[11.5px] leading-5 text-fg-muted sm:px-5", FOCUS_RING)}>{JSON.stringify(effective.data?.policy ?? {}, null, 2)}</pre>
+              <div id={mergedId} className="border-t border-line">
+                <CodeBlock bare code={JSON.stringify(effective.data?.policy ?? {}, null, 2)} language="json" aria-label="Merged configuration" copyToast="Configuration copied" bodyClassName="max-h-72 sm:px-5" />
+              </div>
             )}
           </div>
         )}

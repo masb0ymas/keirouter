@@ -104,6 +104,43 @@ func TestEngine_Inbound_PIIBlocks(t *testing.T) {
 	if res.Action != guardrails.ActionBlock {
 		t.Fatalf("expected ActionBlock, got %s", res.Action)
 	}
+	got := req.Metadata.Guardrail.Summary()
+	if got.Action != "block" || got.Detector != "pii" || got.Direction != "inbound" {
+		t.Fatalf("outcome = %+v, want block by pii inbound", got)
+	}
+}
+
+// A request a policy applies to records "allow" when nothing fires, so the
+// usage row tells evaluated-and-clean apart from never evaluated.
+func TestEngine_OutcomeAllowWhenNothingFires(t *testing.T) {
+	policy := guardrails.Policy{
+		PII: &guardrails.PIIConfig{Enabled: true, Strategy: guardrails.PIIStrategyBlock, MinScore: 0.5},
+	}
+	engine := guardrails.NewEngine(guardrails.EngineConfig{
+		Resolver:  guardrails.NewResolver(&fakeResolver{policy: policy}, 0),
+		Detectors: []guardrails.Detector{pii.New()},
+	})
+	req := &core.ChatRequest{
+		Metadata: core.RequestMetadata{TenantID: "default"},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello there"}}},
+		},
+	}
+	engine.Inbound(context.Background(), req)
+	if got := req.Metadata.Guardrail.Summary().Action; got != "allow" {
+		t.Fatalf("outcome action = %q, want allow", got)
+	}
+
+	disabled := false
+	engine = guardrails.NewEngine(guardrails.EngineConfig{
+		Resolver:  guardrails.NewResolver(&fakeResolver{policy: guardrails.Policy{Enabled: &disabled}}, 0),
+		Detectors: []guardrails.Detector{pii.New()},
+	})
+	req.Metadata.Guardrail = nil
+	engine.Inbound(context.Background(), req)
+	if req.Metadata.Guardrail != nil {
+		t.Fatal("an inactive policy must not attach an outcome")
+	}
 }
 
 // TestEngine_NilSafe confirms a nil engine doesn't panic and produces

@@ -17,11 +17,12 @@ import {
 import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { ProviderLogo } from "../components/ProviderLogo";
-import { Badge, Button, ErrorCard, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination } from "../components/ui";
+import { Badge, Button, ErrorCard, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { HealthStatusBadge, HealthScoreRing, fmtIssue } from "../components/HealthBadge";
 import { ErrorTypeBreakdown, HealthTrends } from "../components/HealthCharts";
 import { useToast } from "../components/Toast";
+import { formatDateTime } from "../lib/format";
 
 // "Live" is the telemetry service's rolling window; every longer range is
 // answered from persisted snapshots, so it survives restarts.
@@ -75,7 +76,7 @@ function fmtTime(t?: string) {
   if (diff < 60_000) return "just now";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return d.toLocaleString();
+  return formatDateTime(d);
 }
 
 const FOCUS = "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
@@ -528,13 +529,7 @@ function LoadingTable() {
 }
 
 function EmptyPanel({ icon, title, hint }: { icon: LucideIcon; title: string; hint?: string }) {
-  return (
-    <div className="flex flex-col items-center rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-10 text-center">
-      <IconTile icon={icon} size="lg" className="mb-3" />
-      <p className="text-[13px] font-medium text-fg">{title}</p>
-      {hint && <p className="mt-1 text-[12.5px] text-fg-muted">{hint}</p>}
-    </div>
-  );
+  return <EmptyState variant="card" size="sm" icon={icon} title={title} hint={hint} />;
 }
 
 function TableCard({ children, footer, label, mobile }: { children: ReactNode; footer?: ReactNode; label: string; mobile?: ReactNode }) {

@@ -38,6 +38,7 @@ import {
   type GuardrailAction,
   type GuardrailBundle,
   type GuardrailLogEntry,
+  type GuardrailLogFilter,
   type GuardrailPolicy,
   type GuardrailPolicyConfig,
   type GuardrailScope,
@@ -47,15 +48,17 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { GuardrailEditor } from "../components/GuardrailEditor";
+import { GuardrailOverview, isReportPeriod } from "../components/GuardrailMonitor";
 import { SCOPE_ICONS, ScopeIDSelector, useScopeTargetLabels } from "../components/ScopeIDSelector";
-import { Button, Input, Select, Badge, Toggle, Modal, Skeleton, ErrorBanner, IconTile, SectionTitle } from "../components/ui";
+import { Button, Input, Select, Badge, Toggle, Modal, Skeleton, ErrorBanner, IconTile, SectionTitle, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
+import { formatDate, formatDateTime } from "../lib/format";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-type Tab = "policies" | "logs";
+type Tab = "overview" | "policies" | "logs";
 type ScopeFilter = "all" | GuardrailScope;
 
 // Order matters: this is the precedence chain, least to most specific.
@@ -70,6 +73,7 @@ const SCOPE_LABEL: Record<GuardrailScope, string> = {
 };
 
 const TABS: [Tab, string, LucideIcon][] = [
+  ["overview", "Overview", ICONS.trend],
   ["policies", "Policies", ICONS.guardrails],
   ["logs", "Audit log", ICONS.console],
 ];
@@ -254,22 +258,49 @@ export function GuardrailsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const legacy = LEGACY_HASH[location.hash.replace("#", "")];
-  const tab: Tab = params.get("tab") === "logs" ? "logs" : params.get("tab") ? "policies" : legacy?.tab ?? "policies";
+  const tabParam = params.get("tab");
   const scopeParam = params.get("scope");
-  const scopeFilter: ScopeFilter = isScope(scopeParam) ? scopeParam : !params.get("tab") && legacy?.scope ? legacy.scope : "all";
+  // Overview is the default; a bare ?scope= (older policy links) or a legacy
+  // #hash still lands on the tab it always did.
+  const tab: Tab =
+    tabParam === "logs" || tabParam === "policies" || tabParam === "overview"
+      ? tabParam
+      : isScope(scopeParam)
+        ? "policies"
+        : legacy?.tab ?? "overview";
+  const scopeFilter: ScopeFilter = isScope(scopeParam) ? scopeParam : !tabParam && legacy?.scope ? legacy.scope : "all";
+  const periodParam = params.get("period");
+  const period = isReportPeriod(periodParam) ? periodParam : "24h";
 
-  // Tab and scope filter live in the query string (?tab=logs, ?scope=model);
-  // any legacy #hash is dropped on the first interaction.
+  const go = (p: URLSearchParams) => {
+    const search = p.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
+  };
+
+  // Tab, scope filter and monitoring filters live in the query string
+  // (?tab=logs, ?scope=model, ?period=7d); any legacy #hash is dropped on
+  // the first interaction. Switching tabs clears the other tabs' filters.
   const update = (next: { tab?: Tab; scope?: ScopeFilter }) => {
-    const p = new URLSearchParams(params);
     const t = next.tab ?? tab;
     const s = next.scope ?? scopeFilter;
-    if (t === "policies") p.delete("tab");
+    const p = new URLSearchParams(t === tab ? params : undefined);
+    if (t === "overview") p.delete("tab");
     else p.set("tab", t);
     if (t === "policies" && s !== "all") p.set("scope", s);
     else p.delete("scope");
-    const search = p.toString();
-    navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
+    go(p);
+  };
+  const setParam = (key: string, value: string | undefined) => {
+    const p = new URLSearchParams(params);
+    if (value) p.set(key, value);
+    else p.delete(key);
+    go(p);
+  };
+  // drillToLogs opens the audit log narrowed to what was clicked.
+  const drillToLogs = (f: GuardrailLogFilter) => {
+    const p = new URLSearchParams({ tab: "logs" });
+    for (const [k, v] of Object.entries(f)) if (v) p.set(k, v);
+    go(p);
   };
 
   const [importing, setImporting] = useState(false);
@@ -334,7 +365,15 @@ export function GuardrailsPage() {
       </div>
 
       <div id="guardrails-panel" role="tabpanel" aria-labelledby={`guardrails-tab-${tab}`}>
-        {tab === "logs" ? (
+        {tab === "overview" ? (
+          <GuardrailOverview
+            period={period}
+            onPeriod={(p) => setParam("period", p)}
+            filter={{ api_key_id: params.get("api_key_id") ?? undefined, model: params.get("model") ?? undefined }}
+            onClearFilter={(k) => setParam(k, undefined)}
+            onDrill={drillToLogs}
+          />
+        ) : tab === "logs" ? (
           <LogsTab />
         ) : (
           <PoliciesTab
@@ -346,7 +385,7 @@ export function GuardrailsPage() {
           />
         )}
       </div>
-      {tab === "logs" && creating && <CreatePolicyHost scopeFilter="all" onClose={() => setCreating(false)} />}
+      {tab !== "policies" && creating && <CreatePolicyHost scopeFilter="all" onClose={() => setCreating(false)} />}
       {importing && <ImportModal onClose={() => setImporting(false)} />}
     </div>
   );
@@ -371,7 +410,8 @@ function usePolicies() {
   return { isLoading, error, byScope, all };
 }
 
-// CreatePolicyHost lets the header's "New policy" work from the audit-log tab.
+// CreatePolicyHost lets the header's "New policy" work from the overview and
+// audit-log tabs.
 function CreatePolicyHost({ scopeFilter, onClose }: { scopeFilter: ScopeFilter; onClose: () => void }) {
   const qc = useQueryClient();
   const { byScope, isLoading } = usePolicies();
@@ -530,15 +570,19 @@ function PoliciesTab({
     <>
       <div className="space-y-6">
         {all.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-            <IconTile icon={ICONS.guardrails} size="lg" className="mx-auto mb-3" />
-            <h2 className="text-[13px] font-semibold text-fg">No guardrail policies yet</h2>
-            <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">Requests pass through unchecked until a policy exists.</p>
-            <Button className="mt-4" onClick={onCreate}>
-              <Plus aria-hidden="true" />
-              Create global policy
-            </Button>
-          </div>
+          <EmptyState
+            variant="card"
+            titleAs="h2"
+            icon={ICONS.guardrails}
+            title="No guardrail policies yet"
+            hint="Requests pass through unchecked until a policy exists."
+            action={
+              <Button onClick={onCreate}>
+                <Plus aria-hidden="true" />
+                Create global policy
+              </Button>
+            }
+          />
         ) : (
           <div className="space-y-3">
             {!hasGlobal && (
@@ -768,8 +812,8 @@ function PolicyRow({ policy, target, pending, onEdit, onToggle, onDelete, onOpen
           </span>
         </span>
       </td>
-      <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-fg-muted" title={policy.updated_at ? new Date(policy.updated_at).toLocaleString() : undefined}>
-        {policy.updated_at ? new Date(policy.updated_at).toLocaleDateString() : "—"}
+      <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-fg-muted" title={policy.updated_at ? formatDateTime(policy.updated_at) : undefined}>
+        {policy.updated_at ? formatDate(policy.updated_at, { short: true }) : "—"}
       </td>
       <td className="px-2 py-2.5" onClick={stop}>
         <PolicyMenu name={policy.name} onEdit={onEdit} onOpenKey={onOpenKey} onDelete={onDelete} />
@@ -1375,9 +1419,41 @@ function defaultNameFor(scope: GuardrailScope): string {
 
 // ---- Audit log --------------------------------------------------------------
 
+// Filters the overview drills down with, beyond the detector/action selects.
+// They live in the query string so a drill-down link is shareable.
+const LOG_DRILL_FILTERS: { key: Exclude<keyof GuardrailLogFilter, "detector" | "action">; label: string }[] = [
+  { key: "period", label: "Last" },
+  { key: "direction", label: "Direction" },
+  { key: "api_key_id", label: "Key" },
+  { key: "model", label: "Model" },
+  { key: "chain_id", label: "Chain" },
+  { key: "request_id", label: "Request" },
+];
+
 function LogsTab() {
-  const [detector, setDetector] = useState("");
-  const [action, setAction] = useState("");
+  const [params, setParams] = useSearchParams();
+  const detector = params.get("detector") ?? "";
+  const action = params.get("action") ?? "";
+  const drill: GuardrailLogFilter = {};
+  for (const f of LOG_DRILL_FILTERS) {
+    const v = params.get(f.key);
+    if (v) drill[f.key] = v;
+  }
+  const drillKey = LOG_DRILL_FILTERS.map((f) => drill[f.key] ?? "").join("|");
+  const keyLabel = useScopeTargetLabels(drill.api_key_id ? ["apikey"] : []);
+  const setFilter = (key: string, value: string) => {
+    const p = new URLSearchParams(params);
+    if (value) p.set(key, value);
+    else p.delete(key);
+    setParams(p, { replace: true });
+  };
+  const setDetector = (v: string) => setFilter("detector", v);
+  const setAction = (v: string) => setFilter("action", v);
+  const clearFilters = () => {
+    const p = new URLSearchParams(params);
+    for (const k of ["detector", "action", ...LOG_DRILL_FILTERS.map((f) => f.key)]) p.delete(k);
+    setParams(p, { replace: true });
+  };
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [liveOn, setLiveOn] = useState(true);
   const [liveStatus, setLiveStatus] = useState<"connected" | "off">("off");
@@ -1388,9 +1464,10 @@ function LogsTab() {
   // Initial / refreshed fetch. Polling is disabled once the SSE connection
   // is up so the database isn't hammered on top of the live stream.
   const logs = useQuery({
-    queryKey: ["guardrail-logs", detector, action],
+    queryKey: ["guardrail-logs", detector, action, drillKey],
     queryFn: () =>
       api.listGuardrailLogs({
+        ...drill,
         detector: detector || undefined,
         action: action || undefined,
         limit: 200,
@@ -1425,12 +1502,21 @@ function LogsTab() {
   // Merge: live rows first (newest), then fetched rows that aren't already in
   // live. Filter live rows on the client to honor the detector/action filters.
   const rows = useMemo(() => {
+    // Live rows are new, so they always fall inside the period filter.
     const liveFiltered = liveRows.filter(
-      (r) => (!detector || r.detector === detector) && (!action || r.action === action),
+      (r) =>
+        (!detector || r.detector === detector) &&
+        (!action || r.action === action) &&
+        (!drill.direction || r.direction === drill.direction) &&
+        (!drill.api_key_id || r.api_key_id === drill.api_key_id) &&
+        (!drill.model || r.model === drill.model) &&
+        (!drill.chain_id || r.chain_id === drill.chain_id) &&
+        (!drill.request_id || r.request_id === drill.request_id),
     );
     const liveIDs = new Set(liveFiltered.map((r) => r.id));
     return [...liveFiltered, ...fetched.filter((r) => !liveIDs.has(r.id))].slice(0, 200);
-  }, [liveRows, fetched, detector, action]);
+    // drillKey stands in for the drill object, which is rebuilt every render.
+  }, [liveRows, fetched, detector, action, drillKey]);
   const toggle = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -1440,7 +1526,12 @@ function LogsTab() {
     });
 
   const connected = liveOn && liveStatus === "connected";
-  const filtered = !!(detector || action);
+  const filtered = !!(detector || action || drillKey.replace(/\|/g, ""));
+  const drillChips = LOG_DRILL_FILTERS.filter((f) => drill[f.key]).map((f) => {
+    const v = drill[f.key]!;
+    const shown = f.key === "api_key_id" ? keyLabel("apikey", v) ?? v : f.key === "direction" ? (v === "inbound" ? "prompt" : "response") : v;
+    return { key: f.key, label: `${f.label}: ${shown}` };
+  });
 
   return (
     <section aria-labelledby="guardrail-log-title" className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
@@ -1478,6 +1569,26 @@ function LogsTab() {
           </Select>
         </div>
       </div>
+      {drillChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5" aria-label="Active filters">
+          {drillChips.map((c) => (
+            <span key={c.key} className="inline-flex h-7 max-w-full items-center gap-1 rounded-lg border border-line bg-subtle pl-2.5 pr-1 text-[12px] font-medium text-fg">
+              <span className="truncate">{c.label}</span>
+              <button
+                type="button"
+                onClick={() => setFilter(c.key, "")}
+                aria-label={`Remove filter ${c.label}`}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              >
+                <X className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+          <button type="button" onClick={clearFilters} className="rounded text-[12px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+            Clear all
+          </button>
+        </div>
+      )}
 
       {logs.isLoading ? (
         <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading audit log">
@@ -1494,16 +1605,13 @@ function LogsTab() {
           <IconTile icon={filtered ? Search : ICONS.console} size="lg" tone={filtered ? "slate" : "section"} className="mx-auto mb-3" />
           <p className="text-[13px] font-semibold text-fg">{filtered ? "No entries match" : "No audit entries yet"}</p>
           <p className="mx-auto mt-1 max-w-md text-[12.5px] text-fg-muted">
-            {filtered ? "Try another detector or action." : "Decisions appear here as guardrails fire."}
+            {filtered ? "Try another filter, or clear them." : "Decisions appear here as guardrails fire."}
           </p>
           {filtered && (
             <Button
               variant="ghost"
               className="mt-4"
-              onClick={() => {
-                setDetector("");
-                setAction("");
-              }}
+              onClick={clearFilters}
             >
               Clear filters
             </Button>
@@ -1535,7 +1643,7 @@ function LogsTab() {
                 const findings = row.findings ?? [];
                 const isTest = row.api_key_id === "test-panel";
                 const entityCounts = countEntities(findings);
-                const when = new Date(row.created_at).toLocaleString();
+                const when = formatDateTime(row.created_at);
                 const detailsId = `guardrail-log-${row.id}`;
                 const DetectorIcon = DETECTOR_BY_ID[row.detector]?.icon;
                 return (
@@ -1626,7 +1734,7 @@ function LogCard({ row, open, onToggle }: { row: GuardrailLogEntry; open: boolea
   const findings = row.findings ?? [];
   const isTest = row.api_key_id === "test-panel";
   const entityCounts = countEntities(findings);
-  const when = new Date(row.created_at).toLocaleString();
+  const when = formatDateTime(row.created_at);
   const detailsId = `guardrail-log-card-${row.id}`;
   const DetectorIcon = DETECTOR_BY_ID[row.detector]?.icon;
   const source = isTest ? "Test panel" : row.provider || row.model ? `${row.provider || "?"}${row.model ? `/${row.model}` : ""}` : null;

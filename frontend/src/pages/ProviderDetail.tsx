@@ -44,7 +44,7 @@ import { ProviderLogo } from "../components/ProviderLogo";
 import { useToast } from "../components/Toast";
 import { useConfirm } from "../components/ui/confirm-dialog";
 import { ConnectProviderDialog, connectOptions, type ConnectMode } from "../components/connect";
-import { Badge, Button, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, Toggle, useClientPagination } from "../components/ui";
+import { Badge, Button, IconTile, Kpi, KpiGrid, SectionTitle, Skeleton, TablePagination, Toggle, useClientPagination, EmptyState } from "../components/ui";
 import { ICONS } from "../lib/icons";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
@@ -147,14 +147,14 @@ export function ProviderDetailPage() {
   }
   if (!provider) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.providers} size="lg" className="mx-auto mb-3" />
-        <h1 className="text-[14px] font-semibold text-fg">Provider not found</h1>
-        <p className="mt-1 text-[13px] text-fg-muted">It may have been deleted.</p>
-        <Link to="/providers" className="mt-3 inline-block rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
-          Back to providers
-        </Link>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h1"
+        icon={ICONS.providers}
+        title="Provider not found"
+        hint="It may have been deleted."
+        action={<Link to="/providers" className="rounded-md text-[13px] font-medium text-link hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">Back to providers</Link>}
+      />
     );
   }
 
@@ -556,15 +556,19 @@ function AccountsPanel({
 
   if (accounts.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-        <IconTile icon={ICONS.account} size="lg" className="mx-auto mb-3" />
-        <h2 className="text-[14px] font-semibold text-fg">No accounts yet</h2>
-        <p className="mx-auto mt-1 max-w-md text-[13px] text-fg-muted">Add one to start routing to {provider.display_name}.</p>
-        <Button className="mt-4" onClick={onConnect}>
-          <Plug aria-hidden="true" />
-          {connectLabel}
-        </Button>
-      </div>
+      <EmptyState
+        variant="card"
+        titleAs="h2"
+        icon={ICONS.account}
+        title="No accounts yet"
+        hint={`Add one to start routing to ${provider.display_name}.`}
+        action={
+          <Button onClick={onConnect}>
+            <Plug aria-hidden="true" />
+            {connectLabel}
+          </Button>
+        }
+      />
     );
   }
 
@@ -1380,13 +1384,13 @@ function ModelsPanel({
       ) : loading ? (
         <Skeleton className="h-72 w-full rounded-2xl" />
       ) : models.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line-strong bg-surface px-6 py-12 text-center">
-          <IconTile icon={ICONS.model} size="lg" className="mx-auto mb-3" />
-          <h2 className="text-[14px] font-semibold text-fg">No models yet</h2>
-          <p className="mt-1 text-[13px] text-fg-muted">
-            {provider.custom ? "Sync the endpoint's /models list, or add them under Custom models." : "Add them under Custom models."}
-          </p>
-        </div>
+        <EmptyState
+          variant="card"
+          titleAs="h2"
+          icon={ICONS.model}
+          title="No models yet"
+          hint={provider.custom ? "Sync the endpoint's /models list, or add them under Custom models." : "Add them under Custom models."}
+        />
       ) : (
         <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--shadow-card)]">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2.5">

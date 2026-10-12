@@ -32,6 +32,39 @@ export interface Provider {
   base_url?: string;
   // custom marks user-defined dynamic provider instances (editable/deletable).
   custom?: boolean;
+  // Provider-specific connect-form inputs (cloud region, project id, extra
+  // secrets). Values are sent as AccountInput.fields keyed by field key.
+  fields?: CredentialField[];
+  // api_key_mode: absent = key required, "optional" = other fields may
+  // authenticate instead, "hidden" = no key input at all.
+  api_key_mode?: "optional" | "hidden";
+  // api_key_when shows the key input only for some values of a select field.
+  api_key_when?: FieldCondition;
+  api_key_label?: string;
+  api_key_placeholder?: string;
+  // base_url_required marks built-in providers that need a per-account URL.
+  base_url_required?: boolean;
+  base_url_placeholder?: string;
+}
+
+export interface FieldCondition {
+  field: string;
+  values: string[];
+}
+
+export interface CredentialField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  hint?: string;
+  required?: boolean;
+  secret?: boolean;
+  multiline?: boolean;
+  url?: boolean;
+  advanced?: boolean;
+  default?: string;
+  options?: { value: string; label: string }[];
+  when?: FieldCondition;
 }
 
 // ProviderModel is a single model entry returned by providerModels(). Custom
@@ -275,6 +308,7 @@ export interface AccountInput {
   azure_deployment?: string;
   azure_api_version?: string;
   azure_organization?: string;
+  fields?: Record<string, string>;
   proxy_pool_id?: string;
   priority?: number;
 }
@@ -297,6 +331,7 @@ export interface BulkAccountInput {
   azure_deployment?: string;
   azure_api_version?: string;
   azure_organization?: string;
+  fields?: Record<string, string>;
   priority?: number;
   proxy_pool_id?: string;
   validate?: boolean;
@@ -751,12 +786,32 @@ export interface QuotaAccount {
 
 // Console log uses structured entries streamed via SSE (/api/console/stream)
 // and fetched as history from /api/console, which returns { logs: ConsoleLogEntry[] }.
+// Request lines share `req`; exactly one of them is `final` and summarizes the
+// outcome. Other kinds (oauth, health, tunnel, admin) are background events.
 export interface ConsoleLogEntry {
   seq: number;
   time: string; // HH:MM:SS.mmm
+  ts?: number; // unix ms
   level: string; // DEBUG | INFO | WARN | ERROR | LOG
   msg: string; // human-readable summary
   detail?: string; // optional technical detail, revealed on expand
+  hint?: string; // plain-language explanation for operators
+  kind?: string; // request | admin | oauth | health | tunnel | ...
+  req?: string; // request ID
+  endpoint?: string; // "POST /v1/chat/completions"
+  client?: string;
+  key?: string; // API key name
+  model?: string; // model the client asked for
+  provider?: string;
+  target?: string; // provider/model that served (or failed) the request
+  status?: number; // HTTP status returned to the client (499 = client disconnected)
+  ms?: number; // elapsed since the request arrived
+  tokens?: number;
+  cost_micros?: number;
+  fallbacks?: number;
+  stream?: boolean;
+  cache?: boolean;
+  final?: boolean;
 }
 
 export interface ProxyPool {
@@ -770,6 +825,8 @@ export interface ProxyPool {
   test_status: string; // unknown | testing | active | error
   last_tested?: string;
   last_error?: string;
+  /** Accounts (any tenant) routed through this pool. */
+  bound_connection_count?: number;
 }
 
 /** Limits which requests a skill applies to; empty lists mean "any". */
@@ -788,11 +845,13 @@ export interface Skill {
   /** Clients may drop it with the X-KeiRouter-Skip-Skills header. */
   optional: boolean;
   scope?: SkillScope;
+  /** Values for {{name}} placeholders in prompt, filled in by the gateway. */
+  variables?: Record<string, string>;
   created_at: string;
   updated_at?: string;
 }
 
-export type SkillInput = { name?: string; description?: string; prompt?: string; enabled?: boolean; optional?: boolean; scope?: SkillScope };
+export type SkillInput = { name?: string; description?: string; prompt?: string; enabled?: boolean; optional?: boolean; scope?: SkillScope; variables?: Record<string, string> };
 
 export interface AccessSettings {
   local_enabled: boolean;
@@ -1131,6 +1190,67 @@ export interface GuardrailLogEntry {
   reason: string;
   findings: GuardrailFinding[] | null;
   created_at: string;
+}
+
+// GuardrailLogFilter narrows the audit log; the stats view drills down with it.
+export interface GuardrailLogFilter {
+  api_key_id?: string;
+  detector?: string;
+  action?: string;
+  direction?: string;
+  model?: string;
+  chain_id?: string;
+  request_id?: string;
+  /** Report period token (24h, 7d, …); bounds created_at. */
+  period?: string;
+}
+
+export interface GuardrailTargetStat {
+  key: string;
+  requests: number;
+  blocked: number;
+  masked: number;
+  warned: number;
+  log_only: number;
+}
+
+// GuardrailStats is the monitoring payload. Request counts are per request
+// (usage_records) and exclude LLM judge calls, which are reported in `judge`.
+export interface GuardrailStats {
+  since: string;
+  buckets: number;
+  totals: {
+    requests: number;
+    /** Requests a guardrail policy applied to. */
+    evaluated: number;
+    blocked: number;
+    blocked_inbound: number;
+    blocked_outbound: number;
+    /** Streams cut after part of the answer reached the client. */
+    blocked_mid_stream: number;
+    masked: number;
+    warned: number;
+    log_only: number;
+    block_rate: number;
+    mask_rate: number;
+    warn_rate: number;
+    overhead_avg_ms: number;
+    overhead_p50_ms: number;
+    overhead_p95_ms: number;
+  };
+  judge: { calls: number; tokens: number; cost_nanos: number; avg_latency_ms: number };
+  timeline: { bucket: number; requests: number; blocked: number; masked: number; warned: number; log_only: number }[];
+  by_detector: { detector: string; direction: "inbound" | "outbound"; action: GuardrailAction; decisions: number; requests: number }[];
+  top_reasons: { detector: string; action: GuardrailAction; reason: string; requests: number }[];
+  top_entities: { entity: string; count: number }[];
+  top_api_keys: GuardrailTargetStat[];
+  top_models: GuardrailTargetStat[];
+  data_quality: {
+    audit_dropped: number;
+    log_retention_days: number;
+    logs_truncated: boolean;
+    entities_sampled: boolean;
+  };
 }
 
 // ── Audit log ───────────────────────────────────────────────────────────────
@@ -1484,6 +1604,10 @@ export const api = {
   completeOnboarding: () => request<{ ok: boolean }>("POST", "/auth/onboarding/complete"),
 
   providers: () => request<{ providers: Provider[] }>("GET", "/providers"),
+  // Every listed provider's models in one request. `pending` names providers
+  // whose live discovery was still running; fetch those with providerModels().
+  allProviderModels: () =>
+    request<{ providers: Record<string, ProviderModel[]>; pending: string[] }>("GET", "/providers/models"),
   providerModels: (id: string, kind?: string) =>
     request<{ models: ProviderModel[] }>(
       "GET",
@@ -1622,7 +1746,7 @@ export const api = {
   quotaByProvider: (provider: string) =>
     request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=today&tz=${browserTZ()}&provider=${provider}`),
 
-  consoleLog: () => request<{ logs: ConsoleLogEntry[] }>("GET", "/console"),
+  consoleLog: () => request<{ epoch: string; logs: ConsoleLogEntry[] }>("GET", "/console"),
 
   cliTools: (model?: string) =>
     request<CLIToolsResponse>("GET", model ? `/cli-tools?model=${encodeURIComponent(model)}` : "/cli-tools"),
@@ -1729,7 +1853,7 @@ export const api = {
 
   // Proxy pool test.
   testProxyPool: (id: string) =>
-    request<{ status: string; last_tested?: string; elapsed_ms?: number; error?: string }>("POST", `/proxy-pools/${id}/test`),
+    request<{ status: string; last_tested?: string; elapsed_ms?: number; error?: string; egress_ip?: string }>("POST", `/proxy-pools/${id}/test`),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),
@@ -1876,17 +2000,19 @@ export const api = {
   /** JSON Lines of every matching entry (cursor/limit are ignored). */
   exportAudit: (filter?: AuditFilter) =>
     requestBlob("GET", `/audit/export${auditQuery({ ...filter, cursor: undefined, limit: undefined })}`),
-  listGuardrailLogs: (filter?: {
-    api_key_id?: string;
-    detector?: string;
-    action?: string;
-    limit?: number;
-  }) => {
+  guardrailStats: (period: string, opts: { buckets?: number; api_key_id?: string; model?: string; chain_id?: string } = {}) => {
+    const qs = new URLSearchParams({ period, tz: browserTZ() });
+    for (const [k, v] of Object.entries(opts)) {
+      if (v) qs.set(k, String(v));
+    }
+    return request<GuardrailStats>("GET", `/guardrails/stats?${qs.toString()}`);
+  },
+  listGuardrailLogs: (filter?: GuardrailLogFilter & { limit?: number }) => {
     const qs = new URLSearchParams();
-    if (filter?.api_key_id) qs.set("api_key_id", filter.api_key_id);
-    if (filter?.detector) qs.set("detector", filter.detector);
-    if (filter?.action) qs.set("action", filter.action);
-    if (filter?.limit) qs.set("limit", String(filter.limit));
+    for (const [k, v] of Object.entries(filter ?? {})) {
+      if (v) qs.set(k, String(v));
+    }
+    if (filter?.period) qs.set("tz", browserTZ());
     const suffix = qs.toString();
     return request<{ logs: GuardrailLogEntry[] }>(
       "GET",

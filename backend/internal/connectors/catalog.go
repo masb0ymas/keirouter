@@ -1,6 +1,10 @@
 package connectors
 
-import "github.com/mydisha/keirouter/backend/internal/core"
+import (
+	"sync"
+
+	"github.com/mydisha/keirouter/backend/internal/core"
+)
 
 // RegionOption describes one selectable region for a provider that has
 // region-based endpoints (e.g. Xiaomi Token Plan SGP/CN/AMS).
@@ -58,6 +62,20 @@ type ProviderSpec struct {
 	// Custom marks user-defined dynamic provider instances (not part of the
 	// built-in static catalog). These are editable and deletable.
 	Custom bool `json:"custom,omitempty"`
+	// Fields are provider-specific connect-form inputs (region, project id,
+	// secondary secrets). See CredentialField.
+	Fields []CredentialField `json:"fields,omitempty"`
+	// APIKeyMode is APIKeyRequired (default), APIKeyOptional or APIKeyHidden.
+	APIKeyMode string `json:"api_key_mode,omitempty"`
+	// APIKeyWhen limits the API key input to a value of a select field.
+	APIKeyWhen *FieldCondition `json:"api_key_when,omitempty"`
+	// APIKeyLabel / APIKeyPlaceholder relabel the key input (e.g. "Personal
+	// access token").
+	APIKeyLabel       string `json:"api_key_label,omitempty"`
+	APIKeyPlaceholder string `json:"api_key_placeholder,omitempty"`
+	// BaseURLPlaceholder hints the expected endpoint shape for providers that
+	// need a per-account base URL (BaseURL empty).
+	BaseURLPlaceholder string `json:"base_url_placeholder,omitempty"`
 }
 
 // llm is shorthand for the default LLM-only service kind slice.
@@ -75,6 +93,18 @@ func llm(extra ...core.ServiceKind) []core.ServiceKind {
 // discovery and account management, but are not routable until a dedicated
 // connector lands.
 func Catalog() []ProviderSpec {
+	static := builtinCatalog()
+	dyn := dynamicSpecs()
+	out := make([]ProviderSpec, 0, len(static)+len(dyn))
+	out = append(out, static...)
+	// Append user-defined dynamic provider instances so they participate in
+	// discovery, account management, and provider/alias resolution.
+	return append(out, dyn...)
+}
+
+// builtinCatalog assembles the static provider list once; Catalog copies it
+// per call so callers may reslice freely.
+var builtinCatalog = sync.OnceValue(func() []ProviderSpec {
 	built := append(append(append(append(append(
 		pinnedProviders(),
 		freeProviders()...),
@@ -82,10 +112,8 @@ func Catalog() []ProviderSpec {
 		oauthProviders()...),
 		apiKeyProviders()...),
 		mediaProviders()...)
-	// Append user-defined dynamic provider instances so they participate in
-	// discovery, account management, and provider/alias resolution.
-	return append(built, dynamicSpecs()...)
-}
+	return append(append(built, cloudProviders()...), compatProviders()...)
+})
 
 // pinnedProviders are always-visible entries shown at the top of the listing.
 func pinnedProviders() []ProviderSpec {
@@ -279,7 +307,8 @@ func apiKeyProviders() []ProviderSpec {
 			Color: "#111827", Website: "https://vercel.com/ai-gateway"},
 		{ID: "azure", DisplayName: "Azure OpenAI", Alias: "azure", Dialect: core.DialectOpenAI,
 			BaseURL: "", AuthKind: "api_key", ServiceKinds: llm(), Color: "#0078D4",
-			Website: "https://azure.microsoft.com/en-us/products/ai-services/openai-service"},
+			Website:    "https://azure.microsoft.com/en-us/products/ai-services/openai-service",
+			APIKeyWhen: when("azure_auth", "api_key"), Fields: entraFields()},
 		{ID: "commandcode", DisplayName: "Command Code", Alias: "cmc", Dialect: core.DialectCommandCode,
 			BaseURL:  "https://api.commandcode.ai/alpha/generate",
 			AuthKind: "api_key", AuthModes: []string{"oauth", "api_key"}, ServiceKinds: llm(),
@@ -309,7 +338,7 @@ func apiKeyProviders() []ProviderSpec {
 			BaseURL: "https://api.cerebras.ai/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#FF4F00", Website: "https://www.cerebras.ai", APIKeyURL: "https://cloud.cerebras.ai/platform"},
 		{ID: "cohere", DisplayName: "Cohere", Alias: "cohere", Dialect: core.DialectOpenAI,
-			BaseURL: "https://api.cohere.ai/v1", AuthKind: "api_key", ServiceKinds: llm(),
+			BaseURL: "https://api.cohere.ai/compatibility/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceEmbedding),
 			Color: "#39594D", Website: "https://cohere.com", APIKeyURL: "https://dashboard.cohere.com/api-keys"},
 		{ID: "nebius", DisplayName: "Nebius AI", Alias: "nebius", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.studio.nebius.ai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceEmbedding),
@@ -591,8 +620,25 @@ func SpecByID(id string) (ProviderSpec, bool) {
 }
 
 // SpecByAlias resolves a provider by its short alias or id.
+//
+// User-defined (custom) providers are matched before built-ins. A custom
+// provider keeps the alias it was given even when a later release adds a
+// built-in provider with that ID or alias, so clients' "<alias>/<model>"
+// strings keep routing where they did before the upgrade. New custom
+// providers cannot take a built-in's ID or alias in the first place.
 func SpecByAlias(aliasOrID string) (ProviderSpec, bool) {
-	for _, p := range Catalog() {
+	for _, p := range dynamicSpecs() {
+		if p.ID == aliasOrID || p.Alias == aliasOrID {
+			return p, true
+		}
+	}
+	return BuiltinSpecByAlias(aliasOrID)
+}
+
+// BuiltinSpecByAlias resolves only among built-in providers, ignoring custom
+// ones (e.g. to detect a custom alias that shadows a built-in).
+func BuiltinSpecByAlias(aliasOrID string) (ProviderSpec, bool) {
+	for _, p := range builtinCatalog() {
 		if p.ID == aliasOrID || p.Alias == aliasOrID {
 			return p, true
 		}

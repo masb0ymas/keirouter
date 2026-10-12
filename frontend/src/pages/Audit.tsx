@@ -7,6 +7,7 @@ import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { Badge, Button, ErrorBanner, IconTile, Input, Kpi, KpiGrid, SectionTitle, Select, Skeleton } from "../components/ui";
 import { ICONS } from "../lib/icons";
+import { formatDateTime } from "../lib/format";
 
 // Action families an operator filters by. Values use the API's "prefix.*" form.
 const ACTION_FILTERS: [string, string][] = [
@@ -277,7 +278,7 @@ export function AuditPage() {
                 <tbody className="divide-y divide-line">
                   {rows.map((e) => {
                     const open = expanded.has(e.id);
-                    const when = new Date(e.time).toLocaleString();
+                    const when = formatDateTime(e.time);
                     const detailsId = `audit-${e.id}`;
                     return (
                       <Fragment key={e.id}>

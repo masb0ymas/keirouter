@@ -55,6 +55,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 	// The Gemini body carries no model; it comes from the URL path.
 	req.Model = model
 	req.Stream = stream
+	s.traceOf(r).setRequest(model, stream)
 
 	req.Metadata = core.RequestMetadata{
 		ClientKind:    detectClient(r),
@@ -79,6 +80,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		req.Metadata.Provider = resolved.Targets[0].Provider
 	}
 	req.Metadata.ChainID = resolved.PlanOpts.ChainID
+	s.traceOf(r).routed(resolved.Targets)
 	affinityKey := requestAffinityKey(r, req)
 	req.Metadata.ContextAffinityKey = affinityKey
 
@@ -94,8 +96,8 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.streamChat(w, r, codec, req, opts, key.Name)
+		s.streamChat(w, r, codec, req, opts)
 		return
 	}
-	s.unaryChat(w, r, codec, req, opts, key.Name)
+	s.unaryChat(w, r, codec, req, opts)
 }
