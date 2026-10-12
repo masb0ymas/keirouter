@@ -256,7 +256,8 @@ type Summary struct {
 	CacheHits        int64
 	AvgTTFTMS        int64 // average time-to-first-token for streaming requests
 	AvgLatencyMS     int64 // average latency for non-cache requests
-	SuccessCount     int64 // requests that succeeded (latency > 0 or cache hit)
+	SuccessCount     int64 // requests that succeeded (status success or cache_hit)
+	FailureCount     int64 // requests that failed (excludes guardrail blocks and cancellations)
 	SlimBytesSaved   int64 // total bytes saved by RTK slimmer
 	SlimTokensSaved  int64 // total estimated tokens saved by RTK
 	CavemanRequests  int64 // requests where caveman was active
@@ -280,7 +281,8 @@ func (r *UsageRepo) Summarize(ctx context.Context, tenantID string, since time.T
 			COALESCE(SUM(cache_hit), 0),
 			COALESCE(CAST(AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END) AS INTEGER), 0),
 			COALESCE(CAST(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS INTEGER), 0),
-			COUNT(CASE WHEN latency_ms > 0 OR cache_hit = 1 THEN 1 END),
+			COUNT(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 END),
+			COUNT(CASE WHEN ` + sqlUsageFailed + ` THEN 1 END),
 			COALESCE(SUM(slim_bytes_saved), 0),
 			COALESCE(SUM(slim_tokens_saved), 0),
 			COALESCE(SUM(caveman_active), 0),
@@ -294,7 +296,7 @@ func (r *UsageRepo) Summarize(ctx context.Context, tenantID string, since time.T
 	err := r.db.sql.QueryRowContext(ctx, q, tenantID, formatTime(since)).Scan(
 		&s.TotalRequests, &s.PromptTokens, &s.CompletionTokens,
 		&s.CachedTokens, &s.CacheWriteTokens, &s.CostMicros, &s.CacheHits, &s.AvgTTFTMS,
-		&s.AvgLatencyMS, &s.SuccessCount,
+		&s.AvgLatencyMS, &s.SuccessCount, &s.FailureCount,
 		&s.SlimBytesSaved, &s.SlimTokensSaved, &s.CavemanRequests, &s.TerseRequests,
 		&s.HeadroomTokensSaved, &s.HeadroomRequests, &s.PonytailRequests)
 	if err != nil {
@@ -317,7 +319,8 @@ func (r *UsageRepo) SummarizeByKey(ctx context.Context, keyID string, since time
 			COALESCE(SUM(cache_hit), 0),
 			COALESCE(CAST(AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END) AS INTEGER), 0),
 			COALESCE(CAST(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS INTEGER), 0),
-			COUNT(CASE WHEN latency_ms > 0 OR cache_hit = 1 THEN 1 END),
+			COUNT(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 END),
+			COUNT(CASE WHEN ` + sqlUsageFailed + ` THEN 1 END),
 			COALESCE(SUM(slim_bytes_saved), 0),
 			COALESCE(SUM(slim_tokens_saved), 0),
 			COALESCE(SUM(caveman_active), 0),
@@ -331,7 +334,7 @@ func (r *UsageRepo) SummarizeByKey(ctx context.Context, keyID string, since time
 	err := r.db.sql.QueryRowContext(ctx, q, keyID, formatTime(since)).Scan(
 		&s.TotalRequests, &s.PromptTokens, &s.CompletionTokens,
 		&s.CachedTokens, &s.CacheWriteTokens, &s.CostMicros, &s.CacheHits, &s.AvgTTFTMS,
-		&s.AvgLatencyMS, &s.SuccessCount,
+		&s.AvgLatencyMS, &s.SuccessCount, &s.FailureCount,
 		&s.SlimBytesSaved, &s.SlimTokensSaved, &s.CavemanRequests, &s.TerseRequests,
 		&s.HeadroomTokensSaved, &s.HeadroomRequests, &s.PonytailRequests)
 	if err != nil {

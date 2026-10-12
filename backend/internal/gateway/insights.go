@@ -185,14 +185,10 @@ func (s *Server) adminUsageInsightsLegacy(w http.ResponseWriter, r *http.Request
 	}
 
 	// Success rate + average latency, computed from the full period in SQL.
-	// Cache hits count as successful; avg latency excludes cache hits (0ms).
+	// Cache hits count as successful; guardrail blocks and cancellations are
+	// excluded; avg latency excludes cache hits (0ms).
 	// successRate is a 0-1 ratio (frontend multiplies by 100 for display).
-	var successRate float64
-	if sum.TotalRequests > 0 {
-		successRate = float64(sum.SuccessCount) / float64(sum.TotalRequests)
-	} else {
-		successRate = 1
-	}
+	successRate := successRatio(sum.SuccessCount, sum.FailureCount)
 	avgLatency := int(sum.AvgLatencyMS)
 	avgTTFT := int(sum.AvgTTFTMS)
 

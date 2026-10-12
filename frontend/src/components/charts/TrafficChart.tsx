@@ -34,7 +34,9 @@ const METRICS: Record<MetricKey, MetricDef> = {
     legendA: "Succeeded",
     legendB: "Failed",
     bTone: "alt",
-    a: (p) => Math.max(0, p.requests - p.failures),
+    // Guardrail blocks and cancellations are neither, so they stay out of
+    // both segments; older payloads without `successes` fall back to the gap.
+    a: (p) => p.successes ?? Math.max(0, p.requests - p.failures),
     b: (p) => p.failures,
     fmt: (v) => fmtCompact(v),
     total: (d) => fmtInt(d.summary.total_requests),

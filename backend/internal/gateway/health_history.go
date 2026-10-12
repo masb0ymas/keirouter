@@ -217,7 +217,7 @@ func (s *Server) persistedChainStats(r *http.Request, since time.Time) map[strin
 		st.ChainID = row.ChainID
 		st.Requests += row.Requests
 		st.Fallbacks += row.FellBack
-		st.FinalFailures += row.Requests - row.Successes
+		st.FinalFailures += row.Failures
 		out[row.ChainID] = st
 	}
 	for id, st := range out {

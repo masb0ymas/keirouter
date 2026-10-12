@@ -117,7 +117,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 
 	totalTokens := summary.PromptTokens + summary.CompletionTokens
 	pricingEligibleRequests := summary.PricedRequests + summary.UnpricedRequests
-	successRate := ratio(summary.SuccessCount, summary.TotalRequests)
+	successRate := successRatio(summary.SuccessCount, summary.FailureCount)
 	requestPricingCoverage := optionalRatio(summary.PricedRequests, pricingEligibleRequests)
 	tokenPricingCoverage := optionalRatio(totalTokens-summary.UnpricedTokens, totalTokens)
 
@@ -131,8 +131,9 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 			"icon":                      icon,
 			"total_requests":            provider.TotalRequests,
 			"successful_requests":       provider.SuccessCount,
-			"failed_requests":           provider.TotalRequests - provider.SuccessCount,
-			"success_rate":              ratio(provider.SuccessCount, provider.TotalRequests),
+			"failed_requests":           provider.FailureCount,
+			"blocked_requests":          provider.BlockedCount,
+			"success_rate":              successRatio(provider.SuccessCount, provider.FailureCount),
 			"prompt_tokens":             provider.PromptTokens,
 			"completion_tokens":         provider.CompletionTokens,
 			"cached_tokens":             provider.CachedTokens,
@@ -268,6 +269,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 			"total_requests":            summary.TotalRequests,
 			"successful_requests":       summary.SuccessCount,
 			"failed_requests":           summary.FailureCount,
+			"blocked_requests":          summary.BlockedCount,
 			"prompt_tokens":             summary.PromptTokens,
 			"completion_tokens":         summary.CompletionTokens,
 			"cached_tokens":             summary.CachedTokens,
@@ -354,8 +356,9 @@ func (s *Server) adminModelUsageAccurate(w http.ResponseWriter, r *http.Request)
 			"model":                     model.Model,
 			"total_requests":            model.TotalRequests,
 			"successful_requests":       model.SuccessCount,
-			"failed_requests":           model.TotalRequests - model.SuccessCount,
-			"success_rate":              ratio(model.SuccessCount, model.TotalRequests),
+			"failed_requests":           model.FailureCount,
+			"blocked_requests":          model.BlockedCount,
+			"success_rate":              successRatio(model.SuccessCount, model.FailureCount),
 			"prompt_tokens":             model.PromptTokens,
 			"completion_tokens":         model.CompletionTokens,
 			"cached_tokens":             model.CachedTokens,
@@ -421,6 +424,17 @@ func averageCount(total, requests int64) float64 {
 		return 0
 	}
 	return float64(total) / float64(requests)
+}
+
+// successRatio is succeeded/(succeeded+failed). Guardrail blocks and client
+// cancellations are in neither count, so they never drag a success rate down;
+// a window holding only those reports 1 because nothing that reached a
+// verdict failed.
+func successRatio(succeeded, failed int64) float64 {
+	if succeeded+failed <= 0 {
+		return 1
+	}
+	return ratio(succeeded, succeeded+failed)
 }
 
 func ratio(numerator, denominator int64) float64 {
@@ -508,6 +522,7 @@ func accurateTimelineSeries(points []store.AccurateTimeBucket, from, to time.Tim
 			"start":             start.UTC(),
 			"count":             point.Requests,
 			"requests":          point.Requests,
+			"successes":         point.Succeeded,
 			"failures":          point.Failed,
 			"prompt_tokens":     point.PromptTokens,
 			"completion_tokens": point.CompletionTokens,
@@ -530,7 +545,8 @@ func previousPeriodSummary(prev store.AccurateSummary, p50 int64, since, until t
 		"total_requests":      prev.TotalRequests,
 		"successful_requests": prev.SuccessCount,
 		"failed_requests":     prev.FailureCount,
-		"success_rate":        ratio(prev.SuccessCount, prev.TotalRequests),
+		"blocked_requests":    prev.BlockedCount,
+		"success_rate":        successRatio(prev.SuccessCount, prev.FailureCount),
 		"total_tokens":        prev.PromptTokens + prev.CompletionTokens,
 		"cost_usd":            nanosToUSD(prev.CostNanos),
 		"usd_saved":           nanosToUSD(prev.SavedCostNanos + prev.AvoidedCostNanos),

@@ -6,10 +6,21 @@ import (
 	"time"
 )
 
+// Success analytics split usage rows by terminal status. A guardrail block
+// ("blocked") is a policy decision about the request, and a client
+// cancellation ("cancelled") is the caller walking away; neither says whether
+// routing or the provider worked, so both stay out of the success/failure
+// split. Success rates divide succeeded by succeeded+failed, never COUNT(*).
+const (
+	sqlUsageSucceeded = `status IN ('success','cache_hit')`
+	sqlUsageFailed    = `status NOT IN ('success','cache_hit','blocked','cancelled')`
+	sqlUsageBlocked   = `status = 'blocked'`
+)
+
 // AccurateSummary is the authoritative request, token, cost, latency, pricing
 // coverage, usage provenance, and optimization rollup used by the Usage page.
 type AccurateSummary struct {
-	TotalRequests, SuccessCount, FailureCount                           int64
+	TotalRequests, SuccessCount, FailureCount, BlockedCount             int64
 	PromptTokens, CompletionTokens, CachedTokens, CacheWriteTokens      int64
 	ReasoningTokens, CostNanos, CacheHits                               int64
 	AvgTTFTMS, AvgLatencyMS                                             int64
@@ -36,8 +47,9 @@ func (r *UsageRepo) SummarizeAccurateRange(ctx context.Context, tenantID string,
 	where, args := rangeWhere(tenantID, since, until)
 	q := r.db.rebind(`
 		SELECT COUNT(*),
-			COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
-			COALESCE(SUM(CASE WHEN status NOT IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageFailed + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageBlocked + ` THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 			COALESCE(SUM(cached_tokens),0), COALESCE(SUM(cache_write_tokens),0),
 			COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cost_nanos),0),
@@ -62,7 +74,7 @@ func (r *UsageRepo) SummarizeAccurateRange(ctx context.Context, tenantID string,
 		FROM usage_records WHERE ` + where)
 	var s AccurateSummary
 	err := r.db.sql.QueryRowContext(ctx, q, args...).Scan(
-		&s.TotalRequests, &s.SuccessCount, &s.FailureCount,
+		&s.TotalRequests, &s.SuccessCount, &s.FailureCount, &s.BlockedCount,
 		&s.PromptTokens, &s.CompletionTokens, &s.CachedTokens, &s.CacheWriteTokens,
 		&s.ReasoningTokens, &s.CostNanos, &s.CacheHits, &s.AvgTTFTMS, &s.AvgLatencyMS,
 		&s.PricedRequests, &s.UnpricedRequests, &s.UnpricedTokens, &s.EstimatedRequests,
@@ -79,7 +91,7 @@ func (r *UsageRepo) SummarizeAccurateRange(ctx context.Context, tenantID string,
 
 type AccurateProviderUsage struct {
 	Provider                                                        string
-	TotalRequests, SuccessCount                                     int64
+	TotalRequests, SuccessCount, FailureCount, BlockedCount         int64
 	PromptTokens, CompletionTokens, CachedTokens, CacheWriteTokens  int64
 	ReasoningTokens, CostNanos, SavedCostNanos, AvoidedCostNanos    int64
 	AvgLatencyMS, AvgTTFTMS                                         int64
@@ -90,7 +102,9 @@ type AccurateProviderUsage struct {
 func (r *UsageRepo) BreakdownAccurate(ctx context.Context, tenantID string, since time.Time) ([]AccurateProviderUsage, error) {
 	q := r.db.rebind(`
 		SELECT provider, COUNT(*),
-			COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageFailed + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageBlocked + ` THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 			COALESCE(SUM(cached_tokens),0), COALESCE(SUM(cache_write_tokens),0),
 			COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cost_nanos),0),
@@ -113,7 +127,7 @@ func (r *UsageRepo) BreakdownAccurate(ctx context.Context, tenantID string, sinc
 	var out []AccurateProviderUsage
 	for rows.Next() {
 		var p AccurateProviderUsage
-		if err := rows.Scan(&p.Provider, &p.TotalRequests, &p.SuccessCount,
+		if err := rows.Scan(&p.Provider, &p.TotalRequests, &p.SuccessCount, &p.FailureCount, &p.BlockedCount,
 			&p.PromptTokens, &p.CompletionTokens, &p.CachedTokens, &p.CacheWriteTokens,
 			&p.ReasoningTokens, &p.CostNanos, &p.SavedCostNanos, &p.AvoidedCostNanos,
 			&p.AvgLatencyMS, &p.AvgTTFTMS, &p.PricingEligibleRequests, &p.UnpricedRequests,
@@ -128,7 +142,7 @@ func (r *UsageRepo) BreakdownAccurate(ctx context.Context, tenantID string, sinc
 
 type AccurateModelUsage struct {
 	Provider, Model                                                  string
-	TotalRequests, SuccessCount                                      int64
+	TotalRequests, SuccessCount, FailureCount, BlockedCount          int64
 	PromptTokens, CompletionTokens, CachedTokens, CacheWriteTokens   int64
 	ReasoningTokens, CostNanos, SavedCostNanos, AvoidedCostNanos     int64
 	AvgLatencyMS, AvgTTFTMS                                          int64
@@ -144,7 +158,9 @@ type AccurateModelUsage struct {
 func (r *UsageRepo) ByModelAccurate(ctx context.Context, tenantID string, since time.Time) ([]AccurateModelUsage, error) {
 	q := r.db.rebind(`
 		SELECT provider, model, COUNT(*),
-			COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageFailed + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageBlocked + ` THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 			COALESCE(SUM(cached_tokens),0), COALESCE(SUM(cache_write_tokens),0),
 			COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cost_nanos),0),
@@ -188,7 +204,7 @@ func (r *UsageRepo) ByModelAccurate(ctx context.Context, tenantID string, since 
 		var minStatus, maxStatus, minSource, maxSource, minKey, maxKey string
 		var minInput, maxInput, minCached, maxCached, minWrite, maxWrite float64
 		var minOutput, maxOutput, minReasoning, maxReasoning float64
-		if err := rows.Scan(&m.Provider, &m.Model, &m.TotalRequests, &m.SuccessCount,
+		if err := rows.Scan(&m.Provider, &m.Model, &m.TotalRequests, &m.SuccessCount, &m.FailureCount, &m.BlockedCount,
 			&m.PromptTokens, &m.CompletionTokens, &m.CachedTokens, &m.CacheWriteTokens,
 			&m.ReasoningTokens, &m.CostNanos, &m.SavedCostNanos, &m.AvoidedCostNanos,
 			&m.AvgLatencyMS, &m.AvgTTFTMS, &m.PricingEligibleRequests, &m.UnpricedRequests,
@@ -263,8 +279,9 @@ func (r *UsageRepo) LatencyPercentiles(ctx context.Context, tenantID string, sin
 // those only reached it after failing over, and what they cost.
 type ChainServedUsage struct {
 	ChainID, Provider, Model      string
-	Requests, Successes, FellBack int64
-	CostNanos, AvgLatencyMS       int64
+	Requests, Successes, Failures int64
+	FellBack, CostNanos           int64
+	AvgLatencyMS                  int64
 }
 
 // ChainUsage groups chain-routed requests by the target that served them.
@@ -274,7 +291,8 @@ type ChainServedUsage struct {
 func (r *UsageRepo) ChainUsage(ctx context.Context, tenantID string, since time.Time) ([]ChainServedUsage, error) {
 	q := r.db.rebind(`
 		SELECT chain_id, provider, model, COUNT(*),
-			COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageSucceeded + ` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN ` + sqlUsageFailed + ` THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN fallback_count > 0 THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(cost_nanos),0),
 			COALESCE(CAST(AVG(CASE WHEN end_to_end_latency_ms>0 AND status IN ('success','cache_hit') THEN end_to_end_latency_ms END) AS INTEGER),0)
@@ -289,7 +307,7 @@ func (r *UsageRepo) ChainUsage(ctx context.Context, tenantID string, since time.
 	var out []ChainServedUsage
 	for rows.Next() {
 		var c ChainServedUsage
-		if err := rows.Scan(&c.ChainID, &c.Provider, &c.Model, &c.Requests, &c.Successes,
+		if err := rows.Scan(&c.ChainID, &c.Provider, &c.Model, &c.Requests, &c.Successes, &c.Failures,
 			&c.FellBack, &c.CostNanos, &c.AvgLatencyMS); err != nil {
 			return nil, err
 		}

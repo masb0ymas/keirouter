@@ -127,6 +127,7 @@ func TestChainUsageGroupsByServingTarget(t *testing.T) {
 		rec("b", "c1", "anthropic", "sonnet", "success", 0),
 		rec("c", "c1", "codex", "gpt-5", "success", 1),
 		rec("d", "c1", "codex", "gpt-5", "failed", 1),
+		rec("f", "c1", "codex", "gpt-5", "blocked", 0), // guardrail block: not a failure
 		rec("e", "", "openai", "gpt-4o", "success", 0), // direct request: excluded
 	}))
 
@@ -139,9 +140,59 @@ func TestChainUsageGroupsByServingTarget(t *testing.T) {
 	}
 	require.Equal(t, int64(2), by["anthropic"].Requests)
 	require.Equal(t, int64(0), by["anthropic"].FellBack)
-	require.Equal(t, int64(2), by["codex"].Requests)
+	require.Equal(t, int64(3), by["codex"].Requests)
 	require.Equal(t, int64(1), by["codex"].Successes)
+	require.Equal(t, int64(1), by["codex"].Failures)
 	require.Equal(t, int64(2), by["codex"].FellBack)
+}
+
+// Guardrail blocks and client cancellations say nothing about whether the
+// provider worked, so every success/failure rollup must leave them out.
+func TestSuccessAnalyticsExcludeBlockedAndCancelled(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rec := func(id, status string) UsageRecord {
+		return UsageRecord{ID: id, TenantID: DefaultTenantID, Provider: "openai", Model: "m",
+			Status: status, LatencyMS: 100, EndToEndLatencyMS: 100, CreatedAt: now}
+	}
+	require.NoError(t, db.Usage().RecordBatch(ctx, []UsageRecord{
+		rec("ok", "success"), rec("hit", "cache_hit"), rec("fail", "failed"),
+		rec("block-in", "blocked"), rec("block-out", "blocked"), rec("gone", "cancelled"),
+	}))
+	since := now.Add(-time.Hour)
+
+	sum, err := db.Usage().SummarizeAccurate(ctx, DefaultTenantID, since)
+	require.NoError(t, err)
+	require.Equal(t, int64(6), sum.TotalRequests)
+	require.Equal(t, int64(2), sum.SuccessCount)
+	require.Equal(t, int64(1), sum.FailureCount)
+	require.Equal(t, int64(2), sum.BlockedCount)
+
+	providers, err := db.Usage().BreakdownAccurate(ctx, DefaultTenantID, since)
+	require.NoError(t, err)
+	require.Len(t, providers, 1)
+	require.Equal(t, int64(2), providers[0].SuccessCount)
+	require.Equal(t, int64(1), providers[0].FailureCount)
+	require.Equal(t, int64(2), providers[0].BlockedCount)
+
+	models, err := db.Usage().ByModelAccurate(ctx, DefaultTenantID, since)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.Equal(t, int64(1), models[0].FailureCount)
+	require.Equal(t, int64(2), models[0].BlockedCount)
+
+	buckets, err := db.Usage().TimelineAccurate(ctx, DefaultTenantID, since, now.Add(time.Minute), 1)
+	require.NoError(t, err)
+	require.Len(t, buckets, 1)
+	require.Equal(t, int64(6), buckets[0].Requests)
+	require.Equal(t, int64(2), buckets[0].Succeeded)
+	require.Equal(t, int64(1), buckets[0].Failed)
+
+	legacy, err := db.Usage().Summarize(ctx, DefaultTenantID, since)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), legacy.SuccessCount)
+	require.Equal(t, int64(1), legacy.FailureCount)
 }
 
 func TestSummarizeSnapshotsByProviderAndModel(t *testing.T) {

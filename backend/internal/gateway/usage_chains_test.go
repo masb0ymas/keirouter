@@ -18,13 +18,13 @@ func TestChainUsageRowMapsServedTargetsOntoSteps(t *testing.T) {
 	}
 	rows := []store.ChainServedUsage{
 		{ChainID: "c1", Provider: "anthropic", Model: "sonnet", Requests: 6, Successes: 6},
-		{ChainID: "c1", Provider: "codex", Model: "gpt-5", Requests: 3, Successes: 2, FellBack: 3},
+		{ChainID: "c1", Provider: "codex", Model: "gpt-5", Requests: 4, Successes: 2, Failures: 1, FellBack: 3},
 		{ChainID: "c1", Provider: "deepseek", Model: "chat", Requests: 0},
 		{ChainID: "c1", Provider: "old", Model: "removed-step", Requests: 1, Successes: 1},
 	}
 	out := chainUsageRow(chain, rows)
 
-	if out["requests"].(int64) != 10 || out["fallback_requests"].(int64) != 3 {
+	if out["requests"].(int64) != 11 || out["fallback_requests"].(int64) != 3 {
 		t.Fatalf("totals: requests=%v fallbacks=%v", out["requests"], out["fallback_requests"])
 	}
 	steps := out["steps"].([]map[string]any)
@@ -34,8 +34,17 @@ func TestChainUsageRowMapsServedTargetsOntoSteps(t *testing.T) {
 	if steps[0]["provider"] != "anthropic" || steps[0]["requests"].(int64) != 6 {
 		t.Fatalf("first step = %v", steps[0])
 	}
-	if steps[1]["provider"] != "codex" || steps[1]["share"].(float64) != 0.3 {
+	// codex served 4 requests: 2 succeeded, 1 failed, 1 was a guardrail
+	// block that counts toward neither side of the success rate.
+	if steps[1]["provider"] != "codex" || steps[1]["requests"].(int64) != 4 ||
+		steps[1]["success_rate"].(float64) != 2.0/3.0 {
 		t.Fatalf("second step = %v", steps[1])
+	}
+	if out["success_rate"].(float64) != 9.0/10.0 {
+		t.Fatalf("chain success rate = %v, want 0.9", out["success_rate"])
+	}
+	if steps[2]["success_rate"].(float64) != 1 {
+		t.Fatalf("idle fallback step should report 1, got %v", steps[2]["success_rate"])
 	}
 	if steps[2]["is_fallback"] != true {
 		t.Fatalf("last-resort model should be flagged: %v", steps[2])

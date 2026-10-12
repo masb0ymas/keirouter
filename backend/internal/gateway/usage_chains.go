@@ -55,10 +55,10 @@ func (s *Server) adminChainUsage(w http.ResponseWriter, r *http.Request) {
 // or the configured last-resort fallback model) are reported separately.
 func chainUsageRow(c store.Chain, rows []store.ChainServedUsage) map[string]any {
 	type stepAgg struct {
-		position                      int
-		provider, model               string
-		requests, successes, fellBack int64
-		costNanos                     int64
+		position                                int
+		provider, model                         string
+		requests, successes, failures, fellBack int64
+		costNanos                               int64
 	}
 	steps := make([]*stepAgg, 0, len(c.Steps)+1)
 	index := map[string]*stepAgg{}
@@ -77,16 +77,18 @@ func chainUsageRow(c store.Chain, rows []store.ChainServedUsage) map[string]any 
 		}
 	}
 
-	var total, successes, fellBack, costNanos int64
+	var total, successes, failures, fellBack, costNanos int64
 	other := []map[string]any{}
 	for _, row := range rows {
 		total += row.Requests
 		successes += row.Successes
+		failures += row.Failures
 		fellBack += row.FellBack
 		costNanos += row.CostNanos
 		if agg, ok := index[row.Provider+"/"+row.Model]; ok {
 			agg.requests += row.Requests
 			agg.successes += row.Successes
+			agg.failures += row.Failures
 			agg.fellBack += row.FellBack
 			agg.costNanos += row.CostNanos
 			continue
@@ -108,7 +110,7 @@ func chainUsageRow(c store.Chain, rows []store.ChainServedUsage) map[string]any 
 			"is_fallback":  c.FallbackProvider == st.provider && c.FallbackModel == st.model && st.position >= len(c.Steps),
 			"requests":     st.requests,
 			"share":        ratio(st.requests, total),
-			"success_rate": ratio(st.successes, st.requests),
+			"success_rate": successRatio(st.successes, st.failures),
 			"cost_usd":     nanosToUSD(st.costNanos),
 		})
 	}
@@ -117,7 +119,7 @@ func chainUsageRow(c store.Chain, rows []store.ChainServedUsage) map[string]any 
 		"name":              c.Name,
 		"strategy":          c.Strategy,
 		"requests":          total,
-		"success_rate":      ratio(successes, total),
+		"success_rate":      successRatio(successes, failures),
 		"fallback_requests": fellBack,
 		"fallback_rate":     ratio(fellBack, total),
 		"cost_usd":          nanosToUSD(costNanos),

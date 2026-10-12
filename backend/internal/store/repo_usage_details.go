@@ -94,9 +94,11 @@ func (r *UsageRepo) RecentAccurate(ctx context.Context, tenantID string, since t
 
 // AccurateTimeBucket powers a multi-series request/token/cost trend chart.
 type AccurateTimeBucket struct {
-	Bucket                                           int
-	Requests, Failed, PromptTokens, CompletionTokens int64
-	CostNanos, SavedNanos, CacheHits, AvgLatencyMS   int64
+	Bucket                           int
+	Requests, Succeeded, Failed      int64
+	PromptTokens, CompletionTokens   int64
+	CostNanos, SavedNanos, CacheHits int64
+	AvgLatencyMS                     int64
 }
 
 func (r *UsageRepo) TimelineAccurate(ctx context.Context, tenantID string, since, to time.Time, buckets int) ([]AccurateTimeBucket, error) {
@@ -114,7 +116,8 @@ func (r *UsageRepo) TimelineAccurate(ctx context.Context, tenantID string, since
 	epochCreated, epochSince := r.db.epochExpr("created_at"), r.db.epochExpr("?")
 	q := r.db.rebind(fmt.Sprintf(`
 		SELECT CAST((%s-%s)/? AS INTEGER), COUNT(*),
-			COALESCE(SUM(CASE WHEN status NOT IN ('success','cache_hit') THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN `+sqlUsageSucceeded+` THEN 1 ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN `+sqlUsageFailed+` THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 			COALESCE(SUM(cost_nanos),0),
 			COALESCE(SUM(saved_cost_nanos),0)+COALESCE(SUM(avoided_cost_nanos),0),
@@ -131,7 +134,7 @@ func (r *UsageRepo) TimelineAccurate(ctx context.Context, tenantID string, since
 	var out []AccurateTimeBucket
 	for rows.Next() {
 		var b AccurateTimeBucket
-		if err := rows.Scan(&b.Bucket, &b.Requests, &b.Failed, &b.PromptTokens, &b.CompletionTokens, &b.CostNanos, &b.SavedNanos, &b.CacheHits, &b.AvgLatencyMS); err != nil {
+		if err := rows.Scan(&b.Bucket, &b.Requests, &b.Succeeded, &b.Failed, &b.PromptTokens, &b.CompletionTokens, &b.CostNanos, &b.SavedNanos, &b.CacheHits, &b.AvgLatencyMS); err != nil {
 			return nil, err
 		}
 		if b.Bucket >= 0 && b.Bucket < buckets {

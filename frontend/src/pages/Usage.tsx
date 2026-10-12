@@ -288,6 +288,7 @@ function KpiStrip({ data, period }: { data: UsageInsights; period: string }) {
       hint: (
         <>
           <span className={cn(lowSuccess && "text-warn")}>{s.total_requests ? fmtRatio(s.success_rate) : "—"} success</span> · {fmtInteger(s.failed_requests)} failed
+          {s.blocked_requests > 0 && <> · {fmtInteger(s.blocked_requests)} blocked</>}
         </>
       ),
       delta: relDelta(s.total_requests, p?.total_requests, "flat"),
@@ -543,7 +544,7 @@ function ProviderAccounting({
                           </div>
                         </div>
                       </td>
-                      <Cell main={fmtInteger(p.total_requests)} sub={`${fmtRatio(p.success_rate)} ok · ${fmtInteger(p.failed_requests)} failed`} />
+                      <Cell main={fmtInteger(p.total_requests)} sub={`${fmtRatio(p.success_rate)} ok · ${fmtInteger(p.failed_requests)} failed${p.blocked_requests > 0 ? ` · ${fmtInteger(p.blocked_requests)} blocked` : ""}`} />
                       <Cell main={fmtCompact(p.prompt_tokens)} sub={`${fmtCompact(p.cached_tokens)} cache read · ${fmtCompact(p.cache_write_tokens)} write`} />
                       <Cell main={fmtCompact(p.completion_tokens)} sub={`${fmtCompact(p.reasoning_tokens)} reasoning`} />
                       <Cell main={fmtUSD(p.cost_usd)} sub={`${fmtUSD(p.saved_cost_usd + p.avoided_cost_usd)} saved`} />

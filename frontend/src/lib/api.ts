@@ -421,6 +421,8 @@ export interface ProviderUsage {
   total_requests: number;
   successful_requests: number;
   failed_requests: number;
+  /** Guardrail blocks; excluded from success_rate and failed_requests. */
+  blocked_requests: number;
   success_rate: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -558,6 +560,8 @@ export interface ModelUsage {
   total_requests: number;
   successful_requests: number;
   failed_requests: number;
+  /** Guardrail blocks; excluded from success_rate and failed_requests. */
+  blocked_requests: number;
   success_rate: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -595,6 +599,8 @@ export interface SeriesPoint {
   start: string;
   count: number;
   requests: number;
+  /** Succeeded requests; guardrail blocks and cancellations are in neither this nor failures. */
+  successes?: number;
   failures: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -641,6 +647,8 @@ export interface PreviousPeriodSummary {
   total_requests: number;
   successful_requests: number;
   failed_requests: number;
+  /** Guardrail blocks; excluded from success_rate and failed_requests. */
+  blocked_requests: number;
   success_rate: number;
   total_tokens: number;
   cost_usd: number;
@@ -654,6 +662,8 @@ export interface UsageInsightsSummary {
   total_requests: number;
   successful_requests: number;
   failed_requests: number;
+  /** Guardrail blocks; excluded from success_rate and failed_requests. */
+  blocked_requests: number;
   prompt_tokens: number;
   completion_tokens: number;
   cached_tokens: number;
