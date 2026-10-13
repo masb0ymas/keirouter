@@ -29,6 +29,7 @@ export const routeLoaders = {
   "/oauth-callback": () => named(import("./pages/OAuthCallback"), "OAuthCallbackPage"),
   "/portal": () => named(import("./pages/KeyPortal"), "KeyPortalPage"),
   "/guardrails": () => named(import("./pages/Guardrails"), "GuardrailsPage"),
+  "/audit": () => named(import("./pages/Audit"), "AuditPage"),
   "/provider-health": () => named(import("./pages/ProviderHealth"), "ProviderHealthPage"),
 } as const;
 
