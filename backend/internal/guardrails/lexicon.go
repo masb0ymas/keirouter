@@ -371,13 +371,13 @@ func glob(p, s string) bool {
 }
 
 var (
-	lexPrefixes = []string{"meng", "meny", "peng", "mem", "men", "pem", "pen", "ber", "ter", "me", "di", "pe", "ke"}
+	lexPrefixes = []string{"meng", "meny", "peng", "mem", "men", "pem", "pen", "ber", "ter", "nge", "me", "di", "pe", "ke"}
 	lexSuffixes = []string{"ings", "ing", "ers", "ies", "kan", "nya", "lah", "ed", "er", "es", "an", "in", "s", "y", "i"}
 )
 
 // forAffixVariants calls fn with the token minus common English and
 // Indonesian inflections ("fucking" → "fuck", "dibunuh" → "bunuh",
-// "membunuhnya" → "bunuh").
+// "membunuhnya" → "bunuh", colloquial "ngebacok" → "bacok").
 func forAffixVariants(w string, fn func(string)) {
 	stripSuffix := func(x string) {
 		for _, s := range lexSuffixes {
@@ -398,17 +398,52 @@ func forAffixVariants(w string, fn func(string)) {
 
 // pronouns mark a term as aimed at someone when they sit right before or
 // after it (with a little filler in between: "you are such an idiot").
+// "ya" is left out on purpose: in Indonesian it is "yes"/a tag particle
+// ("gila ya harganya", "aku bodoh ya"), far more often than English "you".
 var pronouns = map[string]bool{
-	"you": true, "u": true, "ya": true, "ur": true, "your": true, "youre": true, "yourself": true, "yall": true,
-	"lu": true, "lo": true, "loe": true, "elu": true, "elo": true, "kau": true, "engkau": true, "kamu": true,
-	"kalian": true, "dirimu": true, "anda": true, "sia": true, "maneh": true, "dasar": true, "situ": true,
+	"you": true, "u": true, "ur": true, "your": true, "youre": true, "yourself": true, "yall": true,
+	"lu": true, "lo": true, "loe": true, "elu": true, "elo": true, "lw": true, "luh": true, "kau": true,
+	"engkau": true, "kamu": true, "kalian": true, "dirimu": true, "anda": true, "ente": true, "situ": true,
+	"sia": true, "maneh": true, "kowe": true, "koe": true, "sampeyan": true, "awakmu": true, "dasar": true,
+}
+
+// possessives point at someone's thing, not at them, when they come before
+// the term: "take out your trash", "your dog is ugly". After the term they
+// still count ("fuck your mom").
+var possessives = map[string]bool{"your": true}
+
+// postnominal pronouns are Indonesian/regional pronouns that also mark
+// possession when they follow a noun: "laptop kamu lemot" is about the
+// laptop, "kamu lemot" is about the person.
+var postnominal = map[string]bool{
+	"lu": true, "lo": true, "loe": true, "elu": true, "elo": true, "lw": true, "luh": true, "kau": true,
+	"engkau": true, "kamu": true, "kalian": true, "anda": true, "ente": true, "situ": true, "sia": true,
+	"maneh": true, "kowe": true, "koe": true, "sampeyan": true,
+}
+
+// clauseOpeners may sit right before a postnominal pronoun without making it
+// possessive: interjections, conjunctions, vocatives and discourse particles
+// ("eh kamu goblok", "sumpah lu tolol", "bro lu bego").
+var clauseOpeners = map[string]bool{
+	"eh": true, "heh": true, "hei": true, "hey": true, "woi": true, "woy": true, "oi": true, "oy": true,
+	"dan": true, "tapi": true, "tp": true, "karena": true, "krn": true, "soalnya": true, "sumpah": true,
+	"pokoknya": true, "jadi": true, "jd": true, "terus": true, "trus": true, "kalo": true, "kalau": true,
+	"klo": true, "bahwa": true, "ternyata": true, "pantes": true, "pantesan": true, "nah": true, "sih": true,
+	"lah": true, "iya": true, "ya": true, "yaudah": true, "anjir": true, "njir": true, "anjay": true,
+	"astaga": true, "bro": true, "bang": true, "bung": true, "sis": true, "cuy": true, "coy": true,
+	"bos": true, "boss": true, "gan": true, "mas": true, "mbak": true, "kak": true, "dek": true,
+	"emang": true, "memang": true, "dasar": true, "cuma": true, "hanya": true, "dah": true, "udah": true,
+	"kok": true, "tuh": true, "itu": true, "ini": true,
 }
 
 var fillers = map[string]bool{
 	"are": true, "re": true, "is": true, "a": true, "an": true, "such": true, "so": true, "really": true, "very": true,
-	"fucking": true, "total": true, "complete": true, "little": true, "big": true, "itu": true, "memang": true,
-	"emang": true, "sungguh": true, "banget": true, "bener": true, "benar": true, "sangat": true, "kok": true,
-	"tuh": true, "ini": true, "si": true, "dah": true, "udah": true,
+	"fucking": true, "total": true, "complete": true, "little": true, "big": true, "absolute": true, "utter": true,
+	"stupid": true, "dumb": true, "fat": true, "ugly": true, "lazy": true, "bloody": true, "freaking": true,
+	"itu": true, "memang": true, "emang": true, "sungguh": true, "banget": true, "bgt": true, "bener": true,
+	"benar": true, "sangat": true, "kok": true, "tuh": true, "ini": true, "si": true, "dah": true, "udah": true,
+	"kayak": true, "kek": true, "kaya": true, "macam": true, "seperti": true, "mirip": true, "bagai": true,
+	"bagaikan": true, "persis": true, "sok": true,
 }
 
 // IsDirected reports whether the lexicon match at [s,e) of a word view is
@@ -423,6 +458,12 @@ func IsDirected(view string, s, e int) bool {
 	for i, n := len(before)-1, 0; i >= 0 && n < 4; i, n = i-1, n+1 {
 		w := before[i]
 		if pronouns[w] {
+			if possessives[w] {
+				return false
+			}
+			if postnominal[w] && i > 0 && !clauseOpeners[before[i-1]] && !pronouns[before[i-1]] {
+				return false
+			}
 			return true
 		}
 		if !fillers[w] {
